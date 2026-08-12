@@ -1,0 +1,71 @@
+# AGENTS.md — AI Agent 工作指南
+
+> 任何 AI 编码代理(Codex 等)在本仓库或相关 ctrlX 项目工作前,**先读完本文件**。
+> 人类可读版总览见 `README.md`;详细技术基线见 `docs/ctrlX_AI_project_baseline.md`。
+
+## 1. 项目一句话
+
+用 **persistent MCP + AI** 驱动 Bosch ctrlX PLC 编程,逐步摆脱 Nexeed Control plus Studio(CpStudio)低代码平台;
+长期目标是沉淀一套可复用的 **AI coding 产品**(MCP 流水线 + HMI 框架 + 代码生成规范)。
+
+四条技术路线并行推进(详见 `docs/ctrlX_tech_routes.html`):
+① CpStudio 骨架 + AI MCP(主线)→ ② 自研 HMI + ctrlX(主攻演进)→ ③ CODESYS 软PLC(备选验证)→ ④ 纯 RT Linux(远期储备)。
+
+## 2. 分工(2026-08-11 定,勿越界)
+
+| 角色 | 职责 |
+|---|---|
+| **用户** | CpStudio 骨架(Station/Module/Command 层级、HMI、handler/变量、库导出)、骨架模板制作、硬件组态、真机安全确认 |
+| **AI** | PLC 代码细节(SqM/SqS/自动/手动)、编译-修复闭环、IO 映射辅助、仿真/下载调试辅助、HMI 代码、文档维护 |
+
+**AI 不代做骨架模板**;骨架就绪前不启动逻辑填充。
+
+## 3. 红线(违反会出事故)
+
+1. **`.project` 是加密容器**——绝不手改文件字节,只能经 IDE 脚本引擎(MCP 工具)修改。
+2. **`.project` 二进制不入库**(Bosch 模板版权 + 体积),已在 `.gitignore`;不要试图强制添加。
+3. **npm 升级 `codesys-mcp-persistent` 会覆盖 CRLF 补丁** → 升级后必须重跑
+   `patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1`(先 `-Check`)。
+4. **同一时间只允许一个 Codex 窗口使用 codesys MCP**(多实例抢 profile 会致 IDE 退出)。
+5. **`write_variable` 是 FORCE 强制写值**,不解除一直生效;真机 download/start_stop/write 前必须与用户确认安全状态。
+6. **eval_python 仅作审计用途**;常规操作走正规 MCP 工具;**勿对已打开工程裸调 `se.projects.open()`**(卡死 IDE UI 线程)。
+7. CpStudio 重新生成会覆盖 AI 代码:生成前必备份 + diff;AI 自定义代码放独立 POU 并带项目前缀。
+
+## 4. 环境关键事实(已实测,改前核对)
+
+| 项 | 值 |
+|---|---|
+| PLC IDE | `C:\ctrlXWORKS\ctrlXPLCEngineering\PLE_V_0206\StudioPlc\Common\ctrlX-PLC-Engineering.exe` |
+| profile(必须精确) | `ctrlX PLC 2.6.8` |
+| MCP 模式 | **persistent 唯一可行**(ctrlX 品牌 IDE headless 不可用) |
+| MCP resource server 名 | `codesys-persistent` |
+| Codex 配置 | `C:\Users\AGZ1WX\.codex\config.toml`(本仓库 `config/codex.config.toml.example` 为副本) |
+| 库仓库 | `C:\ProgramData\Rexroth\PLE-V-0206\0\Studio\Managed Libraries`(OpCon 全套,编译时占位符自动解析,**PLC 侧不依赖 CpStudio**) |
+| 模板 | `C:\ctrlXWORKS\ctrlXPLCEngineering\PLE_V_0206\Studio\Templates\Standard.project`(=TrainingStation 拷贝,含 OpCon 骨架+34 库占位符) |
+| 参考样板 | 桌面 `To_Participants_ctrlX_V2.6.10_CN\TrainingStation\...`(只读参考,不分发) |
+| 测试工程 | `C:\A_Documents\A_Projects\A_Software\PLC_Generate\TestOes\mcp_test\TS_PLC_TEST.project` |
+| 编译基准 | 培训样板固有符号警告(Loc*/SqC*),**以 errors=0 为准** |
+
+## 5. MCP 使用速记
+
+- 卡死恢复:`shutdown_codesys`(SIGKILL 兜底)→ 下次调用自动重启;日志 `%TEMP%\codesys-mcp-persistent\<session>\watcher_error.txt`
+- `get_compile_messages` 返回**上次编译的缓存**——改代码后先 `compile_project` 再取消息
+- IronPython 2.7 脚本引擎;脚本 API 速查见基线文档第 8 章
+- 补丁体检:`apply-crlf-patch.ps1 -Check`
+
+## 6. 文档与提交约定
+
+- **事实源分工**:结论性技术事实 → `docs/ctrlX_AI_project_baseline.md`;过程与决策流水 → `docs/SESSION_LOG.md`;
+  路线规划与执行进度 → `docs/ctrlX_tech_routes.html`(§7 清单勾选即进度)
+- **MD 是源,HTML 是产物**:改完 `ctrlX_AI_project_baseline.md` 后运行 `python scripts/md2html.py` 重新生成 HTML
+- 重大环境/配置/补丁变更:**更新文档 → 提交 → 推送**,一次做完
+- 提交信息风格:`docs:` / `patches:` / `scripts:` / `config:` / `hmi:` 前缀 + 简述;中文正文可
+- 日期一律 ISO 格式(YYYY-MM-DD);新增决策追加到 SESSION_LOG 决策清单与基线红线章节
+
+## 7. 当前状态快照(2026-08-12)
+
+- [x] 阶段 0:环境基线 + persistent 上线验证 + CRLF 补丁产品化
+- [ ] 阶段 A(进行中):用户 CpStudio 骨架 → AI 填充逻辑(阶段 3)→ 仿真 → 真机
+- [ ] 阶段 B:路线② HMI 原型(OPC UA demo → hmi-framework,主画面 Avalonia 原生壳,Web 版远程备选)
+- [ ] 阶段 C:路线③ 标准 CODESYS + MCP 实测(先验证后买授权)
+- [ ] 阶段 D:路线④ PREEMPT_RT + IgH 抖动实验

@@ -47,6 +47,7 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 
 ```
 ├── README.md                  ← 本文件
+├── AGENTS.md                  ← AI Agent 工作指南(先读)
 ├── docs/
 │   ├── ctrlX_AI_project_baseline.md    ← 基线记录(权威文档,11 章)
 │   ├── ctrlX_AI_project_baseline.html  ← 基线记录 HTML 版
