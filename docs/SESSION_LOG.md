@@ -51,6 +51,13 @@
 - 修订 templates/(补 Linux 派生命令、显式会话循环、data/ 约定、衍生项目登记);
 - 从模板派生 FreePLCDemo(D14),四文档写入实测事实;route4 HANDOVER §7 / TODO 全面更新。
 
+### 2026-08-12 晚 · FreePLCDemo 设计定案 + v4 上线
+- 设计讨论全部定案(存档 FreePLCDemo/docs/design-discussions-2026-08-12.md):
+  P4=路线 A(igh_shm 插件);周期=总线 1ms×扫描 10ms;cycle 线程绑核 11;
+  seq 咬合+双拷防撕裂;喂狗协议(manual_mode+heartbeat 2s);HMI=Avalonia(D10)+OPC UA;
+- OpenPLC v4 安装完成并运行(:8443+JWT);安装坑:cmake≥3.28(pip 清华源)、tarball 非 git 仓库(跳过原生插件);
+- HMI Web 原型上线 :8091(代理网关规避 dashboard 无 CORS);SOEM 原生插件未构建=物理防误用。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |
