@@ -60,7 +60,8 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 │   └── codesys-mcp-persistent-crlf/    ← ⭐ ctrlX IDE 必需补丁 + 一键脚本
 ├── scripts/                            ← 环境采集脚本
 ├── mcp_test/                           ← MCP 验证用 IronPython 脚本(.project 二进制不入库)
-└── templates/                          ← ai-repo-skeleton:新代码项目骨架模板(四文档纪律)
+├── templates/                          ← ai-repo-skeleton:新代码项目骨架模板(四文档纪律)
+└── route4-rtpreempt-openplc/           ← 路线④ PREEMPT_RT+IgH+OpenPLC 交接(独立 Linux 机开发)
 ```
 
 ## 快速上手(复现本环境)
