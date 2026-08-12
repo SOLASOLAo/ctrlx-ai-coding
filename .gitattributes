@@ -1,0 +1,6 @@
+* text=auto
+# keep patch-related and python files LF (npm package / IronPython convention)
+*.patch text eol=lf
+*.orig text eol=lf
+*.patched text eol=lf
+*.py text eol=lf

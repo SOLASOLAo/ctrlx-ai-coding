@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ctrlX AI 项目基线记录</title>
+<style>
+  :root { --fg:#1a2332; --muted:#5c6b7f; --accent:#0b6e4f; --line:#dde4ec; --code-bg:#f4f6f9; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; color: var(--fg);
+         max-width: 980px; margin: 0 auto; padding: 32px 28px 80px; line-height: 1.65; }
+  h1 { border-bottom: 3px solid var(--accent); padding-bottom: 10px; }
+  h2 { margin-top: 2em; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  h3 { margin-top: 1.5em; color: #234; }
+  blockquote { border-left: 4px solid var(--accent); margin: 1em 0; padding: 6px 16px;
+               background: #f0f7f4; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #eef2f7; }
+  code { background: var(--code-bg); padding: 2px 5px; border-radius: 4px;
+         font-family: Consolas, "Courier New", monospace; font-size: 0.92em; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 14px 16px; border-radius: 8px;
+        overflow-x: auto; line-height: 1.5; }
+  pre code { background: none; color: inherit; padding: 0; }
+  hr { border: none; border-top: 1px solid var(--line); margin: 2.2em 0; }
+</style>
+</head>
+<body>
+<h1 id="ctrlx-ai-md">ctrlX AI 项目基线记录(MD 版)</h1>
+<blockquote>
+<p>Persistent MCP + Control plus Studio 混合工作流
+记录日期:2026-08-11 · 更新:2026-08-12(persistent 上线验证)· 机器:AGZ1WX-APAC
+配套 HTML:<code>ctrlX_AI_project_baseline.html</code>(同目录)</p>
+</blockquote>
+<hr />
+<h2 id="0-2026-08-11">0. 分工约定(2026-08-11 确定)</h2>
+<table>
+<thead>
+<tr>
+<th>角色</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>用户(人)</strong></td>
+<td>CpStudio 搭骨架:Station/Module/Command 层级、HMI 画面、handler/变量定义、库导出、<strong>骨架模板的制作与维护</strong></td>
+</tr>
+<tr>
+<td><strong>AI(persistent MCP)</strong></td>
+<td><strong>PLC 代码细节</strong>:SqM_Auto/Manual、SqS 序列、单元工艺逻辑、编译-修复闭环、下载调试辅助</td>
+</tr>
+</tbody>
+</table>
+<p>约定要点:
+- 骨架模板(从 Standard.project 剥离 TrainingStation 专属内容)由<strong>用户</strong>自行整理,AI 不代做
+- CpStudio 重新生成后,AI 先 diff 确认自定义代码未被覆盖再继续
+- HMI 符号名一旦骨架阶段定下,PLC 侧保持不变,避免回炉 CpStudio</p>
+<hr />
+<h2 id="1">1. 总体架构</h2>
+<pre><code>阶段1 CpStudio V5.11(人,一次性)
+   Station/Module/Command 层级 + HMI + handler/变量 + OpCon 状态机骨架 → 一键生成/导出
+        ↓
+阶段2 硬件组态(人)
+   ctrlX 默认 IP 网页 → EtherCAT 配置 → ctrlX IO Engineering 组态 IO
+        ↓
+阶段3 AI + persistent MCP(主力)
+   在 .project 内写 SqM/SqS/自动/手动细节; set_pou_code → compile(结构化错误) → 修复 → save
+        ↓
+阶段4 下载调试(MCP 在线工具)
+   set_simulation_mode → connect → download → start/stop → read/write_variable → monitor
+</code></pre>
+<p>核心前提(均已实测):
+- <code>.project</code> 是<strong>加密容器</strong>,不能手改文件,只能经 IDE 脚本引擎(MCP 驱动)修改
+- 所需全部库已在本地托管库仓库,编译时占位符自动解析,<strong>PLC 侧不再依赖 CpStudio</strong></p>
+<hr />
+<h2 id="2">2. 已安装软件与版本</h2>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>版本</th>
+<th>路径</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Control plus Studio (CpStudio)</td>
+<td>V5.11 (5.11.0.169);另有 V5.8/V5.5</td>
+<td><code>C:\Nexeed\Automation\CSV5_11\Bosch.Nexeed.Automation.CpStudio.exe</code></td>
+<td>低代码平台:HMI+PLC 代码生成、库管理、一键导出(仅搭骨架用)</td>
+</tr>
+<tr>
+<td>ctrlX WORKS</td>
+<td>WRK-V-0206.4 (2.6.4)</td>
+<td><code>C:\ctrlXWORKS\ctrlXWORKS\WRK_V_0206</code></td>
+<td>ctrlX 套件容器</td>
+</tr>
+<tr>
+<td>ctrlX PLC Engineering</td>
+<td>PLE-V-0206.8 (2.6.8);exe 2.3.7.5,CODESYS 3.5.19.70 内核</td>
+<td><code>C:\ctrlXWORKS\ctrlXPLCEngineering\PLE_V_0206\StudioPlc\Common\ctrlX-PLC-Engineering.exe</code></td>
+<td><strong>PLC 编程 IDE,MCP 驱动对象</strong>;profile = <code>ctrlX PLC 2.6.8</code></td>
+</tr>
+<tr>
+<td>ctrlX IO Engineering</td>
+<td>IOE-V-0206.4 (2.6.4)</td>
+<td><code>C:\ctrlXWORKS\ctrlXIOEngineering</code></td>
+<td>IO 硬件组态(EtherCAT)</td>
+</tr>
+<tr>
+<td>OpCon 工具链</td>
+<td>OES V3.0~V4.11、OpConStudio</td>
+<td><code>C:\OpCon\</code></td>
+<td>OpCon 标准工具(参考)</td>
+</tr>
+<tr>
+<td>本地服务</td>
+<td>ctrlX PLC Gateway 1.6.3.0、Service Control、UaGateway</td>
+<td>Windows 服务</td>
+<td>虚拟 PLC / OPC UA 网关,保持 Running</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3">3. 工程文件解剖(关键路径)</h2>
+<p>参考样板:TrainingStation(ctrlX V2.6.10 培训包)
+<code>C:\Users\AGZ1WX\Desktop\To_Participants_ctrlX_V2.6.10_CN\TrainingStation\TrainingStationV5.11_CtrlXV2.6.10</code></p>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Station\Engineering\TrainingStationRunningV5.11_CtrlX.cpsp</code></td>
+<td>CpStudio 工程索引(4 行 XML,指向数据文件)</td>
+</tr>
+<tr>
+<td><code>Station\Engineering\Engineering_Data.xml</code></td>
+<td>OpCon 低代码模型(10MB,根元素 <code>&lt;OpConData xmlns="Bosch.OpCon.Data"&gt;</code>,HandlerTable/LogicTable/ClassTable),纯 XML,生成器源模型</td>
+</tr>
+<tr>
+<td><code>Station\Plc\TrainingStationRunningV5.11_CtrlX_PLC.project</code></td>
+<td><strong>PLC 工程生成物</strong>(1,299,376 B,加密容器)</td>
+</tr>
+<tr>
+<td><code>Station\Plc\TrainingStationRunningV5.11_CtrlX_IO.project</code></td>
+<td>IO 工程</td>
+</tr>
+<tr>
+<td><code>Station\Plc\*_PLC.Device.Application.xml</code></td>
+<td>Symbolconfiguration 导出(纯 XML,可读符号层级)</td>
+</tr>
+<tr>
+<td><code>Std\Objects\</code></td>
+<td>低代码对象定义(NxUnit、NxModeHandler、NxExecUnit、NxCmdHandler…)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>.project 格式特征</strong>:所有 .project/.Backup 共享 15 字节头 <code>23 89 ED 33 14 BD 93 4B 8D A9 5D 91 08 C5 32 35</code>,内部无 XML 明文 → 手改不可行;IDE 脚本引擎透明加解密。</p>
+<p><strong>模板目录</strong> <code>C:\ctrlXWORKS\ctrlXPLCEngineering\PLE_V_0206\Studio\Templates\</code>:
+- <code>Standard.project</code> = TrainingStation PLC 工程的拷贝(新建工程默认复制它)→ 自带完整 OpCon 骨架 + 34 个库占位符(SqM_Station_Auto/Manual/Home、SqS_Station_Homing/ChangeOverFile、StationUnit/StationExtension 钩子、Addons、Structs、EtherCAT IO 树)
+- <code>Standard.project.bak-slim</code>:2026-08-04 的瘦身备份
+- <code>Empty.project</code>:13KB 空白模板;另有 PLC_Templates / MotionInterface / CheckFunctions 模板组
+- ⚠ 骨架模板整理(剥离培训站 IO 树/.Sync)由用户负责,改前必备份</p>
+<hr />
+<h2 id="4-opcon-ctrlx">4. OpCon / ctrlX 库清单</h2>
+<p>库仓库(CpStudio"导出库"的实际落点):
+<code>C:\ProgramData\Rexroth\PLE-V-0206\0\Studio\Managed Libraries</code>(1300+ 文件)
+<strong>库一旦进入仓库即脱离 CpStudio</strong>,占位符(<code>#OpconBase</code> 等)编译时自动解析。</p>
+<h3 id="robert-bosch-gmbh-opcon-platform-teamopcon">Robert Bosch GmbH – OpCon Platform Team(OpCon 框架核心)</h3>
+<table>
+<thead>
+<tr>
+<th>库</th>
+<th>版本</th>
+<th>库</th>
+<th>版本</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>OpconBase</strong>(核心状态机)</td>
+<td>1.0.81.0</td>
+<td>OpconAnalogBase</td>
+<td>1.0.6.0</td>
+</tr>
+<tr>
+<td>OpconBaseCommonDef</td>
+<td>1.0.7.0</td>
+<td>OpconEventRecorder</td>
+<td>1.1.2.0</td>
+</tr>
+<tr>
+<td>OpconFbpBase</td>
+<td>1.0.10.0</td>
+<td>OpconPartCounter</td>
+<td>1.1.2.0</td>
+</tr>
+<tr>
+<td>AtmoBasMoveBase</td>
+<td>2.1.2.0</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="bosch-group">Bosch Group(数据集 / 外设 / 系统依赖)</h3>
+<table>
+<thead>
+<tr>
+<th>库</th>
+<th>版本</th>
+<th>库</th>
+<th>版本</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OpconDataDefBase</td>
+<td>1.3.3.0</td>
+<td>NxFileSysDep_CXA</td>
+<td>1.0.5.0</td>
+</tr>
+<tr>
+<td>OpconDataSetBase</td>
+<td>1.1.2.0</td>
+<td>NxSocketSysDep_CXA</td>
+<td>1.0.7.0</td>
+</tr>
+<tr>
+<td>OpconDataSetManagerAddon</td>
+<td>1.3.2.0</td>
+<td>NxOpcuaSysDep_CXA</td>
+<td>1.0.1.0</td>
+</tr>
+<tr>
+<td>OpconPublicInterfaceBase</td>
+<td>1.0.2.0</td>
+<td>NxCtrlXSysEventAddon</td>
+<td>1.0.0.0</td>
+</tr>
+<tr>
+<td>OpconTcpDDL</td>
+<td>1.2.6.0</td>
+<td>NxCycleTimeAssistAddon</td>
+<td>1.0.3.0</td>
+</tr>
+<tr>
+<td>NxBaseSysDep_CXA</td>
+<td>1.0.6.0</td>
+<td>AtmoEcBcEx3xxx</td>
+<td>2.1.12.0</td>
+</tr>
+<tr>
+<td>NxFbpEcBase_CXA</td>
+<td>2.0.4.0</td>
+<td>AtmoEcBcEx600x</td>
+<td>2.0.6.0</td>
+</tr>
+</tbody>
+</table>
+<h3 id="bosch-rexroth-agctrlx">Bosch Rexroth AG(ctrlX 平台库)</h3>
+<p>全套 <code>CXA_*</code>:Datalayer、Motion(Ext/Interface/Printing…)、OpcUaServer/Client/Common/Ext、EthercatMaster、ModbusTCP/RTU、Python、PLCopen、FileAsync、Flatbuffers、LoopControl、RegisterControl、S20 系列、CXAC_Base/Licensing 等。</p>
+<h3 id="trainingstation-34">TrainingStation 工程的 34 个库占位符</h3>
+<pre><code>#Tc2_System #IecVarAccess #IecSfc #Analyzation #CXA_BASE #CXA_COMMONTYPES #CXA_UTILITIES
+#OpconBaseSysDep #AtmoEcBcEx600x #OpconBase #OpconFbpBase #OpconBaseCommonDef #OpconFbpEcBase
+#OpconAnalogBase #AtmoEcBcEx3xxx #AtmoBasMoveBase #NxCycleTimeAssistAddon #OpconPartCounter
+#NxCtrlXSysEventAddon #OpconSocketSysDep #OpconEventRecorder #OpconDataSetBase #OpconFileSysDep
+#OpconTcpDDL #OpconPublicInterfaceBase #OpconDataSetManagerAddon #OpconDataDefBase #OpconOpcuaSysDep
+#IoStandard #Standard #3SLicense #BreakpointLogging #CXA_LICENSING #CXA_MODBUSTCP
+</code></pre>
+<p>⚠ <code>lm.add_library("OpconBase")</code> 按<strong>名字</strong>添加占位符会报 "could not be resolved";新增库用<strong>文件路径</strong>方式,或依赖模板占位符 + 仓库自动解析。</p>
+<hr />
+<h2 id="5-mcp-2026-08-11">5. MCP 配置(2026-08-11 生效)</h2>
+<p>配置文件:<code>C:\Users\AGZ1WX\.codex\config.toml</code>(原始备份 <code>config.toml.bak_20260811</code>)</p>
+<pre><code class="language-toml">[mcp_servers.codesys-persistent]
+command = &quot;codesys-mcp-persistent&quot;
+args = [&quot;--codesys-path&quot;, &quot;C:\\ctrlXWORKS\\ctrlXPLCEngineering\\PLE_V_0206\\StudioPlc\\Common\\ctrlX-PLC-Engineering.exe&quot;, &quot;--codesys-profile&quot;, &quot;ctrlX PLC 2.6.8&quot;, &quot;--workspace&quot;, &quot;C:\\A_Documents\\A_Projects\\A_Software\\PLC_Generate&quot;, &quot;--mode&quot;, &quot;persistent&quot;]
+
+# --- fallback: old @codesys/mcp-toolkit (headless per-call, slower; kept for emergency) ---
+# [mcp_servers.ctrlx-codesys]
+# command = &quot;node&quot;
+# args = [&quot;C:\\Users\\AGZ1WX\\AppData\\Roaming\\npm\\node_modules\\@codesys\\mcp-toolkit\\dist\\bin.js&quot;, &quot;--codesys-path&quot;, &quot;…ctrlX-PLC-Engineering.exe&quot;, &quot;--codesys-profile&quot;, &quot;ctrlX PLC 2.6.8&quot;, &quot;--workspace&quot;, &quot;C:\\A_Documents\\A_Projects\\A_Software\\PLC_Generate&quot;]
+</code></pre>
+<h3 id="mcp">两个 MCP 包对比</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>codesys-mcp-persistent v0.6.3 ✅当前</th>
+<th>@codesys/mcp-toolkit v1.1.16(回退)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>作者</td>
+<td>luke-harriman / Codesys-MCP(2026-05 更新)</td>
+<td>johannesPettersson80</td>
+</tr>
+<tr>
+<td>架构</td>
+<td>常驻带 UI 的 IDE + watcher 线程 + %TEMP% 文件 IPC,命令延迟 ~50ms</td>
+<td>每次调用新起无头 IDE,15~100s/次</td>
+</tr>
+<tr>
+<td>规模</td>
+<td><strong>44 工具 + 3 resource</strong></td>
+<td>8 工具 + 3 resource</td>
+</tr>
+<tr>
+<td>编译反馈</td>
+<td>compile_project 返回结构化结果;get_compile_messages</td>
+<td>只触发 build,不回结果</td>
+</tr>
+<tr>
+<td>读代码</td>
+<td>get_all_pou_code / search_code / find_references(工具级)</td>
+<td>仅 resource 通道</td>
+</tr>
+<tr>
+<td>在线</td>
+<td>connect/download/start_stop/read_write_variable/monitor/simulation</td>
+<td>无</td>
+</tr>
+<tr>
+<td>ctrlX headless</td>
+<td>❌ 回退模式无品牌 IDE 退出补丁(60s 超时)→ <strong>必须 <code>--mode persistent</code></strong></td>
+<td>✅ 内置 ctrlX Environment.Exit 补丁</td>
+</tr>
+</tbody>
+</table>
+<h3 id="persistent-44">persistent 工具清单(44)</h3>
+<ul>
+<li>会话:launch_codesys、shutdown_codesys、get_codesys_status、eval_python(兜底任意 IronPython)</li>
+<li>工程:open_project、create_project、list_project_templates、save_project、create_project_archive</li>
+<li>代码编辑:create_pou、set_pou_code、create_property、create_method、create_dut、create_gvl、create_folder、delete_object、rename_object</li>
+<li>读取/搜索:get_all_pou_code、search_code、find_references、rename_symbol;resource:project-status / project-structure / pou-code</li>
+<li>编译:compile_project(结构化结果)、get_compile_messages</li>
+<li>库:add_library、list_project_libraries</li>
+<li>设备树:add_device、list_device_repository、inspect_device_node、set_device_parameter(实验)、map_io_channel</li>
+<li>在线:connect_to_device、set_credentials、set_simulation_mode、disconnect_from_device、get_application_state、download_to_device、start_stop_application、read_variable、write_variable、monitor_variables</li>
+</ul>
+<h3 id="_1">运行机制</h3>
+<ul>
+<li>IPC 目录:<code>%TEMP%\codesys-mcp-persistent\&lt;sessionId&gt;\</code>(commands/ results/ watcher.py ready.signal terminate.signal)</li>
+<li>watcher 在 IDE 内 <code>--runscript</code> 启动,50ms 轮询,命令经 <code>execute_on_primary_thread</code> 调度到 UI 线程;互斥串行;默认超时 60s(编译 120s);健康监控 5s/次;重启自动接管存活会话</li>
+<li>IDE 同时开 REST API:<code>http://localhost:9002</code>(Swagger: plc-engineering-api-v2.json)——备用通道</li>
+</ul>
+<hr />
+<h2 id="6-2026-08-06-08-11">6. 已验证结论(实测 2026-08-06 ~ 08-11)</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>测试项</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>MCP 打开 TrainingStation .project 副本(加密容器)</td>
+<td>✅ 脚本引擎透明解密</td>
+</tr>
+<tr>
+<td>2</td>
+<td>create_pou 建 MCP_TestPRG + set_pou_code 写声明与实现</td>
+<td>✅ 自动保存</td>
+</tr>
+<tr>
+<td>3</td>
+<td>读回校验(textual_declaration.text / textual_implementation.text)</td>
+<td>✅ 逐字一致</td>
+</tr>
+<tr>
+<td>4</td>
+<td>TrainingStation 副本全工程编译(含 AI 新增 POU)</td>
+<td>✅ <strong>0 errors, 2 warnings</strong>(C373 为生成代码自带)</td>
+</tr>
+<tr>
+<td>5</td>
+<td>create_project 新建 AI_Only_Test.project</td>
+<td>✅ 自带 OpCon 骨架 + 34 占位符,编译 0 errors → <strong>PLC 侧可完全绕开 CpStudio</strong></td>
+</tr>
+<tr>
+<td>6</td>
+<td>MCP resource 读回 structure / pou-code</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>7</td>
+<td>add_library 按占位符名字添加</td>
+<td>❌ "could not be resolved" → 用文件路径</td>
+</tr>
+<tr>
+<td>8</td>
+<td>ctrlX IDE 内脚本返回后后台线程存活(persistent 核心机制)</td>
+<td>✅ 返回后 2s/6s 信号均写出</td>
+</tr>
+<tr>
+<td>9</td>
+<td>se.system.get_messages() / lm.get_libraries() / app.build()</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>10</td>
+<td>headless 模式用于 ctrlX 品牌 IDE</td>
+<td>⚠ 不可用(无退出补丁)</td>
+</tr>
+</tbody>
+</table>
+<p>测试产物:<code>C:\A_Documents\A_Projects\A_Software\PLC_Generate\TestOes\mcp_test\</code>
+(TS_PLC_TEST.project 含 MCP_TestPRG、AI_Only_Test.project、readback/build/libs/addlibs/struct 脚本、watcher_probe 探针)</p>
+<hr />
+<h2 id="7-2026-08-12-persistent">7. 2026-08-12 persistent 上线验证与修复</h2>
+<blockquote>
+<p>当日完成 codesys-persistent v0.6.3 在 ctrlX IDE 上的完整上线验证,修复 MCP 包 CRLF 缺陷 1 处,明确多实例竞态与 eval_python 两条操作红线。</p>
+</blockquote>
+<h3 id="71-persistent">7.1 persistent 正式生效</h3>
+<ul>
+<li><code>config.toml</code> 已启用 <code>[mcp_servers.codesys-persistent]</code>(v0.6.3,44 工具,<code>--mode persistent</code>);旧 <code>@codesys/mcp-toolkit</code> 块注释保留为应急回退(配置详情见 §5)</li>
+<li>headless 在 ctrlX 品牌 IDE 不可用(无退出补丁)→ <strong>persistent 为唯一可行路线</strong>;IDE 以可见窗口启动,会话跨调用常驻,Codex 被强杀后下次启动自动接管会话</li>
+<li>Resource server 名:<code>codesys-persistent</code>;URI:<code>codesys://project/{path}/structure</code>、<code>.../pou/{pou_path}/code</code>、<code>codesys://project/status</code></li>
+</ul>
+<h3 id="72-crlf">7.2 CRLF 缺陷与补丁(重要)</h3>
+<ul>
+<li><strong>症状</strong>:<code>compile_project</code> / <code>get_compile_messages</code> 报 <code>SyntaxError: unexpected token '\r'</code></li>
+<li><strong>根因</strong>:MCP 包 <code>_message_utils.py</code> 混入 1 处 CRLF;ctrlX IronPython 脚本引擎 <code>exec()</code> 不容忍混合行尾(helper 代码以 LF 注入 + 模板脚本为 CRLF)</li>
+<li><strong>补丁位置</strong>(<code>C:\Users\AGZ1WX\AppData\Roaming\npm\node_modules\codesys-mcp-persistent\dist\scripts\</code>):</li>
+<li><code>watcher.py</code> 第 162 行后(读入命令脚本之后)插入行尾归一化:<code>script_code.replace("\r\n","\n").replace("\r","\n")</code>,注释标记 <code>ctrlX PATCH (2026-08-12)</code>;原文件备份为 <code>watcher.py.bak_orig</code></li>
+<li><code>_message_utils.py</code> 全文 CRLF→LF(已验证 0 处 CRLF)</li>
+<li><strong>效果</strong>:compile_project / get_compile_messages 恢复正常,返回结构化编译消息</li>
+<li>⚠ <strong>npm 升级该包会覆盖补丁</strong>,升级后必须重做上述两步</li>
+</ul>
+<h3 id="73-ide">7.3 多实例竞态:IDE 自行退出</h3>
+<ul>
+<li><strong>症状</strong>:早晨 IDE 自行退出(exit code 0),MCP 工具全部超时</li>
+<li><strong>诊断</strong>:3 个并行 node MCP server 进程(PID 19712/23932/26240)各自启动 IDE,争抢同一 profile <code>ctrlX PLC 2.6.8</code>,在约 60s ready 窗口内竞态导致退出</li>
+<li><strong>规则</strong>:<strong>同一时间只允许一个 Codex 窗口使用本 MCP</strong>;ready 后新 server 会接管既有会话;工具列表偶发闪断(多 server 实例并存所致)重试即可</li>
+</ul>
+<h3 id="74-eval_python">7.4 eval_python 陷阱</h3>
+<ul>
+<li>对已打开工程裸调 <code>se.projects.open()</code> 会<strong>卡死 IDE UI 线程</strong>(疑触发模态对话框),阻塞整个命令队列 → 恢复手段仅 <code>shutdown_codesys</code>(有 SIGKILL 兜底)+ 重启</li>
+<li>正确姿势:用 <code>se.projects.primary</code> 取当前工程,或直接走正规工具(open_project / set_pou_code / compile_project…)</li>
+<li><code>timeoutMs</code> 参数必须传 number,不能传 string</li>
+</ul>
+<h3 id="75">7.5 冒烟结果</h3>
+<ul>
+<li>IDE PID 3548(08-12 09:18:57 启动),session <code>9094d883</code>,状态 ready;<code>TS_PLC_TEST.project</code> 已打开</li>
+<li>compile_project:<strong>0 errors, 35 warnings</strong>(全部为 Loc<em>/SqC</em>/SqM* 符号配置引用警告,培训样板工程固有);IDE 构建日志 <code>Build complete -- 0 errors, 69 warnings : Ready for download</code>(结构化消息与完整日志统计口径不同,以 errors=0 为准)</li>
+<li>说明:get_compile_messages 曾出现的 iCounter/bMcpActive 两条 error 系早晨坏会话的陈旧消息(该工具返回上次编译的缓存);POU 代码经 pou-code resource 验证完好,重新编译后缓存已刷新</li>
+</ul>
+<h3 id="76">7.6 分工再确认</h3>
+<ul>
+<li>干净的 OpCon 骨架模板现在不由 AI 代做;之后<strong>用户做骨架</strong>(CpStudio 层级/HMI/模板),<strong>AI 负责 PLC 代码细节</strong>(自动/手动、SqM/SqS、工艺逻辑)——与 §0 一致;骨架就绪前 AI 不启动阶段 3</li>
+</ul>
+<hr />
+<h2 id="8-api-ironpython-27ctrlx">8. 脚本 API 速查(IronPython 2.7,ctrlX 脚本引擎)</h2>
+<pre><code class="language-python">import scriptengine as se
+proj = se.projects.open(r&quot;C:\...\X.project&quot;)   # ScriptProject 无 get_name()
+app  = proj.active_application                 # &quot;Application&quot;
+
+# 遍历(动态成员,dir() 看不到;get_child 不存在,用迭代)
+for k in app.get_children(False):  k.get_name()
+
+# POU 读写
+pou.textual_declaration.text        # 声明文本
+pou.textual_implementation.text     # 实现文本
+pou.textual_declaration.replace(s)  # 写文本
+
+# 库
+lm = [k for k in app.get_children(False) if k.get_name()==&quot;Library Manager&quot;][0]
+lm.get_libraries()                  # 34 个 &quot;#占位符&quot;
+lm.add_library(...)                 # 按名字加占位符会失败
+
+# 编译
+app.build()                         # 输出 &quot;Compile complete -- X errors, Y warnings&quot;
+se.system.get_messages()
+
+# 退出(品牌 IDE 不自动退):脚本末尾
+import System; System.Environment.Exit(0)
+</code></pre>
+<p>手动运行:</p>
+<pre><code>ctrlX-PLC-Engineering.exe --profile=&quot;ctrlX PLC 2.6.8&quot; --noUI --runscript=&quot;脚本.py&quot;
+</code></pre>
+<p>(工作目录设为 exe 所在目录)</p>
+<hr />
+<h2 id="9">9. 项目实施路线</h2>
+<ul>
+<li>[x] <strong>阶段 0 · 环境基线</strong>(2026-08-11 完成,08-12 persistent 上线验证通过 → 见第 7 章):MCP 切 persistent;库/模板/样板盘点;~~干净骨架模板~~ → 归用户职责,不阻塞</li>
+<li>[ ] <strong>阶段 1 · CpStudio 搭骨架(用户,一次性)</strong>:层级/HMI/handler/变量/库导出 → 一键生成;检查点 = PLE 打开编译 0 error,符号配置与 HMI 画面对上</li>
+<li>[ ] <strong>阶段 2 · 硬件与 IO 组态(用户)</strong>:默认 IP 网页 → EtherCAT → ctrlX IO Engineering;IO 符号对接(map_io_channel 可 AI 辅助)</li>
+<li>[ ] <strong>阶段 3 · AI 填充逻辑(主力)</strong>:get_all_pou_code/search_code 读骨架 → 写 SqM_Auto/Manual、SqS、工艺逻辑(参考样板 = TrainingStation 生成代码)→ compile(结构化错误)→ 修复 → save;自定义代码放独立 POU/文件夹并带项目前缀</li>
+<li>[ ] <strong>阶段 4 · 下载调试</strong>:set_simulation_mode 先验证 → 真机 connect/download/start_stop → read/write/monitor;里程碑 create_project_archive</li>
+<li>[ ] <strong>阶段 5 · 迭代</strong>:HMI 改动回 CpStudio;PLC 改动只走 MCP 且保持符号名;每次重新生成后先 diff 存档</li>
+</ul>
+<hr />
+<h2 id="10">10. 规则与红线</h2>
+<ul>
+<li>🔴 <code>write_variable</code> 是<strong>强制写值(FORCE)</strong>,不解除一直生效;真机操作前确认安全状态。download/start_stop 对真机有实权</li>
+<li>🔴 不手改 .project 字节(加密容器);CpStudio 重新生成前必备份 AI 改动</li>
+<li>🟡 每个 MCP 会话弹出可见 IDE 窗口(设计如此,便于监督);勿在窗口内做与 AI 冲突的手动修改</li>
+<li>🟡 勿同时打开多个使用 codesys-persistent 的 Codex 窗口(多实例竞态致 IDE 退出,见 §7.3)</li>
+<li>🟡 Codex 被强杀可能残留 IDE:下次启动自动接管,失败则手动结束(查 %TEMP%\codesys-mcp-persistent 会话目录)</li>
+<li>🟡 eval_python 可执行任意 IronPython,谨慎使用;<strong>勿对已打开工程裸调 <code>se.projects.open()</code></strong>(卡死 UI 线程,见 §7.4)</li>
+<li>🟢 版本线:PLE 2.6.8 打开/编译 2.6.10 培训包工程无碍;更新版本生成的工程打开时留意转换提示</li>
+<li>🟢 备份约定:config 改动留 <code>.bak_YYYYMMDD</code>;模板改动先复制;里程碑用 create_project_archive</li>
+</ul>
+<hr />
+<h2 id="11-faq">11. 故障排查 FAQ</h2>
+<table>
+<thead>
+<tr>
+<th>症状</th>
+<th>处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MCP 工具全部超时</td>
+<td>get_codesys_status → launch_codesys;查 %TEMP%\codesys-mcp-persistent\<session>\watcher_error.txt</td>
+</tr>
+<tr>
+<td>ready.signal 不出现</td>
+<td>profile 名必须精确 <code>ctrlX PLC 2.6.8</code>;exe 路径是否变动</td>
+</tr>
+<tr>
+<td>打开工程报版本不兼容</td>
+<td>工程由更新 PLE 生成 → 先在 IDE 手动打开一次完成转换</td>
+</tr>
+<tr>
+<td>编译报占位符库缺失</td>
+<td>库不在仓库 → CpStudio 导出一次或 add_library(文件路径)</td>
+</tr>
+<tr>
+<td>想回退旧工具链</td>
+<td>config.toml 两个 mcp_servers 块注释对调,重启 Codex</td>
+</tr>
+<tr>
+<td>残留 ctrlX-PLC-Engineering 进程</td>
+<td>按 StartTime 甄别后再杀,别杀用户实例</td>
+</tr>
+<tr>
+<td>编译脚本报 <code>SyntaxError: unexpected token '\r'</code></td>
+<td>CRLF 缺陷 → 按 §7.2 打 watcher.py 行尾归一化补丁;注意 npm 升级会覆盖补丁</td>
+</tr>
+<tr>
+<td>IDE 自行退出(code 0)且当时开了多个 Codex 窗口</td>
+<td>多实例争抢 profile,见 §7.3:只保留一个窗口;ready 后新 server 自动接管</td>
+</tr>
+<tr>
+<td>eval_python 卡死整个 MCP 队列</td>
+<td>shutdown_codesys 强杀重启;已打开工程用 se.projects.primary,勿裸调 projects.open()</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

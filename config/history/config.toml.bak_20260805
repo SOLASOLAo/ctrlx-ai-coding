@@ -1,0 +1,35 @@
+model_catalog_json = "~/.codex/model-catalog.local.json"
+
+model_provider = "Model_Studio_Token_Plan_Personal"
+model = "qwen3.8-max-preview"
+[model_providers.Model_Studio_Token_Plan_Personal]
+name = "Model_Studio_Token_Plan_Personal"
+base_url = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+
+[projects.'c:\a_documents\a_projects\a_software\agv_aubot project\doc\rokae\xcoresdk_cpp-v0.7.1']
+trust_level = "trusted"
+
+[projects.'c:\users\agz1wx\desktop\new folder']
+trust_level = "trusted"
+
+[projects.'c:\a_documents\a_projects\a_software\agv_aubot project\doc\rokae\demo\servojrt']
+trust_level = "trusted"
+
+[projects.'c:\a_documents\a_projects\a_software\plc_generate']
+trust_level = "trusted"
+
+[projects.'c:\a_documents\a_projects\a_software\plc_generate\demo']
+trust_level = "trusted"
+
+[windows]
+sandbox = "unelevated"
+
+# [mcp_servers.ctrlx-codesys]
+# command = "node"
+# args = ["C:\\Users\\AGZ1WX\\AppData\\Roaming\\npm\\node_modules\\@codesys\\mcp-toolkit\\dist\\bin.js", "--codesys-path", "C:\\ctrlXWORKS\\ctrlXPLCEngineering\\PLE_V_0206\\StudioPlc\\Common\\ctrlX-PLC-Engineering.exe", "--codesys-profile", "ctrlX PLC 2.6.8", "--workspace", "C:\\A_Documents\\A_Projects\\A_Software\\PLC_Generate"]
+# 
+[mcp_servers.codesys-persistent]
+command = "codesys-mcp-persistent"
+args = ["--codesys-path", "C:\\ctrlXWORKS\\ctrlXPLCEngineering\\PLE_V_0206\\StudioPlc\\Common\\ctrlX-PLC-Engineering.exe", "--codesys-profile", "ctrlX PLC 2.6.8", "--workspace", "C:\\A_Documents\\A_Projects\\A_Software\\PLC_Generate", "--mode", "persistent"]

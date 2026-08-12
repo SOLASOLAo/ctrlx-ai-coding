@@ -1,0 +1,22 @@
+# CODESYS / ctrlX project binaries (encrypted, large, Bosch-template-derived)
+*.project
+*.project.~u
+*.Backup
+*.projectarchive
+*.precompilecache
+*.opt
+*.Sync.json
+*.Device.Application.xml
+*.compiled-library
+
+# Python
+__pycache__/
+*.pyc
+
+# MCP session runtime
+codesys-mcp-persistent-session*/
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.vscode/

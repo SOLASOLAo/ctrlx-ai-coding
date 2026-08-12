@@ -1,0 +1,66 @@
+﻿工控机信息收集报告（只读收集，无任何修改）
+收集时间: 2026-08-06 11:47:04
+请把本文件全部内容复制发回给我。
+
+===== 整机与BIOS信息 =====
+整机制造商  : Default string
+整机型号    : Default string
+整机序列号  : 
+主板制造商  : Default string
+主板型号    : Default string
+BIOS厂商    : American Megatrends Inc.
+BIOS版本    : S317D013-BH
+BIOS日期    : 2022-08-16
+
+===== 启动方式（关键） =====
+当前固件类型 : Legacy BIOS (传统)
+安全启动Secure Boot : 无法检测（不支持或需管理员）
+
+===== CPU =====
+型号     : Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz
+核心/线程: 6核 12线程
+架构     : x64(64位)
+
+===== 内存 =====
+总容量 : 8 GB
+内存条数量 : 
+
+===== 硬盘 =====
+[磁盘] WDC WD10SPZX-22Z10T1 | 接口:SATA | 介质:HDD | 932GB | 健康:Healthy
+[磁盘] SATA SSD | 接口:SATA | 介质:SSD | 119GB | 健康:Healthy
+[磁盘] Kingston DataTraveler 3.0 | 接口:USB | 介质:Unspecified | 29GB | 健康:Healthy
+
+-- 分区情况 --
+磁盘0 分区1 | 类型:IFS | 盘符:C | 文件系统:NTFS | 119.2GB
+磁盘1 分区1 | 类型:IFS | 盘符:D | 文件系统:NTFS | 931.5GB
+磁盘2 分区1 | 类型:Basic | 盘符:E | 文件系统:- | 4.4GB
+磁盘2 分区2 | 类型:System | 盘符:- | 文件系统:FAT | 0.0GB
+磁盘2 分区3 | 类型:Basic | 盘符:F | 文件系统:- | 0.0GB
+
+===== 磁盘控制器 =====
+Intel(R) 100 Series/C230 Chipset Family SATA AHCI Controller
+Microsoft Storage Spaces Controller
+
+===== U盘检查（请把Ubuntu启动U盘插在工控机上） =====
+U盘[磁盘2]: Kingston DataTraveler 3.0 | 28.9GB | 分区表:GPT
+  分区1: 盘符E | 文件系统 | 4.4GB
+  根目录内容: 
+  启动能力判断: 未识别出常见启动文件，请确认刻录是否成功
+  分区2: 盘符(无盘符) | 文件系统FAT | 0.0GB
+  分区3: 盘符F | 文件系统 | 0.0GB
+  根目录内容: 
+  启动能力判断: 未识别出常见启动文件，请确认刻录是否成功
+
+
+===== 网卡 =====
+Intel(R) Ethernet Connection (2) I219-LM
+Intel(R) I211 Gigabit Network Connection
+Intel(R) I211 Gigabit Network Connection #2
+
+===== 当前操作系统 =====
+Microsoft Windows 10 Enterprise LTSC | Build 17763
+
+===== 常见BIOS按键参考（具体以我后续给你的方案为准） =====
+进BIOS: 一般 Del 或 F2（个别机型 Esc / F10 / F1）
+启动菜单(一次性选U盘): 一般 F11 / F12 / F7 / Esc
+

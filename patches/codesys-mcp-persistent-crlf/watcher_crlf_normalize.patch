@@ -1,0 +1,16 @@
+diff --git a/watcher.py.orig b/watcher.py.patched
+index ef2ea9e..8e89a3d 100644
+--- a/watcher.py.orig
++++ b/watcher.py.patched
+@@ -160,6 +160,11 @@ try:
+                     script_code = _raw.decode("latin-1", errors="replace")
+             if script_code.startswith(u"\ufeff"):
+                 script_code = script_code[1:]
++            # ctrlX PATCH (2026-08-12): IronPython exec() raises
++            # SyntaxError: unexpected token '\r' on CRLF/mixed line endings
++            # (helpers prepended with LF + templates with CRLF). Normalize to LF,
++            # mirroring @codesys/mcp-toolkit interop behavior.
++            script_code = script_code.replace(u"\r\n", u"\n").replace(u"\r", u"\n")
+         except Exception as read_err:
+             _log("Error reading command: %s" % read_err)
+             atomic_write(result_path, json.dumps({
