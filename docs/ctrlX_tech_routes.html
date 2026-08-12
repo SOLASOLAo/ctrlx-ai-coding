@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ctrlX AI Coding — 技术路线规划与执行地图</title>
+<style>
+  :root { --fg:#1a2332; --muted:#5c6b7f; --accent:#0b6e4f; --accent2:#1d5b8f; --line:#dde4ec;
+          --code-bg:#f4f6f9; --warn:#b3541e; --ok:#0b6e4f; }
+  * { box-sizing:border-box; }
+  body { font-family:"Segoe UI","Microsoft YaHei",sans-serif; color:var(--fg);
+         max-width:1060px; margin:0 auto; padding:32px 28px 80px; line-height:1.65; }
+  h1 { border-bottom:3px solid var(--accent); padding-bottom:10px; }
+  h2 { margin-top:2.2em; border-bottom:1px solid var(--line); padding-bottom:6px; }
+  h3 { margin-top:1.5em; color:#234; }
+  blockquote { border-left:4px solid var(--accent); margin:1em 0; padding:6px 16px;
+               background:#f0f7f4; color:var(--muted); }
+  table { border-collapse:collapse; width:100%; margin:1em 0; font-size:14px; }
+  th,td { border:1px solid var(--line); padding:6px 10px; text-align:left; vertical-align:top; }
+  th { background:#eef2f7; }
+  code { background:var(--code-bg); padding:2px 5px; border-radius:4px;
+         font-family:Consolas,"Courier New",monospace; font-size:.92em; }
+  pre { background:#0f172a; color:#e2e8f0; padding:14px 16px; border-radius:8px;
+        overflow-x:auto; line-height:1.5; }
+  pre code { background:none; color:inherit; padding:0; }
+  hr { border:none; border-top:1px solid var(--line); margin:2.2em 0; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:12px; font-size:12px;
+           color:#fff; vertical-align:middle; margin-left:8px; }
+  .b-now   { background:#0b6e4f; }
+  .b-main  { background:#1d5b8f; }
+  .b-alt   { background:#8a6d1a; }
+  .b-far   { background:#6b7280; }
+  .b-fixed { background:#374151; }
+  .card { border:1px solid var(--line); border-radius:10px; padding:14px 18px; margin:14px 0;
+          background:#fbfcfe; }
+  .card h3 { margin-top:.2em; }
+  .ok  { color:var(--ok); font-weight:600; }
+  .warn{ color:var(--warn); font-weight:600; }
+  ul.check { list-style:none; padding-left:6px; }
+  ul.check li { margin:4px 0; padding-left:26px; position:relative; }
+  ul.check li::before { content:"☐"; position:absolute; left:2px; color:var(--muted); }
+  ul.check li.done::before { content:"☑"; color:var(--ok); }
+  .toc { background:#f7f9fc; border:1px solid var(--line); border-radius:10px;
+         padding:12px 22px; }
+  .toc a { color:var(--accent2); text-decoration:none; }
+  .small { font-size:12.5px; color:var(--muted); }
+</style>
+</head>
+<body>
+<h1>ctrlX AI Coding — 技术路线规划与执行地图</h1>
+<p class="small">日期:2026-08-12 · 作者:AGZ1WX + AI · 配套文档:<code>ctrlX_AI_project_baseline.md</code>(基线)、<code>SESSION_LOG.md</code>(决策记录)
+· 本文是<b>路线规划与逐条执行索引</b>,四条路线将按阶段逐个推进。</p>
+
+<div class="toc">
+<b>目录</b><br>
+<a href="#s0">§0 总体策略</a> · <a href="#s1">§1 四路线对比总表</a> ·
+<a href="#s2">§2 路线① CpStudio骨架+MCP(进行中)</a> · <a href="#s3">§3 路线② 自研HMI+ctrlX(主攻)</a> ·
+<a href="#s4">§4 路线③ CODESYS软PLC(备选)</a> · <a href="#s5">§5 路线④ 纯RT Linux自研(储备)</a> ·
+<a href="#s6">§6 关键技术细节 Q&amp;A</a> · <a href="#s7">§7 执行路线图与检查清单</a> · <a href="#s8">§8 红线与决策</a>
+</div>
+
+<h2 id="s0">§0 总体策略:组合打法,不是四选一</h2>
+<pre><code>现在 ────────────────────────────────► 远期
+路线① 主线生产(OpCon 交付,现金流)
+   │
+   ├─ 同步启动:路线② HMI 原型(OPC UA demo → hmi-framework)⭐ 主攻演进方向
+   │
+   ├─ 低成本验证:路线③ 标准 CODESYS + MCP 实测(有项目需求再买授权)
+   │
+   └─ 储备实验:路线④ PREEMPT_RT + IgH 抖动 demo(留数据不投产)</code></pre>
+<p>三条判断依据:</p>
+<ul>
+<li><b>公共底座只有一个</b>:无论走哪条路,需要的都是"AI 编码流水线(MCP+编译闭环)+ 可复用 HMI 框架 + 代码生成规范"——这个底座就是要做的产品本身,四条路线共用,不存在浪费;</li>
+<li><b>路线② 投入产出比最高</b>:增量只是一个 HMI 框架,换来 CpStudio 彻底退场 + 全栈 AI 化,且不放弃 ctrlX 硬件生态;</li>
+<li><b>路线③④ 是议价权与后路</b>:有 CODESYS 备选就不被 Bosch 单点绑定;有 ④ 的实验数据,未来做量产品才有底气。</li>
+</ul>
+
+<h2 id="s1">§1 四路线对比总表</h2>
+<table>
+<tr><th>维度</th><th>① CpStudio骨架+MCP</th><th>② 自研HMI+ctrlX</th><th>③ 自研HMI+CODESYS软PLC</th><th>④ RT Linux 自写逻辑</th></tr>
+<tr><td>CpStudio</td><td>保留(仅骨架)</td><td class="ok">去除</td><td class="ok">去除</td><td class="ok">去除</td></tr>
+<tr><td>ctrlX 硬件</td><td>保留</td><td>保留</td><td class="warn">去除</td><td class="warn">去除</td></tr>
+<tr><td>每台设备授权成本</td><td>含在 ctrlX 硬件</td><td>含在 ctrlX 硬件</td><td class="warn">€139~599+/台</td><td class="ok">0</td></tr>
+<tr><td>IEC 61131-3 / OpCon 生态</td><td>完整</td><td>PLC 侧保留</td><td>完整(CODESYS)</td><td>无(自造/开源运行时)</td></tr>
+<tr><td>AI 可编程比例</td><td>PLC 细节(已验证)</td><td class="ok">PLC+HMI 全栈</td><td>PLC+HMI 全栈,MCP 或更顺</td><td>全栈,但 RT 调优 AI 难替代</td></tr>
+<tr><td>自研工作量</td><td>低</td><td>中(HMI 框架)</td><td>中(HMI+部署)</td><td class="warn">极高(造一个 PLC)</td></tr>
+<tr><td>硬实时</td><td>ctrlX 保证</td><td>ctrlX 保证</td><td>CODESYS SL 软实时(够用)</td><td class="ok">PREEMPT_RT+isolated core,上限最高</td></tr>
+<tr><td>安全功能(SIL)</td><td>ctrlX Safety 可选</td><td>ctrlX Safety 可选</td><td>CODESYS Safety(另购)</td><td class="warn">无,需自证</td></tr>
+<tr><td>供应链风险</td><td>Bosch 单一来源</td><td>Bosch 单一来源</td><td>任意 x86 工控机</td><td>任意硬件</td></tr>
+<tr><td>客户接受度</td><td>高(OpCon 标准)</td><td>中高</td><td>高(CODESYS 认知广)</td><td>取决于自有品牌</td></tr>
+</table>
+<h2 id="s2">§2 路线①:CpStudio 骨架 + AI MCP<span class="badge b-now">进行中 · 主线</span></h2>
+<div class="card">
+<p><b>定义</b>:用户用 CpStudio V5.11 搭骨架(Station/Module/Command 层级、HMI、handler/变量、库导出、一键生成);
+AI 经 persistent MCP 完成 IO 配置辅助、PLC 编程(SqM/SqS/自动/手动细节)、编译-修复闭环、下载调试辅助。保留 CpStudio 和 ctrlX。</p>
+<p><b>已实测成果(2026-08-12)</b>:persistent MCP 全工具链可用;全工程编译 <span class="ok">0 errors / 35 warnings</span>(培训样板固有符号警告);
+PLC 侧已证明可脱离 CpStudio 运行(库走本地托管仓库自动解析)。</p>
+<p><b>纪律红线</b>:</p>
+<ul>
+<li>CpStudio 重新生成前<b>必备份 + diff</b>,确认 AI 自定义代码未被覆盖;</li>
+<li>AI 自定义代码放独立 POU/文件夹并带项目前缀;</li>
+<li>HMI 符号名骨架阶段定下后,PLC 侧保持不变,避免回炉 CpStudio。</li>
+</ul>
+<p><b>定位</b>:现在的生产路线(OpCon 标准交付 + 客户认可),持续做,但不再追加平台级投入。</p>
+</div>
+
+<h2 id="s3">§3 路线②:自研 HMI + ctrlX(去 CpStudio)<span class="badge b-main">推荐主攻 · 下一站</span></h2>
+<div class="card">
+<p><b>定义</b>:C#/Python 开发 Linux HMI 上位机,PLC 侧仍用 ctrlX + MCP 流水线;<b>CpStudio 彻底退场</b>。
+这是路线① 的自然升级:同一台 ctrlX、同一条 MCP PLC 流水线,只把 CpStudio 承担的 HMI/骨架职能换成自研。</p>
+
+<h3>3.1 HMI 与 ctrlX App 的关系(已查证)</h3>
+<ul>
+<li>ctrlX 上的 App 就是 <b>snap 包</b>;ctrlX CORE 2VRS 起还支持 <b>Container Engine App</b>(Docker 镜像装应用);</li>
+<li>官方 SDK 支持语言:<b>C/C++、Python、.NET(自包含)、Go、Java、Node-RED、shell</b>;</li>
+<li>打包:ctrlX WORKS 内置 App Build Environment;Windows 上可用 Docker 容器跑 snapcraft 构建(见 §6.2);</li>
+<li>数据通道:<b>ctrlX Data Layer</b>(设备内直连,Python/.NET/C++ 绑定)+ 内置 <b>OPC UA Server</b>(对外标准通道)。</li>
+</ul>
+
+<h3>3.2 两种部署形态</h3>
+<table>
+<tr><th>形态</th><th>做法</th><th>适用</th></tr>
+<tr><td><b>A. HMI 做成 ctrlX App</b></td><td>Web 服务打包成 snap/docker 装进 ctrlX,经 Data Layer/OPC UA 本地读写,浏览器/壳显示</td><td>单机小屏、一体机、随机发货</td></tr>
+<tr><td><b>B. HMI 独立跑在 IPC/屏</b></td><td>普通 Linux web/桌面程序,经 OPC UA/MQTT 连 ctrlX</td><td>大屏、多机线集中监控、上位机与控制器分离</td></tr>
+</table>
+<p><b>策略:先走 B 的技术、需要时封装成 A。</b>OPC UA 是 ctrlX 现成配好的通道(Symbolconfiguration 导出就是干这个的),
+HMI 侧零特殊依赖;同一套代码要随设备走时再打成 App。</p>
+
+<h3>3.3 HMI 前端选型:原生壳主力,网页备选(已定)</h3>
+<p>浏览器直接当上位机存在"能被关掉/会卡/观感不专业"的问题,对策与行业实践见 §6.3。结论架构:</p>
+<pre><code>同一套后端(C#/Python + OPC UA ↔ ctrlX PLC)
+├── 主画面:本机工控屏 → Avalonia 原生程序(.NET 跨平台 XAML)或 Chromium Kiosk
+│            全屏无边框,观感 = 传统上位机,操作员无法关闭
+└── 备选/远程:浏览器 Web 版 → 工程师笔记本/手机远程监控调试(免装客户端,增值功能)</code></pre>
+<ul>
+<li>主画面首选 <b>C# Avalonia UI</b>:AI 生成质量高、无浏览器依赖、Linux 原生运行;</li>
+<li>Kiosk 模式(Chromium 全屏+无地址栏+systemd watchdog 自动拉起)作为轻量替代;</li>
+<li><b>HMI 卡死 ≠ 机器失控</b>:PLC 逻辑在 ctrlX 独立运行,心跳断线自动重连。</li>
+</ul>
+
+<h3>3.4 行动项</h3>
+<ul class="check">
+<li>OPC UA 读写最小 demo(web/原生页面实时读写 TS_PLC_TEST 若干变量)</li>
+<li>沉淀 <code>hmi-framework</code> 仓库:后端服务 + Avalonia 壳 + Web 版 + 报警/配方/权限骨架</li>
+<li>验证 ctrlX App 打包(snap)全流程,形成 A 形态能力储备</li>
+</ul>
+</div>
+<h2 id="s4">§4 路线③:自研 HMI + CODESYS 软PLC工控机(去 ctrlX)<span class="badge b-alt">备选 · 先验证后投入</span></h2>
+<div class="card">
+<p><b>定义</b>:C#/Python 做 Linux HMI 上位机;不用 ctrlX,购买 CODESYS 运行时授权部署在工控机里当软 PLC。
+去 CpStudio、去 ctrlX、引入 CODESYS。</p>
+
+<h3>4.1 部署平台:Windows 还是 Linux?(已查证)</h3>
+<table>
+<tr><th>部署对象</th><th>平台</th><th>说明</th></tr>
+<tr><td>编程环境(Development System)</td><td><b>仅 Windows</b></td><td>IDE 只有 Windows 版(ctrlX PLC Engineering 即其贴牌)</td></tr>
+<tr><td>CODESYS Control Win V3</td><td>Windows x86/x64</td><td>工控机装 Windows 当软 PLC;Windows 非硬实时,适合开发测试/确定性要求不高场景</td></tr>
+<tr><td><b>CODESYS Control for Linux</b></td><td><b>Linux x86/ARM</b></td><td><b>生产主力</b>;有内核兼容列表,可配 PREEMPT_RT 提升实时性</td></tr>
+<tr><td>CODESYS Control for RTX64</td><td>Windows + RTX64 实时扩展</td><td>Windows 旁挂实时核,接近 RTOS 确定性(RTX64 另购)</td></tr>
+<tr><td>RTOS 系列</td><td>VxWorks/QNX/RTOS32 等</td><td>嵌入式厂商用,一般碰不到</td></tr>
+</table>
+<p>结论:<b>生产部署选 Linux,开发阶段可用 Windows 仿真</b>。事实参照:ctrlX 里的 PLC 运行时本身就是跑在 Linux 上的 CODESYS Control(3.5.19.7 内核)。</p>
+
+<h3>4.2 License 价格(2026-08 快照,Application-Based License)</h3>
+<table>
+<tr><th>档位</th><th>能力</th><th>国际商城参考价</th></tr>
+<tr><td>Basic S / M</td><td>CANopen/Modbus/J1939,<b>无以太网现场总线</b></td><td>约 €35 起 / €69 起</td></tr>
+<tr><td><b>Standard S/M/L</b></td><td><b>含以太网现场总线(EtherCAT)</b>;S=1 实例+512IO,L=2 复杂实例+4096IO</td><td>Standard M 参考约 <b>€139</b>;L 更高</td></tr>
+<tr><td>Performance L</td><td>多核高性能</td><td><b>€599 起</b></td></tr>
+</table>
+<ul>
+<li><b>编程 IDE 免费</b>;运行时不激活仅 demo(约 30 分钟);SoftMotion/Safety/冗余选件另购;</li>
+<li>新授权模式为<b>应用级授权</b>:硬件无关、按设备激活。</li>
+</ul>
+
+<h3>4.3 License 交付形态:纯数字,无实体(已查证)</h3>
+<table>
+<tr><th>载体</th><th>形态</th><th>特点</th><th>适用</th></tr>
+<tr><td><b>Soft Container(默认)</b></td><td>无实体</td><td>激活后绑定设备硬件指纹;换机需解绑重激活;激活需联网(无网可离线激活文件)</td><td>量产设备、固定工控机</td></tr>
+<tr><td>CODESYS Key(USB 加密狗)</td><td><b>实体件 €40</b>,CodeMeter 技术,一个最多存 2000 授权</td><td>插到哪台机器哪台就能用,换机免解绑</td><td>维修备件、频繁换机、样机流转</td></tr>
+</table>
+<p class="small">购买途径:国际 store.codesys.com;中国 store.codesys.cn(CODESYS 中国商城,自助下单);
+批量/OEM/正式报价找 CODESYS 中国(北京/济南/苏州/深圳)。量产<b>不要逐个零售买</b>——谈设备制造商批量/嵌入式授权协议。</p>
+
+<h3>4.4 独特价值与注意点</h3>
+<ul>
+<li><span class="ok">AI 流水线可能更顺</span>:标准 CODESYS 的 ScriptEngine 完整,ctrlX 贴牌特有的 headless 退出缺陷/CRLF 补丁等坑大概率消失——<b>值得装标准版实测 MCP</b>;</li>
+<li>硬件自由:任意 x86 工控机,供应链不受 Bosch 约束;</li>
+<li><span class="warn">OpCon 库版权属 Bosch</span>:技术上是标准 CODESYS 库可编译,商用前需确认授权范围;</li>
+<li>单站授权 = 每台设备持续成本;Linux 运行时先核对内核兼容列表。</li>
+</ul>
+<h3>4.5 行动项</h3>
+<ul class="check">
+<li>装标准 CODESYS + Control Win,实测 MCP(headless 是否可用、CRLF 问题是否存在)</li>
+<li>确认 EtherCAT 主站授权档位(Standard S/M/L 选型)</li>
+<li>有具体项目需求或实测明显更优时,再走采购流程</li>
+</ul>
+</div>
+
+<h2 id="s5">§5 路线④:PREEMPT_RT + isolated core + IgH + 自写状态机<span class="badge b-far">远期储备</span></h2>
+<div class="card">
+<p><b>定义</b>:C#/Python 做 Linux HMI;需要硬实时时用 PREEMPT_RT + isolated core 跑 IgH EtherCAT master 作 IO task,
+再在 isolated core 跑 cycle task(状态机)模拟 PLC 逻辑。去 CpStudio、去 ctrlX、去 CODESYS。</p>
+
+<h3>5.1 可行性与成熟参考</h3>
+<ul>
+<li>架构完全成立:<b>Intel ECI(Edge Controls for Industrial)参考设计就是这套</b>(PREEMPT_RT + CPU 隔离 + IgH + RT 周期任务);LinuxCNC 同族;</li>
+<li><b>PREEMPT_RT 自 Linux 6.12(2024-12)已并入主线</b>,不再需要维护外部补丁;</li>
+<li>IgH EtherCAT Master:GPLv2 免费;商业闭源分发有合规顾虑时可向 rt-labs 购买商业授权。</li>
+</ul>
+
+<h3>5.2 工作量警示(为什么不是主攻)</h3>
+<ul>
+<li>这条路线 = <b>自己造一个 PLC</b>:状态机框架、IO 映射工具、在线监控/诊断、下载调试机制、固件升级全部自建;</li>
+<li>功能安全(SIL)基本无解;</li>
+<li><span class="warn">AI 可写全部代码,但硬实时调优 AI 替代性最低</span>:抖动调优、IRQ 亲和、DC 同步、内存锁定全靠真机实测迭代。</li>
+</ul>
+
+<h3>5.3 减负选项</h3>
+<ul>
+<li>不裸写:基于 <b>OpenPLC / MatIEC / Beremiz</b>(开源 IEC 61131-3 编译器+运行时);</li>
+<li>或"路线③ + RT 内核调优":CODESYS Control for Linux 跑在 PREEMPT_RT 内核上。</li>
+</ul>
+<h3>5.4 行动项</h3>
+<ul class="check">
+<li>实验工控机上搭 PREEMPT_RT + IgH + 1ms 循环 demo(AI 写),测周期抖动数据存档</li>
+<li>评估 GPL 合规边界(内核模块 GPL vs 用户态 ioctl)</li>
+<li>仅当量产品授权成本敏感时再产品化</li>
+</ul>
+</div>
+<h2 id="s6">§6 关键技术细节 Q&amp;A(讨论沉淀)</h2>
+
+<h3>6.1 snap 包是什么?</h3>
+<p>snap 是 Ubuntu(Canonical)的应用打包格式:把程序 + 全部运行库依赖打成一个自包含包,运行时<b>沙箱隔离</b>
+(默认只能访问自己的目录;要网络/硬件/其他目录需在 manifest 里声明 interface 授权)。
+ctrlX OS 基于 Linux,直接采用 snap 作为 App 格式——ctrlX 上的 PLC 运行时、OPC UA Server、Node-RED 等<b>每个 App 都是一个 snap</b>。
+好处:依赖不冲突、可签名、可 OTA 升级、可从 ctrlX OS Store 安装或私有侧载。
+开发 ctrlX App 时写的 <code>snapcraft.yaml</code> 就是声明包的服务、权限和依赖。</p>
+
+<h3>6.2 "用 Docker 构建 snap"是什么意思?</h3>
+<p>snap 包必须用 <code>snapcraft</code> 在 Ubuntu 环境里构建,但工程师的开发机通常是 Windows。
+解决办法:<b>在 Docker 容器里跑 snapcraft</b>——Windows 上执行
+<code>docker run -v ${PWD}:/build snapcraft/snapcraft snapcraft</code>,
+容器内是标准 Ubuntu,构建完把 <code>.snap</code> 产物吐回 Windows,再装到 ctrlX。
+即:<b>Docker 只是构建环境,不是运行环境</b>;App 在 ctrlX 上仍以 snap 形式运行。
+(另一回事:ctrlX CORE 2VRS+ 的 Container Engine App 才允许把 Docker 镜像直接作为 App 运行。)</p>
+
+<h3>6.3 浏览器做上位机靠谱吗?——行业实践 + 工程解法</h3>
+<p><b>质疑成立</b>:裸浏览器确实能被关掉、会卡、观感不像上位机。但行业现状:</p>
+<ul>
+<li>Beckhoff TwinCAT HMI:HTML5,浏览器或原生壳打开;</li>
+<li>CODESYS WebVisu:浏览器打开;</li>
+<li>西门子 Unified 精智面板:内部 web 技术,Sm@rtServer 远程访问也是浏览器;</li>
+<li>Bosch 自家 Nexeed HMI:web 系。<b>Web HMI 已是主流,不是异类。</b></li>
+</ul>
+<p><b>工程解法(两条)</b>:</p>
+<ul>
+<li><b>Kiosk 模式</b>:工控屏上 Chromium/Edge kiosk 启动——全屏、无地址栏、无关闭按钮、开机自启,
+systemd watchdog 进程死了自动拉起、页面心跳断了自动刷新。操作员看不到"关闭"的机会,观感=传统 HMI;</li>
+<li><b>原生上位机</b>:C# Avalonia UI(.NET 跨平台 XAML,等价 Linux 上的 WPF)或 Qt,全屏无边框,
+观感就是传统上位机,AI 写 C#/XAML 非常拿手,且与网页方案共用后端。</li>
+</ul>
+<p><b>关键架构点</b>:PLC 逻辑在 ctrlX 独立运行,<b>HMI 卡死/关闭只是"看不见",机器不会失控</b>;心跳断线自动重连。
+最终选型见 §3.3:<span class="ok">主画面 = Avalonia 原生壳(或 Kiosk),Web 版做远程备选</span>。</p>
+
+<h3>6.4 MCP persistent 在 ctrlX 上的现状(2026-08-12 实测)</h3>
+<table>
+<tr><th>项</th><th>状态</th></tr>
+<tr><td>会话</td><td class="ok">ready,persistent,IDE 可见窗口常驻(headless 在 ctrlX 不可用,persistent 是唯一可行模式)</td></tr>
+<tr><td>watcher 往返 / 编译</td><td class="ok">0.7s 返回;全工程编译 0 errors / 35 warnings</td></tr>
+<tr><td>CRLF 缺陷</td><td class="ok">已打补丁(⚠ npm 升级会覆盖 → 重跑 apply-crlf-patch.ps1)</td></tr>
+<tr><td>watcher.py docstring 损坏</td><td class="ok">已发现并修复(补丁脚本误吞引号),修复逻辑已进一键脚本</td></tr>
+<tr><td>多实例竞态</td><td class="warn">同一时间只开一个使用本 MCP 的 Codex 窗口</td></tr>
+<tr><td>eval_python 陷阱</td><td class="warn">勿对已打开工程裸调 se.projects.open()(卡死 UI 线程),用 se.projects.primary / 正规工具</td></tr>
+</table>
+<p class="small">恢复手册:工具超时 → get_codesys_status → launch_codesys;彻底卡死 → shutdown_codesys(SIGKILL 兜底);
+怀疑补丁被覆盖 → apply-crlf-patch.ps1 -Check;日志在 %TEMP%\codesys-mcp-persistent\&lt;session&gt;\watcher_error.txt</p>
+
+<h2 id="s7">§7 执行路线图与检查清单(逐条推进)</h2>
+
+<h3>阶段 A · 路线① 主线(进行中)</h3>
+<ul class="check">
+<li class="done">persistent MCP 上线验证 + CRLF 补丁产品化(2026-08-12)</li>
+<li class="done">基线文档 / SESSION LOG / 仓库上线 GitHub(2026-08-12)</li>
+<li>用户:CpStudio 骨架(层级/HMI/handler/变量)+ 骨架模板整理(剥离 TrainingStation IO)</li>
+<li>AI:阶段 3 填充 SqM/SqS/自动/手动细节 → compile 结构化错误闭环</li>
+<li>仿真验证(set_simulation_mode)→ 真机下载调试 → create_project_archive 里程碑</li>
+</ul>
+
+<h3>阶段 B · 路线② HMI 原型(主攻,与阶段 A 并行启动)</h3>
+<ul class="check">
+<li>OPC UA 读写最小 demo:后端服务 + 页面实时读写 PLC 变量(沿用 Symbolconfiguration 符号名)</li>
+<li>主画面原型:Avalonia 原生壳(全屏、心跳、自动重连)对比 Chromium Kiosk</li>
+<li>Web 远程版原型(浏览器监控调试)</li>
+<li>沉淀 hmi-framework 仓库:报警/配方/权限/画面路由骨架</li>
+<li>ctrlX App 打包验证:同一后端打成 snap 装进 ctrlX(形态 A 储备)</li>
+</ul>
+
+<h3>阶段 C · 路线③ 验证(低成本,有空就做)</h3>
+<ul class="check">
+<li>安装标准 CODESYS + Control Win(免费 IDE,运行时 demo 模式)</li>
+<li>实测 MCP:headless 是否可用 / CRLF 问题是否存在 / 对比 ctrlX 贴牌体验</li>
+<li>EtherCAT 授权档位选型(Standard S/M/L)+ 中国区询价(store.codesys.cn / CODESYS 中国)</li>
+<li>结论报告:值得切换 / 仅项目级备选 / 放弃</li>
+</ul>
+
+<h3>阶段 D · 路线④ 实验(远期,按需启动)</h3>
+<ul class="check">
+<li>实验工控机装 PREEMPT_RT 内核(6.12+ 主线)+ CPU isolation 配置</li>
+<li>IgH EtherCAT master + 1ms cycle demo(AI 写),记录周期抖动/最坏延迟数据</li>
+<li>评估 OpenPLC/MatIEC 作为逻辑层替代裸写</li>
+<li>数据存档仓库,量产品立项时再决策</li>
+</ul>
+
+<h3>贯穿全程 · 产品化底座</h3>
+<ul class="check">
+<li class="done">MCP 补丁产品化(apply-crlf-patch.ps1 + diff + 文档)</li>
+<li>AI 代码生成规范(OpCon 命名/分层/SqM-SqS 模板)入仓库</li>
+<li>精简 OpCon 骨架模板(用户侧)</li>
+<li>自定义库集合 / 可复用项目模板</li>
+</ul>
+
+<h2 id="s8">§8 红线与决策索引</h2>
+<table>
+<tr><th>#</th><th>决策/红线</th><th>日期</th></tr>
+<tr><td>D1</td><td>.project 只能经 IDE 脚本引擎修改,不手改字节</td><td>08-04</td></tr>
+<tr><td>D2</td><td>PLC 侧完全绕开 CpStudio(库走本地托管仓库)</td><td>08-11</td></tr>
+<tr><td>D3</td><td>MCP 模式 = persistent(headless 在 ctrlX 品牌 IDE 不可用)</td><td>08-11</td></tr>
+<tr><td>D4</td><td>分工:用户骨架 / AI 细节;骨架模板 AI 不代做</td><td>08-11</td></tr>
+<tr><td>D5</td><td>同一时间只允许一个 Codex 窗口使用本 MCP</td><td>08-12</td></tr>
+<tr><td>D6</td><td>eval_python 仅用于审计;常规操作走正规工具</td><td>08-12</td></tr>
+<tr><td>D7</td><td>npm 包升级后必须重打 CRLF 补丁</td><td>08-12</td></tr>
+<tr><td>D8</td><td>.project 二进制不入仓库(Bosch 模板版权 + 体积)</td><td>08-12</td></tr>
+<tr><td>D9</td><td>四路线组合打法:①主线 / ②主攻 / ③验证 / ④储备</td><td>08-12</td></tr>
+<tr><td>D10</td><td>HMI 选型:主画面 = Avalonia 原生壳或 Kiosk,Web 版仅远程备选</td><td>08-12</td></tr>
+<tr><td>D11</td><td>write_variable 是 FORCE 强制写值,真机前确认安全状态</td><td>08-11</td></tr>
+</table>
+<p class="small">本文档随路线推进持续更新;每次阶段完成后勾选清单并提交仓库(文档即进度)。</p>
+
+<hr>
+<p class="small">ctrlX AI Coding · SOLASOLAo/ctrlx-ai-coding · 生成于 2026-08-12</p>
+</body>
+</html>
