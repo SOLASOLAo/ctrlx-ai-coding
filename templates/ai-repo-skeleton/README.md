@@ -18,6 +18,7 @@
 ├── docs/          技术文档
 ├── src/           源码
 ├── tests/         测试
+├── data/          原始数据(机器生成,大文件入 .gitignore)
 ├── examples/      示例
 └── tools/         辅助脚本
 ```

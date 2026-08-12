@@ -42,6 +42,15 @@
   MCP 实测仍正常(session ready,get_compile_messages 0.7s 返回);
 - 建立本仓库:docs / config / patches / scripts / mcp_test,补丁产品化(一键脚本 + diff + 说明)。
 
+### 2026-08-12 深夜 · 路线④开发机盘点与 FreePLCDemo 立项
+- 开发机(i7-8700/8G,Ubuntu 22.04.5)实测:内核 6.12.100-rt20 PREEMPT_RT 激活;隔离核 5,11 生效;
+  既有 PreemptRt 系统健康(io_master 核5 SCHED_FIFO 98 1kHz,lat_us≈65µs);从站柜未上电(link=false);
+- cyclictest 基线 v1:max 182µs(T0@普通核,-i200 -l1M,无 -q,loadavg 4.4);教训:基线测试必须 -q;
+- 发现 OpenPLC v3 service failed 新根因(.venv 内 20 个符号链接被 Windows 转成 reparse point,Linux 不可读),
+  与既有 §4.1 runbook 不同,reset-failed 无效 → 决策弃 v3(D13);
+- 修订 templates/(补 Linux 派生命令、显式会话循环、data/ 约定、衍生项目登记);
+- 从模板派生 FreePLCDemo(D14),四文档写入实测事实;route4 HANDOVER §7 / TODO 全面更新。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |
@@ -57,6 +66,8 @@
 | D9 | 四路线组合打法:①主线/②主攻/③验证/④储备 | 08-12 |
 | D10 | HMI 选型:Avalonia 原生壳或 Kiosk 主画面,Web 仅远程备选 | 08-12 |
 | D12 | 路线④逻辑层 = OpenPLC,实验先行不投产;开发在独立 Linux 机 | 08-12 |
+| D13 | 路线④逻辑层升级 OpenPLC **v4**(v3 EOL);不用内置 SOEM 层,自定义 hardware layer 对接既有 IgH io_master(shm);editor-driven 开发模式 | 08-12 |
+| D14 | 路线④开发项目 = **FreePLCDemo**(/media/administrator/D/FreePLC/FreePLCDemo,ai-repo-skeleton 派生,独立仓库) | 08-12 |
 
 ## 待办 / 下一步
 
@@ -64,4 +75,5 @@
 2. 骨架就绪 → AI 阶段 3:读骨架 → 写 SqM/SqS 细节 → compile 结构化错误闭环;
 3. 仿真验证(set_simulation_mode)→ 真机下载调试;
 4. 产品化方向:补丁/工具沉淀、自定义库集合、AI 代码生成规范、可复用的项目模板。
-5. **路线④ 独立 Linux 机开发**:交接见 `route4-rtpreempt-openplc/HANDOVER.md`,P0 待机器到位。
+5. **路线④**:开发机已就绪,P0~P2 完成(继承 PreemptRt);执行转入 **FreePLCDemo**(v4 安装 → P4 集成);
+   交接见 `route4-rtpreempt-openplc/HANDOVER.md` §7。

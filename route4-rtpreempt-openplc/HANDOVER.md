@@ -76,8 +76,11 @@ Linux 工控机/PC(实验机)
 
 | 项 | 状态 |
 |---|---|
-| 路线决策 | D9/D12:路线④=远期储备,以 OpenPLC 为逻辑层,实验先行 |
-| Linux 开发机 | 待配置(到手后从 §4 第 1 步开始) |
-| 代码 | 尚未开始,P0 无代码产出 |
-| 阻塞项 | 无(等机器) |
-| 下次会话第一步 | Linux 机器装系统 → cyclictest 基线 → 数据写回本文件 §7 |
+| 路线决策 | D9/D12 → 追加 D13/D14:逻辑层升级 OpenPLC v4;开发项目 = FreePLCDemo |
+| Linux 开发机 | ✅ 就绪(2026-08-12 实测):Ubuntu 22.04.5、内核 6.12.100-rt20(PREEMPT_RT 激活)、隔离核 5,11、governor 默认 powersave(测试前切 performance) |
+| cyclictest 基线 | ✅ v1 已测:max 182µs(T0@普通核,-i200 -l1M,无 -q,loadavg 4.4);数据存 FreePLCDemo/data/;-q 复测入 FreePLCDemo TODO |
+| EtherCAT | ✅ IgH 1.6.9 + io_master 1kHz 运行中(既有 PreemptRt 系统,见 `../PreemptRt/HANDOVER.md`);⚠ 从站柜当前未上电(link=false) |
+| OpenPLC | ✅ v3 已装(service 损坏,根因=.venv 符号链接被 Windows 破坏,弃修);➡ 转 v4(/media/administrator/D/openplc-runtime,未安装) |
+| 代码 | FreePLCDemo 项目已派生(ai-repo-skeleton 模板,独立仓库) |
+| 阻塞项 | 从站柜上电(用户操作) |
+| 下次会话第一步 | 安装 OpenPLC v4 → 从站柜上电验证健康三元组 → P4 集成设计(shm 直读 + 喂狗机制) |

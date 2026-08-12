@@ -27,6 +27,7 @@
 
 ## 5. 文档与提交约定
 - 事实源:README(是什么)/ docs(技术细节)/ HANDOVER.md(当前状态)/ TODO.md(下一步)
+- 会话循环:进场读 AGENTS → HANDOVER → TODO;收场更新 HANDOVER + TODO 勾选 + 提交推送
 - 提交前缀:`feat:` `fix:` `docs:` `test:` `tools:` `refactor:`
 - 每次会话结束:更新 HANDOVER.md + TODO.md 勾选 + 提交推送
 
