@@ -51,6 +51,12 @@
 - 修订 templates/(补 Linux 派生命令、显式会话循环、data/ 约定、衍生项目登记);
 - 从模板派生 FreePLCDemo(D14),四文档写入实测事实;route4 HANDOVER §7 / TODO 全面更新。
 
+### 2026-08-13 · OpenPLC v4 调研与 Editor 安装(支撑 D13 editor-driven 模式)
+- **OpenPLC Editor v4.2.11**(Autonomy-Logic,Electron+React)静默安装到 Windows 机 `PLC_Generate\FreePlc\`,启动验证通过;
+- 查明 Runtime v4 连接机制:**HTTPS 8443 + JWT**(create-user 首个=admin)、**无 Web UI**;Editor 本地 STruC++ 编译 → zip 上传 → Runtime Make 编 .so;WebSocket 调试;UDP LAN 发现;协议内置 EtherCAT API(D13 自定义层不受影响,仅作参照);
+- 踩坑:Electron 应用终端继承 `ELECTRON_RUN_AS_NODE=1` 致 Editor 变 Node 静默退出(exit 9),桌面启动正常;
+- 公司代理拦截 release CDN → `gh release download`(走 api.github.com)绕过;
+- 与另一会话(abff186 开发机盘点)合并:本条目为增量,不覆盖 FreePLCDemo 执行线。
 ## 关键决策清单
 
 | # | 决策 | 日期 |
