@@ -90,6 +90,7 @@
 | D12 | 路线④逻辑层 = OpenPLC,实验先行不投产;开发在独立 Linux 机 | 08-12 |
 | D13 | 路线④逻辑层升级 OpenPLC **v4**(v3 EOL);不用内置 SOEM 层,自定义 hardware layer 对接既有 IgH io_master(shm);editor-driven 开发模式 | 08-12 |
 | D14 | 路线④开发项目 = **FreePLCDemo**(/media/administrator/D/FreePLC/FreePLCDemo,ai-repo-skeleton 派生,独立仓库) | 08-12 |
+| D15 | **Editor 回退策略**:VS Code 替代 Editor 只是一条路线;Editor v4.2.11 常备后备(不卸载/不升级、格式不分叉、单写者、里程碑回退演练);详见 FreePLCDemo handover §5 | 08-13 |
 
 ## 待办 / 下一步
 
