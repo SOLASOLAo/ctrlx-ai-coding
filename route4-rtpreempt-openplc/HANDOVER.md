@@ -1,6 +1,6 @@
 # HANDOVER.md — 路线④:PREEMPT_RT + IgH EtherCAT + OpenPLC
 
-> 创建:2026-08-12 · 开发机:**另一台 Linux PC**(非本 Windows 工程机)
+> 创建:2026-08-12 · 更新:2026-08-13(Windows 侧 Editor v4.2.11 装好;Runtime v4 连接机制查明) · 开发机:**另一台 Linux PC**(非本 Windows 工程机)
 > 本文自包含:拿到 Linux 机器后,读这一份 + 配套 `TODO.md` 即可开工。
 > 上游背景:本仓库 `docs/ctrlX_tech_routes.html` §5、`docs/ctrlX_AI_project_baseline.md`。
 
@@ -33,8 +33,16 @@ Linux 工控机/PC(实验机)
 | PREEMPT_RT | 自 **Linux 6.12(2024-12)完全并入主线**,`CONFIG_PREEMPT_RT=y` 即可,无需外部补丁 |
 | IgH EtherCAT Master | GPLv2(LGPL 部分),免费;官方仓库 `gitlab.com/etherlab.org/ethercat`;商业闭源分发再考虑 rt-labs 商业授权 |
 | SOEM(备选主站) | 用户态、无内核模块、上手更快,但 DC 支持弱于 IgH;原型期可先用 SOEM 探路 |
-| OpenPLC | `github.com/thiagoralves/OpenPLC_v3`,运行时 Linux 可跑;配套 OpenPLC Editor(LD/FBD/ST);核心编译器 MatIEC |
-| 集成点(主要工作量) | OpenPLC 的 **hardware layer 需要自定义**:把 IO 映射到 IgH/SOEM 的 PD 读写,替代默认 GPIO 层 |
+| OpenPLC | **v3 已弃(D13)**;转 **Runtime v4**(`github.com/Autonomy-Logic/openplc-runtime`):headless 双进程(Flask REST + C/C++ 实时核 SCHED_FIFO,Unix socket 通信);编译链 = Editor 本地 STruC++ 生成 C++ → zip 上传 → Runtime Make 编 .so 动态加载 |
+| Editor(Windows) | ✅ **v4.2.11 已装**(2026-08-13,`PLC_Generate\FreePlc`,NSIS 静默);Electron+React;userData=`%APPDATA%\open-plc-editor` |
+| 连接端口 | **HTTPS 8443**(自签 TLS,Editor 自动处理;第三方工具直连需忽略证书);**v4 无 Web UI**(v3 的 8080 网页不存在了) |
+| 认证 | JWT:首次 `POST /api/create-user` 免认证(首个用户自动 admin)→ `/api/login` 取 token |
+| 设备发现 | Editor 支持 **UDP 广播 LAN 发现**局域网内的 Runtime |
+| Runtime 部署 | 原生:`git clone` + `sudo ./install.sh` + `sudo ./start_openplc.sh`;或 Docker `ghcr.io/autonomy-logic/openplc-runtime:latest`(-p 8443:8443 --cap-add SYS_NICE SYS_RESOURCE);依赖 GCC/CMake 3.28+/Python 3.10+/root;数据目录 `/var/lib/openplc-runtime`(原生)、`/var/run/runtime`(Docker) |
+| RT 官方立场 | PLC Core 已 SCHED_FIFO;**PREEMPT_RT 官方标注 "optional but beneficial"** → 与本路线天然契合 |
+| EtherCAT(v4 视角) | Editor↔Runtime 协议**内置 EtherCAT API**(网卡列表/扫描从站/测试/校验/运行状态),走 Runtime 插件系统;D13 已定自定义层对接既有 io_master shm,插件仅作参照 |
+| 周边仓库 | `Autonomy-Logic/matiec`(编译器 fork)、`STruCpp`(ST→C++)、`xml2st`、`user-docs` |
+| 集成点(主要工作量,D13) | **自定义 hardware layer ↔ 既有 io_master shm**(不用内置 SOEM 层):OpenPLC 周期任务经共享内存读写 IgH PD + 喂狗机制 |
 | 网卡 | 选 IgH 支持好的 Intel 网卡:**I210**(DC 支持成熟)/ i225/i226;EtherCAT 用独立网口 |
 | Ubuntu RT 内核捷径 | Ubuntu Pro 个人免费(≤5 台)提供 realtime kernel 变体,可省去自编内核 |
 | GPL 边界 | 内核模块 GPL;用户态经 ioctl 通信;仅内部实验无合规问题,**商用分发前再评估** |
@@ -66,8 +74,10 @@ Linux 工控机/PC(实验机)
 
 ## 6. 风险与提醒
 
+- 🔴 **ELECTRON_RUN_AS_NODE 陷阱(已踩)**:从 Codex/VSCode 等 Electron 应用的终端启动 Editor 会继承 `ELECTRON_RUN_AS_NODE=1`,Editor 变纯 Node 静默退出(exit 9);**桌面/资源管理器启动正常**,脚本启动需从子进程环境移除该变量。
 - 🔴 **RT 调优是 AI 替代性最低的环节**:IRQ 亲和、内存锁定、缓存预热都要真机实测迭代,预留人工调试时间;
-- 🟡 OpenPLC 是社区项目,代码质量/维护活跃度一般;逻辑层如不满足,备选 MatIEC 裸编译 + 自写 runtime 壳;
+- 🟡 OpenPLC v4 较新且活跃开发中(Autonomy Logic),API 可能变动;**锁定 commit/镜像版本并记录**;
+- 🟡 公司代理拦截 release-assets.githubusercontent.com → 下载 release 用 `gh release download`(走 api.github.com);
 - 🟡 IgH 编译对内核版本敏感:先锁定内核版本再装主站,内核升级后需重新编译模块;
 - 🟡 隔离核配置后,该核对普通任务不可用,SSH/监控进程别被 isolcpus 影响(默认就不会,验证一下);
 - 🟢 Windows 工程机这边(本仓库)继续路线①②主线,两边互不阻塞;阶段成果回传本仓库 `route4-rtpreempt-openplc/`。
@@ -80,7 +90,8 @@ Linux 工控机/PC(实验机)
 | Linux 开发机 | ✅ 就绪(2026-08-12 实测):Ubuntu 22.04.5、内核 6.12.100-rt20(PREEMPT_RT 激活)、隔离核 5,11、governor 默认 powersave(测试前切 performance) |
 | cyclictest 基线 | ✅ v1 已测:max 182µs(T0@普通核,-i200 -l1M,无 -q,loadavg 4.4);数据存 FreePLCDemo/data/;-q 复测入 FreePLCDemo TODO |
 | EtherCAT | ✅ IgH 1.6.9 + io_master 1kHz 运行中(既有 PreemptRt 系统,见 `../PreemptRt/HANDOVER.md`);⚠ 从站柜当前未上电(link=false) |
-| OpenPLC | ✅ **v4 已安装运行**(2026-08-12):openplc-runtime.service active,REST :8443+JWT;v3 弃修;详见 FreePLCDemo/HANDOVER.md |
+| OpenPLC | ✅ **v4 已安装运行**(2026-08-12):openplc-runtime.service active,REST :8443+JWT;v3 弃修;详见 FreePLCDemo/HANDOVER.md;Editor 连接:IP 直连 → create-user(首个=admin)→ login |
 | 代码 | FreePLCDemo 项目已派生(ai-repo-skeleton 模板,独立仓库) |
+| Editor(Windows) | ✅ v4.2.11 装好并运行过(FreePlc);启动陷阱见 §6;⚠ 公司网络下 release 下载走 gh API |
 | 阻塞项 | 从站柜上电(用户操作) |
-| 下次会话第一步 | Windows 开发机装 Editor v4(连 192.168.1.24:8443)→ ST 小程序跑通 → 从站柜上电 → P4 集成设计过审 |
+| 下次会话第一步 | P4 已闭环;下一步:P5 抖动报告 + %IX 物理验证 + HMI 迭代(详见 FreePLCDemo/TODO.md) |
