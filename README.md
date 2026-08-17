@@ -52,13 +52,14 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 │   ├── ctrlX_AI_project_baseline.md    ← 基线记录(权威文档,11 章)
 │   ├── ctrlX_AI_project_baseline.html  ← 基线记录 HTML 版
 │   ├── SESSION_LOG.md                  ← 讨论与决策流水账
+│   ├── ioe_scripting_playbook.md       ← IOE 脚本化操作手册(阶段2实战踩坑)
 │   └── PC_Info_Report.txt              ← 环境快照
 ├── config/
 │   ├── codex.config.toml.example       ← 生效中的 Codex MCP 配置(路径按本机改)
 │   └── history/                        ← 配置演进备份
 ├── patches/
 │   └── codesys-mcp-persistent-crlf/    ← ⭐ ctrlX IDE 必需补丁 + 一键脚本
-├── scripts/                            ← 环境采集脚本
+├── scripts/                            ← 环境采集脚本 + ioe_ipc.ps1(IOE 驱动)
 ├── mcp_test/                           ← MCP 验证用 IronPython 脚本(.project 二进制不入库)
 ├── templates/                          ← ai-repo-skeleton:新代码项目骨架模板(四文档纪律)
 └── route4-rtpreempt-openplc/           ← 路线④ PREEMPT_RT+IgH+OpenPLC 交接(独立 Linux 机开发)
@@ -89,7 +90,7 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 
 - [x] 阶段 0:环境基线 + persistent 上线验证 + 补丁产品化(2026-08-12)
 - [ ] 阶段 1:用户 CpStudio 骨架(层级/HMI/handler/变量)
-- [ ] 阶段 2:硬件与 IO 组态(EtherCAT)
+- [x] 阶段 2:硬件与 IO 组态(EtherCAT)(Station010 实测 2026-08-18,方法见 docs/ioe_scripting_playbook.md)
 - [ ] 阶段 3:AI 填充逻辑(SqM/SqS/自动/手动),compile 结构化错误闭环
 - [ ] 阶段 4:仿真 → 真机下载调试
 - [ ] 产品化:精简 OpCon 骨架模板、自定义库集合、AI 代码生成规范、可复用项目模板
