@@ -112,3 +112,12 @@
 - 3 个陈旧符号编译错误(bus_000S900 / _000SK010A1_Channel_6/_7)定性为非 CpStudio 产物(Engineering_Data.xml 对照),待清理。
 - Station010_0708 备份到私有仓库 SOLASOLAo/Stat_Resistant_Station010(6a7b4ea 基线 + b9b1161 快照);git 推送配方(openssl+3128+gh token)沉淀到同上笔记。
 - 用户迁移到另一台设备开发,转接文档见 McpCoding/HANDOVER.md。
+
+## D18(2026-08-18)CpStudio BMK 双层残留闭环 + connector 映射补丁
+
+- **纠正 D17 的旧结论**：Symbol Configuration 的显示名与脚本内部名不同；内部节点为 `Symbols`，其动态扩展对象是 `ScriptSymbolConfigObject`。PLE 官方 REST API 可以稳定读写公开成员，因此不再依赖 UI。
+- 官方 REST 稳定基地址：`http://localhost:9002/plc/engineering/api/v2`；应用符号接口为 `/devices/Device/Plc%20Logic/Application/symbol-config`。根路径兼容路由并不稳定，不纳入工作流。
+- Station010 连续两次实测确认：CpStudio 改名/停用 BMK 会更新 `BinIo`，但可能保留 EtherCAT I/O Mapping 与 Symbol Configuration 两层旧引用；固定顺序为 Git diff → 映射修复 → Symbol Select/UnSelect → 保存 → 编译。
+- 发现原 MCP `map_io_channel` 只遍历项目树子节点，无法处理 ctrlX/DataLayer 的 connector 通道。已扩展为遍历 `connectors/host_parameters/is_mappable_io/io_mapping`，支持 `Channel_6.Output` 名称定位并强制写后回读。
+- 补丁已并入既有 `apply-crlf-patch.ps1`，形成单一 ctrlX 兼容补丁入口；npm 升级后必须先 `-Check` 再应用。
+- 实测结果：清除 `_000SK010C1_Channel_6` 的 C1 Channel 6 映射和失效符号后，编译由 1 error / 9 warnings 恢复为 **0 errors / 7 warnings**；未连接或操作实体 PLC。

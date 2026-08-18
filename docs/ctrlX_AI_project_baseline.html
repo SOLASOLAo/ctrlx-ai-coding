@@ -435,7 +435,7 @@ args = [&quot;--codesys-path&quot;, &quot;C:\\ctrlXWORKS\\ctrlXPLCEngineering\\P
 <li><code>watcher.py</code> 第 162 行后(读入命令脚本之后)插入行尾归一化:<code>script_code.replace("\r\n","\n").replace("\r","\n")</code>,注释标记 <code>ctrlX PATCH (2026-08-12)</code>;原文件备份为 <code>watcher.py.bak_orig</code></li>
 <li><code>_message_utils.py</code> 全文 CRLF→LF(已验证 0 处 CRLF)</li>
 <li><strong>效果</strong>:compile_project / get_compile_messages 恢复正常,返回结构化编译消息</li>
-<li>⚠ <strong>npm 升级该包会覆盖补丁</strong>,升级后必须重做上述两步</li>
+<li>⚠ <strong>npm 升级该包会覆盖补丁</strong>,升级后必须重跑 <code>patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1 -Check</code> 并应用；该脚本同时维护 §7.7 的 connector I/O Mapping 扩展</li>
 </ul>
 <h3 id="73-ide">7.3 多实例竞态:IDE 自行退出</h3>
 <ul>
@@ -458,6 +458,24 @@ args = [&quot;--codesys-path&quot;, &quot;C:\\ctrlXWORKS\\ctrlXPLCEngineering\\P
 <h3 id="76">7.6 分工再确认</h3>
 <ul>
 <li>干净的 OpCon 骨架模板现在不由 AI 代做;之后<strong>用户做骨架</strong>(CpStudio 层级/HMI/模板),<strong>AI 负责 PLC 代码细节</strong>(自动/手动、SqM/SqS、工艺逻辑)——与 §0 一致;骨架就绪前 AI 不启动阶段 3</li>
+</ul>
+<h3 id="77-ctrlx-connector-io-mapping-symbol-configuration-rest2026-08-18">7.7 ctrlX connector I/O Mapping 与 Symbol Configuration REST（2026-08-18）</h3>
+<ul>
+<li><strong>复现背景</strong>：CpStudio 修改/停用 I/O BMK 后，<code>BinIo</code> 声明会更新，但 PLC 工程可能同时残留两层旧引用：EtherCAT I/O Mapping 与 Symbol Configuration。典型结果是 <code>bus_&lt;旧名&gt; is no component of BinIo</code> 编译错误，加一条 <code>variable is no longer available ... still configured</code> 警告。</li>
+<li><strong>ctrlX 通道结构</strong>：DataLayer/EtherCAT 模块的通道不是 <code>device.get_children(False)</code> 子节点，而是：</li>
+</ul>
+<p><code>text
+  device.connectors → connector.host_parameters
+    → parameter.is_mappable_io → parameter.io_mapping.variable</code></p>
+<p>因此原版 <code>map_io_channel</code> 在 <code>inspect_device_node</code> 返回 <code>children: []</code> 时无法定位通道。兼容补丁增加按通道名（如 <code>Channel_6.Output</code>）或零基索引查找 connector 参数，并在写入后强制回读验证。
+- <strong>Symbol Configuration 正式接口</strong>：PLE 2.6.8 自带 REST API，稳定基地址为 <code>http://localhost:9002/plc/engineering/api/v2</code>；不要依赖偶尔可用的根路径兼容路由。应用下的接口为：</p>
+<p><code>text
+  GET /devices/Device/Plc%20Logic/Application/symbol-config
+  PUT /devices/Device/Plc%20Logic/Application/symbol-config?symbolsAction=Select|UnSelect|UpdateAll</code></p>
+<ul>
+<li><code>GET</code> 只返回当前编译器可用成员，因此已失效但仍配置的旧变量不会出现在响应中；仍可用 <code>UnSelect</code>，以“数据类型名 + 旧变量名”的最小请求精确删除。<code>GET</code> 中已选成员的 <code>accessRights</code> 可能显示 <code>Void</code>，实际持久化权限应以底层 <code>SelectedTypes</code>/编译结果复核。</li>
+<li><strong>验证结果</strong>：Station010 两个独立 CpStudio 导出批次均通过该闭环恢复到 <strong>0 errors / 7 baseline warnings</strong>；第二批仅清除 C1 <code>Channel_6.Output</code> 的旧映射与 <code>_000SK010C1_Channel_6</code> 符号成员，全程未使用 UI 自动化或 <code>eval_python</code> 写工程。</li>
+<li><strong>产品化</strong>：<code>patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1</code> 已扩展为 ctrlX 兼容补丁入口，同时修补 npm 包 <code>dist/scripts</code> 与 <code>src/scripts</code> 的 <code>map_io_channel.py</code>。脚本幂等，npm 升级后先 <code>-Check</code>。</li>
 </ul>
 <hr />
 <h2 id="8-api-ironpython-27ctrlx">8. 脚本 API 速查(IronPython 2.7,ctrlX 脚本引擎)</h2>
@@ -548,6 +566,14 @@ import System; System.Environment.Exit(0)
 <tr>
 <td>编译脚本报 <code>SyntaxError: unexpected token '\r'</code></td>
 <td>CRLF 缺陷 → 按 §7.2 打 watcher.py 行尾归一化补丁;注意 npm 升级会覆盖补丁</td>
+</tr>
+<tr>
+<td><code>map_io_channel</code> 报 Channel not found，且设备 <code>children: []</code></td>
+<td>ctrlX 通道在 connector mappable parameters，不是树子节点 → 重跑兼容补丁并按 <code>Channel_6.Output</code> 形式定位，见 §7.7</td>
+</tr>
+<tr>
+<td>CpStudio 改 BMK 后同时出现旧 <code>bus_*</code> error 与 Symbol warning</td>
+<td>先清/重映射物理通道，再用 PLE REST <code>symbol-config?symbolsAction=UnSelect/Select</code> 同步公开成员，最后保存编译，见 §7.7</td>
 </tr>
 <tr>
 <td>IDE 自行退出(code 0)且当时开了多个 Codex 窗口</td>

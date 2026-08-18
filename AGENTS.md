@@ -24,7 +24,7 @@
 
 1. **`.project` 是加密容器**——绝不手改文件字节,只能经 IDE 脚本引擎(MCP 工具)修改。
 2. **`.project` 二进制不入库**(Bosch 模板版权 + 体积),已在 `.gitignore`;不要试图强制添加。
-3. **npm 升级 `codesys-mcp-persistent` 会覆盖 CRLF 补丁** → 升级后必须重跑
+3. **npm 升级 `codesys-mcp-persistent` 会覆盖 ctrlX 兼容补丁**（CRLF + connector I/O Mapping）→ 升级后必须重跑
    `patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1`(先 `-Check`)。
 4. **同一时间只允许一个 Codex 窗口使用 codesys MCP**(多实例抢 profile 会致 IDE 退出)。
 5. **`write_variable` 是 FORCE 强制写值**,不解除一直生效;真机 download/start_stop/write 前必须与用户确认安全状态。
@@ -51,7 +51,7 @@
 - 卡死恢复:`shutdown_codesys`(SIGKILL 兜底)→ 下次调用自动重启;日志 `%TEMP%\codesys-mcp-persistent\<session>\watcher_error.txt`
 - `get_compile_messages` 返回**上次编译的缓存**——改代码后先 `compile_project` 再取消息
 - IronPython 2.7 脚本引擎;脚本 API 速查见基线文档第 8 章
-- 补丁体检:`apply-crlf-patch.ps1 -Check`
+- 补丁体检:`apply-crlf-patch.ps1 -Check`（同时检查 watcher 行尾和 ctrlX connector 通道映射能力）
 
 ## 6. 文档与提交约定
 

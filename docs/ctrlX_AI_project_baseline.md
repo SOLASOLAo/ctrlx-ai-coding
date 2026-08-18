@@ -209,7 +209,7 @@ args = ["--codesys-path", "C:\\ctrlXWORKS\\ctrlXPLCEngineering\\PLE_V_0206\\Stud
   1. `watcher.py` 第 162 行后(读入命令脚本之后)插入行尾归一化:`script_code.replace("\r\n","\n").replace("\r","\n")`,注释标记 `ctrlX PATCH (2026-08-12)`;原文件备份为 `watcher.py.bak_orig`
   2. `_message_utils.py` 全文 CRLF→LF(已验证 0 处 CRLF)
 - **效果**:compile_project / get_compile_messages 恢复正常,返回结构化编译消息
-- ⚠ **npm 升级该包会覆盖补丁**,升级后必须重做上述两步
+- ⚠ **npm 升级该包会覆盖补丁**,升级后必须重跑 `patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1 -Check` 并应用；该脚本同时维护 §7.7 的 connector I/O Mapping 扩展
 
 ### 7.3 多实例竞态:IDE 自行退出
 
@@ -232,6 +232,28 @@ args = ["--codesys-path", "C:\\ctrlXWORKS\\ctrlXPLCEngineering\\PLE_V_0206\\Stud
 ### 7.6 分工再确认
 
 - 干净的 OpCon 骨架模板现在不由 AI 代做;之后**用户做骨架**(CpStudio 层级/HMI/模板),**AI 负责 PLC 代码细节**(自动/手动、SqM/SqS、工艺逻辑)——与 §0 一致;骨架就绪前 AI 不启动阶段 3
+
+### 7.7 ctrlX connector I/O Mapping 与 Symbol Configuration REST（2026-08-18）
+
+- **复现背景**：CpStudio 修改/停用 I/O BMK 后，`BinIo` 声明会更新，但 PLC 工程可能同时残留两层旧引用：EtherCAT I/O Mapping 与 Symbol Configuration。典型结果是 `bus_<旧名> is no component of BinIo` 编译错误，加一条 `variable is no longer available ... still configured` 警告。
+- **ctrlX 通道结构**：DataLayer/EtherCAT 模块的通道不是 `device.get_children(False)` 子节点，而是：
+
+  ```text
+  device.connectors → connector.host_parameters
+    → parameter.is_mappable_io → parameter.io_mapping.variable
+  ```
+
+  因此原版 `map_io_channel` 在 `inspect_device_node` 返回 `children: []` 时无法定位通道。兼容补丁增加按通道名（如 `Channel_6.Output`）或零基索引查找 connector 参数，并在写入后强制回读验证。
+- **Symbol Configuration 正式接口**：PLE 2.6.8 自带 REST API，稳定基地址为 `http://localhost:9002/plc/engineering/api/v2`；不要依赖偶尔可用的根路径兼容路由。应用下的接口为：
+
+  ```text
+  GET /devices/Device/Plc%20Logic/Application/symbol-config
+  PUT /devices/Device/Plc%20Logic/Application/symbol-config?symbolsAction=Select|UnSelect|UpdateAll
+  ```
+
+- `GET` 只返回当前编译器可用成员，因此已失效但仍配置的旧变量不会出现在响应中；仍可用 `UnSelect`，以“数据类型名 + 旧变量名”的最小请求精确删除。`GET` 中已选成员的 `accessRights` 可能显示 `Void`，实际持久化权限应以底层 `SelectedTypes`/编译结果复核。
+- **验证结果**：Station010 两个独立 CpStudio 导出批次均通过该闭环恢复到 **0 errors / 7 baseline warnings**；第二批仅清除 C1 `Channel_6.Output` 的旧映射与 `_000SK010C1_Channel_6` 符号成员，全程未使用 UI 自动化或 `eval_python` 写工程。
+- **产品化**：`patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1` 已扩展为 ctrlX 兼容补丁入口，同时修补 npm 包 `dist/scripts` 与 `src/scripts` 的 `map_io_channel.py`。脚本幂等，npm 升级后先 `-Check`。
 
 ---
 
@@ -306,5 +328,7 @@ ctrlX-PLC-Engineering.exe --profile="ctrlX PLC 2.6.8" --noUI --runscript="脚本
 | 想回退旧工具链 | config.toml 两个 mcp_servers 块注释对调,重启 Codex |
 | 残留 ctrlX-PLC-Engineering 进程 | 按 StartTime 甄别后再杀,别杀用户实例 |
 | 编译脚本报 `SyntaxError: unexpected token '\r'` | CRLF 缺陷 → 按 §7.2 打 watcher.py 行尾归一化补丁;注意 npm 升级会覆盖补丁 |
+| `map_io_channel` 报 Channel not found，且设备 `children: []` | ctrlX 通道在 connector mappable parameters，不是树子节点 → 重跑兼容补丁并按 `Channel_6.Output` 形式定位，见 §7.7 |
+| CpStudio 改 BMK 后同时出现旧 `bus_*` error 与 Symbol warning | 先清/重映射物理通道，再用 PLE REST `symbol-config?symbolsAction=UnSelect/Select` 同步公开成员，最后保存编译，见 §7.7 |
 | IDE 自行退出(code 0)且当时开了多个 Codex 窗口 | 多实例争抢 profile,见 §7.3:只保留一个窗口;ready 后新 server 自动接管 |
 | eval_python 卡死整个 MCP 队列 | shutdown_codesys 强杀重启;已打开工程用 se.projects.primary,勿裸调 projects.open() |

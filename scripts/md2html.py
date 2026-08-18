@@ -1,8 +1,9 @@
 # md2html.py - regenerate docs/ctrlX_AI_project_baseline.html from the MD source of truth
-import io, sys, markdown
+import io, os, sys, markdown
 
-SRC = r"C:\A_Documents\A_Projects\A_Software\PLC_Generate\ctrlx-ai-coding\docs\ctrlX_AI_project_baseline.md"
-DST = r"C:\A_Documents\A_Projects\A_Software\PLC_Generate\ctrlx-ai-coding\docs\ctrlX_AI_project_baseline.html"
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC = os.path.join(REPO_ROOT, "docs", "ctrlX_AI_project_baseline.md")
+DST = os.path.join(REPO_ROOT, "docs", "ctrlX_AI_project_baseline.html")
 
 with io.open(SRC, "r", encoding="utf-8-sig") as f:
     md_text = f.read()
