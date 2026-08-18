@@ -107,3 +107,8 @@
 4. 产品化方向:补丁/工具沉淀、自定义库集合、AI 代码生成规范、可复用的项目模板。
 5. **路线④**:开发机已就绪,P0~P2 完成(继承 PreemptRt);执行转入 **FreePLCDemo**(v4 安装 → P4 集成);
    交接见 `route4-rtpreempt-openplc/HANDOVER.md` §7。
+## D17(2026-08-18 夜)PLE SymbolConfig 脚本极限实测 + Station010 GitHub 备份
+- 实测结论:SymbolConfig 条目对 ScriptEngine 树 API 完全不可见(find/get_children/export_xml 全空);可读形态仅 IDE 导出的 Symbolconfiguration XML。详见 docs/ple_symbolconfig_git_notes.md。
+- 3 个陈旧符号编译错误(bus_000S900 / _000SK010A1_Channel_6/_7)定性为非 CpStudio 产物(Engineering_Data.xml 对照),待清理。
+- Station010_0708 备份到私有仓库 SOLASOLAo/Stat_Resistant_Station010(6a7b4ea 基线 + b9b1161 快照);git 推送配方(openssl+3128+gh token)沉淀到同上笔记。
+- 用户迁移到另一台设备开发,转接文档见 McpCoding/HANDOVER.md。
