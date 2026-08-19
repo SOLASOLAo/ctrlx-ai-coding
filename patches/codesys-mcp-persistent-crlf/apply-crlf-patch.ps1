@@ -17,7 +17,8 @@
     3. Repairs the module docstring if it was corrupted (`""` -> `"""`)
     4. Normalizes _message_utils.py from CRLF to LF
     5. Extends map_io_channel.py for ctrlX/DataLayer connector parameters
-    6. Verifies syntax with `python -m py_compile` when python is available
+    6. Adds transactional @batch-json mapping with one final project save
+    7. Verifies syntax with `python -m py_compile` when python is available
 
   WARNING: `npm install/update codesys-mcp-persistent` OVERWRITES the patch.
   Re-run this script after every upgrade.
@@ -42,6 +43,7 @@ $ErrorActionPreference = "Stop"
 $marker = "ctrlX PATCH (2026-08-12)"
 $connectorMarker = "ctrlX/DataLayer devices expose I/O channels as mappable"
 $readbackMarker = "I/O mapping read-back mismatch"
+$batchMarker = "ctrlX batch I/O mapping"
 $utf8nobom = New-Object System.Text.UTF8Encoding($false)
 
 function ReadText([string]$p) {
@@ -54,14 +56,16 @@ function PatchIoMappingScript([string]$mapFile) {
   $m = ReadText $mapFile
   $hasConnectorLookup = $m.Contains($connectorMarker)
   $hasReadbackCheck = $m.Contains($readbackMarker)
+  $hasBatchMapping = $m.Contains($batchMarker)
 
   if ($Check) {
     Write-Host ("[{0}] {1} connector-channel lookup" -f $(if ($hasConnectorLookup) { "OK " } else { "TODO" }), $mapFile)
     Write-Host ("[{0}] {1} mapping read-back check" -f $(if ($hasReadbackCheck) { "OK " } else { "TODO" }), $mapFile)
+    Write-Host ("[{0}] {1} batch mapping/save-once extension" -f $(if ($hasBatchMapping) { "OK " } else { "TODO" }), $mapFile)
     return
   }
 
-  if ($hasConnectorLookup -and $hasReadbackCheck) {
+  if ($hasConnectorLookup -and $hasReadbackCheck -and $hasBatchMapping) {
     Write-Host "map_io_channel.py ctrlX connector patch already present - skipped: $mapFile"
     return
   }
@@ -174,6 +178,140 @@ function PatchIoMappingScript([string]$mapFile) {
     $saveIndex = $m.IndexOf($saveAnchor)
     if ($saveIndex -lt 0) { Write-Error "map_io_channel.py save anchor not found: $mapFile" }
     $m = $m.Insert($saveIndex, $readbackBlock)
+  }
+
+  if (-not $hasBatchMapping) {
+    $batchAnchor = @'
+    # Resolve the channel. Two addressing modes:
+'@.Replace("`r`n", "`n")
+
+    $batchBlock = @'
+    # ctrlX batch I/O mapping: channelPath "@batch-json" accepts a JSON list
+    # of [flatConnectorIndex, variableName] pairs. All pairs are validated
+    # first, applied transactionally with best-effort rollback, read back, and
+    # the project is saved once. This avoids one full .project save per byte on
+    # large PDO devices while retaining the same official ScriptEngine API.
+    if CHANNEL_PATH == "@batch-json":
+        import json
+
+        if clear_binding:
+            raise ValueError("@batch-json does not support clearBinding; pass explicit empty variables in a future extension.")
+
+        try:
+            batch_items = json.loads(_to_unicode(VARIABLE_NAME))
+        except Exception as e:
+            raise ValueError("Invalid @batch-json payload: %s" % e)
+
+        if not isinstance(batch_items, list) or not batch_items:
+            raise ValueError("@batch-json requires a non-empty JSON list of [index, variableName] pairs.")
+        if len(batch_items) > 4096:
+            raise ValueError("@batch-json contains too many mappings (%d > 4096)." % len(batch_items))
+
+        mappable_parameters = []
+        parameter_sets = []
+        if hasattr(device, 'device_parameters'):
+            parameter_sets.append(device.device_parameters)
+        if hasattr(device, 'connectors'):
+            for connector in device.connectors:
+                if hasattr(connector, 'host_parameters'):
+                    parameter_sets.append(connector.host_parameters)
+
+        seen_parameter_ids = set()
+        for parameter_set in parameter_sets:
+            for parameter in parameter_set:
+                try:
+                    if not getattr(parameter, 'is_mappable_io', False):
+                        continue
+                    parameter_id = str(getattr(parameter, 'id', id(parameter)))
+                    if parameter_id in seen_parameter_ids:
+                        continue
+                    seen_parameter_ids.add(parameter_id)
+                    mappable_parameters.append(parameter)
+                except Exception:
+                    continue
+
+        prepared = []
+        requested_indices = set()
+        for position, item in enumerate(batch_items):
+            if not isinstance(item, list) or len(item) != 2:
+                raise ValueError("Batch item %d must be [index, variableName]." % position)
+            flat_index, variable_name = item
+            if not isinstance(flat_index, (int, long)):
+                raise ValueError("Batch item %d index must be an integer." % position)
+            if flat_index < 0 or flat_index >= len(mappable_parameters):
+                raise ValueError("Batch item %d index %d out of range (0..%d)." %
+                                 (position, flat_index, len(mappable_parameters) - 1))
+            if flat_index in requested_indices:
+                raise ValueError("Duplicate batch channel index: %d." % flat_index)
+            requested_indices.add(flat_index)
+            if not isinstance(variable_name, basestring) or not variable_name.strip():
+                raise ValueError("Batch item %d variableName must be non-empty." % position)
+            parameter = mappable_parameters[flat_index]
+            mapping = parameter.io_mapping
+            before = getattr(mapping, 'variable', None)
+            prepared.append((flat_index, parameter, mapping, _to_unicode(variable_name), before))
+
+        def _set_mapping(mapping, value):
+            attempts = []
+            last_error = None
+            if hasattr(mapping, 'set_variable'):
+                try:
+                    mapping.set_variable(value)
+                    return "set_variable"
+                except Exception as e:
+                    last_error = e
+                    attempts.append("set_variable: %s" % e)
+            if hasattr(mapping, 'variable'):
+                try:
+                    mapping.variable = value
+                    return "variable="
+                except Exception as e:
+                    last_error = e
+                    attempts.append("variable=: %s" % e)
+            if hasattr(mapping, 'symbol'):
+                try:
+                    mapping.symbol = value
+                    return "symbol="
+                except Exception as e:
+                    last_error = e
+                    attempts.append("symbol=: %s" % e)
+            raise RuntimeError("No writable mapping API (%s); last error: %s" %
+                               (" | ".join(attempts), last_error))
+
+        applied = []
+        try:
+            for flat_index, parameter, mapping, target, before in prepared:
+                setter = _set_mapping(mapping, target)
+                after = getattr(mapping, 'variable', None)
+                if (after or u"") != target:
+                    raise RuntimeError("Batch read-back mismatch at index %d: expected '%s', got '%s'." %
+                                       (flat_index, target, after))
+                applied.append((flat_index, parameter, mapping, target, before, setter))
+        except Exception:
+            for flat_index, parameter, mapping, target, before, setter in reversed(applied):
+                try:
+                    _set_mapping(mapping, before or u"")
+                except Exception as rollback_error:
+                    print("WARNING: rollback failed at index %d: %s" % (flat_index, rollback_error))
+            raise
+
+        primary_project.save()
+        emit_result({
+            u"device_path": _to_unicode(DEVICE_PATH),
+            u"batch": True,
+            u"mapping_count": len(applied),
+            u"first_index": applied[0][0],
+            u"last_index": applied[-1][0],
+            u"project_saved_once": True,
+        })
+        print("Mapped %d I/O channels in one transaction; project saved once." % len(applied))
+        print("SCRIPT_SUCCESS: batch I/O channel bindings updated.")
+        sys.exit(0)
+
+'@.Replace("`r`n", "`n")
+
+    if (-not $m.Contains($batchAnchor)) { Write-Error "map_io_channel.py batch anchor not found: $mapFile" }
+    $m = $m.Replace($batchAnchor, $batchBlock + $batchAnchor)
   }
 
   [System.IO.File]::WriteAllText($mapFile, $m, $utf8nobom)

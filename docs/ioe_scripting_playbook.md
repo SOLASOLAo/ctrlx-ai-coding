@@ -113,6 +113,24 @@ IOE 与 PLE 的差异(实测):
 | 7 | PLE 打开 IO 工程 → 版本转换 + 实例崩溃 | IO 工程归 IOE 2.6.4 管 | **PLE 永不打开 IO 工程**;IOE-IPC 驱动 IOE(本文路线) |
 | 8 | `hh.exe -decompile ScriptEngine.chm` 失败 | CHM 反编译不可用 | 反射探 API;参考 MCP 包 `dist/scripts/*.py`(find_object_by_path / inspect_device_node / map_io_channel) |
 | 9 | `git push` 报 NativeCommandError;MCP 命令"迟到" | PS 把 stderr 当错误(表面现象);超时命令稍后仍会执行 | 看 exit code 判断成败;超时后先查状态再继续;`eval_python` 省略 `timeoutMs` 参数 |
+| 10 | CpStudio 写大 PDO 的 I/O designator 时 JSON 解析失败 | IOE 2.6.4 对 200-byte input + 200-byte output 设备序列化 `ioMapping/subChannels` 时混入 `The stream is currently in use by a previous operation on the stream` Critical 对象 | 不改 ESI；IOE `ExportEthercatConfigJob` 导出 master，PLE `ImportOfflineFieldbusConfigJob(keepExisting=true)` 导入，再经 persistent MCP connector mapping 绑定父 BYTE |
+
+### 4.1 大 PDO 的 REST 边界（Kistler 5867C 实测）
+
+对 `_100A104` 直接 GET IOE/PLE device REST 资源时，HTTP 可能仍返回 200，但约 195 KB 的 JSON 在
+`ioMapping[350].subChannels[2].address` 附近被 Critical 错误对象截断，因此不能把“HTTP 200”当作可解析结果。
+CpStudio 的写 designator 功能使用同一设备资源，所以会抛 Newtonsoft JSON 异常。
+
+已验证的无 UI、无二进制直改路径：
+
+1. IOE 对 EtherCAT master 执行 `ExportEthercatConfigJob`；
+2. PLE 在 `Realtime_Data` 执行 `ImportOfflineFieldbusConfigJob`，`forceInsert=false`、`keepExisting=true`；
+3. 使用 `map_io_channel` 的 connector parameter 路径完成 PLC 变量映射；400 通道场景使用兼容补丁的
+   `@batch-json`，只在全部回读通过后保存一次工程；
+4. 再次只读统计绑定数/差异数并完整编译。
+
+该问题属于 IDE REST 序列化实现，和 Little-Endian、BMK 或供应商 ESI 内容无关。禁止删减 ESI PDO
+来“修好”CpStudio，因为那会让工程接口与真实 5867C 过程数据不一致。
 
 ## 5. 可复用检查单(下次 IO 组态任务)
 

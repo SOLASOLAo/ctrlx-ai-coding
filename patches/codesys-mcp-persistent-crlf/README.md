@@ -35,7 +35,7 @@ device.connectors → connector.host_parameters
 |---|---|
 | `dist/scripts/watcher.py` | 在 BOM 剥离行(`script_code = script_code[1:]`)之后插入 5 行行尾归一化:`script_code.replace(u"\r\n", u"\n").replace(u"\r", u"\n")`(见 `watcher_crlf_normalize.patch`) |
 | `dist/scripts/_message_utils.py` | 全文 CRLF → LF |
-| `dist/scripts/map_io_channel.py` | 增加 connector mappable-parameter 查找；支持按 `Channel_6.Output` 或零基索引定位；写后强制回读校验 |
+| `dist/scripts/map_io_channel.py` | 增加 connector mappable-parameter 查找；支持按 `Channel_6.Output` 或零基索引定位；写后强制回读校验；增加 `@batch-json` 事务式批量映射并只保存一次工程 |
 | `src/scripts/map_io_channel.py` | 同步源码副本，避免本机重建 `dist` 时丢失补丁 |
 
 ## 一键应用
@@ -68,6 +68,21 @@ map_io_channel(
 ```
 
 成功结果必须同时给出修改前后的绑定；若回读值与请求不一致，补丁会主动报错而不会静默声称成功。
+
+大 PDO 设备可使用同一个正式 `map_io_channel` 工具的批量扩展。`channelPath` 固定为
+`@batch-json`，`variableName` 传 JSON 数组，每项为 `[零基 connector 通道索引, PLC 全局变量]`：
+
+```text
+map_io_channel(
+  devicePath="Device/Realtime_Data/.../_100A104",
+  channelPath="@batch-json",
+  variableName='[[0,"Application.Peripherals._100A104._input.Ctrl[0]"], ...]'
+)
+```
+
+扩展会先验证全部索引、重复项和变量名，再逐项写入并回读；任一项失败会对本批已写项做尽力回滚，
+全部成功后只调用一次 `project.save()`。ctrlX 对 400-byte PDO 的内部刷新仍可能超过 MCP 默认 30 s；
+遇到超时必须先等待 IDE 恢复并只读核对绑定，不能立即重发同一批命令。
 
 ## ⚠ 升级会覆盖补丁
 
