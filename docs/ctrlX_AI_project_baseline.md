@@ -209,7 +209,7 @@ args = ["--codesys-path", "C:\\ctrlXWORKS\\ctrlXPLCEngineering\\PLE_V_0206\\Stud
   1. `watcher.py` 第 162 行后(读入命令脚本之后)插入行尾归一化:`script_code.replace("\r\n","\n").replace("\r","\n")`,注释标记 `ctrlX PATCH (2026-08-12)`;原文件备份为 `watcher.py.bak_orig`
   2. `_message_utils.py` 全文 CRLF→LF(已验证 0 处 CRLF)
 - **效果**:compile_project / get_compile_messages 恢复正常,返回结构化编译消息
-- ⚠ **npm 升级该包会覆盖补丁**,升级后必须重跑 `patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1 -Check` 并应用；该脚本同时维护 §7.7 的 connector I/O Mapping 扩展
+- ⚠ **npm 升级该包会覆盖补丁**,升级后必须重跑 `patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1 -Check` 并应用；该脚本同时维护 §7.7 的 connector I/O Mapping 与 §7.8 的有界编译消息扩展
 
 ### 7.3 多实例竞态:IDE 自行退出
 
@@ -255,12 +255,21 @@ args = ["--codesys-path", "C:\\ctrlXWORKS\\ctrlXPLCEngineering\\PLE_V_0206\\Stud
 - **验证结果**：Station010 两个独立 CpStudio 导出批次均通过该闭环恢复到 **0 errors / 7 baseline warnings**；第二批仅清除 C1 `Channel_6.Output` 的旧映射与 `_000SK010C1_Channel_6` 符号成员，全程未使用 UI 自动化或 `eval_python` 写工程。
 - **产品化**：`patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1` 已扩展为 ctrlX 兼容补丁入口，同时修补 npm 包 `dist/scripts` 与 `src/scripts` 的 `map_io_channel.py`。脚本幂等，npm 升级后先 `-Check`。
 
+### 7.8 `compile_project` 完成后超时（2026-08-20）
+
+- **症状**：PLE 的 Application Build 已完成，MCP `compile_project` 仍运行到 300 s 超时；只读的 `get_compile_messages` 也可能继续阻塞。
+- **根因**：原脚本先执行 `clean()`/`clean_all()`/`build()`/`generate_code()`，再动态遍历全部消息类别，并对每类逐个读取 Fatal/Error/Warning/Information/Text。ctrlX PLE 2.6.8 的 `get_message_objects(category, severity)` 在该组合扫描中会卡住数分钟；PLC 编译本身不是瓶颈。
+- **兼容路径**：应用工程只调用一次官方 `ScriptApplication.build()`；编译后只读 Build 与 Additional code checks 两个类别，每类调用一次 `System.get_messages(category)`。error/warning 总数以 IDE 自身的 Build summary 为准；拿不到 summary 时按错误失败关闭，禁止把未知结果当作 0 errors。
+- **覆盖范围**：同一补丁同步修改 npm 包 `dist/scripts` 与 `src/scripts` 中的 `_message_utils.py`、`compile_project.py`、`get_compile_messages.py`；`test-fast-compile-message.py` 离线覆盖干净、失败、Application current 与未知摘要四类情况。
+- **实测**：Station010 离线 Build 从 MCP 超过 300 s 降到约 **7.6 s**（0 errors / 7 warnings），缓存消息读取约 **0.8 s**；未连接、下载或运行实体 PLC。
+
 ---
 
 ## 8. 脚本 API 速查(IronPython 2.7,ctrlX 脚本引擎)
 
 ```python
 import scriptengine as se
+import System
 proj = se.projects.open(r"C:\...\X.project")   # ScriptProject 无 get_name()
 app  = proj.active_application                 # "Application"
 
@@ -277,12 +286,13 @@ lm = [k for k in app.get_children(False) if k.get_name()=="Library Manager"][0]
 lm.get_libraries()                  # 34 个 "#占位符"
 lm.add_library(...)                 # 按名字加占位符会失败
 
-# 编译
-app.build()                         # 输出 "Compile complete -- X errors, Y warnings"
-se.system.get_messages()
+# 编译（应用工程只做一次官方 Build）
+app.build()                         # Build 类别输出 IDE summary
+build_category = System.Guid("{97F48D64-A2A3-4856-B640-75C046E37EA9}")
+se.system.get_messages(build_category)  # 每个类别一次；不要全类别×严重级别扫描
 
 # 退出(品牌 IDE 不自动退):脚本末尾
-import System; System.Environment.Exit(0)
+System.Environment.Exit(0)
 ```
 
 手动运行:

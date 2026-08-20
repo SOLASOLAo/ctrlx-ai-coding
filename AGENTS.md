@@ -24,7 +24,7 @@
 
 1. **`.project` 是加密容器**——绝不手改文件字节,只能经 IDE 脚本引擎(MCP 工具)修改。
 2. **`.project` 二进制不入库**(Bosch 模板版权 + 体积),已在 `.gitignore`;不要试图强制添加。
-3. **npm 升级 `codesys-mcp-persistent` 会覆盖 ctrlX 兼容补丁**（CRLF + connector I/O Mapping）→ 升级后必须重跑
+3. **npm 升级 `codesys-mcp-persistent` 会覆盖 ctrlX 兼容补丁**（CRLF + connector I/O Mapping + 有界编译消息读取）→ 升级后必须重跑
    `patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1`(先 `-Check`)。
 4. **同一时间只允许一个 Codex 窗口使用 codesys MCP**(多实例抢 profile 会致 IDE 退出)。
 5. **`write_variable` 是 FORCE 强制写值**,不解除一直生效;真机 download/start_stop/write 前必须与用户确认安全状态。
@@ -64,7 +64,7 @@
 
 ## 7. 当前状态快照(2026-08-12)
 
-- [x] 阶段 0:环境基线 + persistent 上线验证 + CRLF 补丁产品化
+- [x] 阶段 0:环境基线 + persistent 上线验证 + ctrlX 兼容补丁产品化（含编译超时修复）
 - [ ] 阶段 A(进行中):用户 CpStudio 骨架 → AI 填充逻辑(阶段 3)→ 仿真 → 真机
 - [ ] 阶段 B:路线② HMI 原型(OPC UA demo → hmi-framework,主画面 Avalonia 原生壳,Web 版远程备选)
 - [ ] 阶段 C:路线③ 标准 CODESYS + MCP 实测(先验证后买授权)

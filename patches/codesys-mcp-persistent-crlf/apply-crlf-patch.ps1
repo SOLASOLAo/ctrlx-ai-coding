@@ -18,7 +18,8 @@
     4. Normalizes _message_utils.py from CRLF to LF
     5. Extends map_io_channel.py for ctrlX/DataLayer connector parameters
     6. Adds transactional @batch-json mapping with one final project save
-    7. Verifies syntax with `python -m py_compile` when python is available
+    7. Replaces the timeout-prone compile/message scan with a bounded ctrlX path
+    8. Verifies syntax with `python -m py_compile` when python is available
 
   WARNING: `npm install/update codesys-mcp-persistent` OVERWRITES the patch.
   Re-run this script after every upgrade.
@@ -44,6 +45,9 @@ $marker = "ctrlX PATCH (2026-08-12)"
 $connectorMarker = "ctrlX/DataLayer devices expose I/O channels as mappable"
 $readbackMarker = "I/O mapping read-back mismatch"
 $batchMarker = "ctrlX batch I/O mapping"
+$fastMessageMarker = "ctrlX fast compile message path (2026-08-20)"
+$fastCompileMarker = "ctrlX bounded application build (2026-08-20)"
+$fastCachedMarker = "ctrlX bounded cached-message read (2026-08-20)"
 $utf8nobom = New-Object System.Text.UTF8Encoding($false)
 
 function ReadText([string]$p) {
@@ -318,6 +322,349 @@ function PatchIoMappingScript([string]$mapFile) {
   Write-Host "patched ctrlX connector I/O mapping support -> $mapFile"
 }
 
+function BackupOnce([string]$path, [string]$suffix) {
+  $backup = "$path.$suffix"
+  if (-not (Test-Path -LiteralPath $backup)) {
+    Copy-Item -LiteralPath $path -Destination $backup
+    Write-Host "backup -> $backup"
+  }
+}
+
+function PatchFastMessageUtils([string]$messageUtilsFile) {
+  if (-not (Test-Path -LiteralPath $messageUtilsFile)) { return }
+
+  $source = ReadText $messageUtilsFile
+  $isPatched = $source.Contains($fastMessageMarker)
+  if ($Check) {
+    Write-Host ("[{0}] {1} bounded compile-message helper" -f $(if ($isPatched) { "OK " } else { "TODO" }), $messageUtilsFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "bounded compile-message helper already present - skipped: $messageUtilsFile"
+    return
+  }
+
+  BackupOnce $messageUtilsFile "bak_pre_fast_compile"
+  $helper = @'
+
+# ctrlX fast compile message path (2026-08-20)
+#
+# ctrlX PLE 2.6.8 can block for minutes when get_message_objects(category,
+# severity) is called once per category and severity. The documented
+# get_messages(category) API returns the same category's display texts in one
+# call. Use that bounded path for compile_project/get_compile_messages and let
+# the IDE's own summary line remain the authoritative error/warning count.
+_MSG_FAST_COMPILE_CATEGORIES = (
+    ('Build', '97F48D64-A2A3-4856-B640-75C046E37EA9'),
+    ('Additional code checks', '220493A1-F49B-4416-9A3F-A545DB707CBE'),
+)
+
+def msg_fast_compile_categories():
+    out = []
+    for category_name, guid_text in _MSG_FAST_COMPILE_CATEGORIES:
+        try:
+            out.append((script_engine.Guid('{%s}' % guid_text), category_name))
+        except Exception:
+            try:
+                out.append((guid_text, category_name))
+            except Exception:
+                pass
+    return out
+
+def _msg_fast_is_progress(text):
+    lowered = text.strip().lower()
+    prefixes = (
+        '------ build started',
+        'typify code',
+        'generate code',
+        'generate global',
+        'compile code',
+        'link code',
+        'size of generated',
+        'application is current',
+        'build complete',
+        'additional code checks complete',
+    )
+    for prefix in prefixes:
+        if lowered.startswith(prefix):
+            return True
+    return False
+
+def msg_fast_compile_snapshot(categories=None):
+    import re as _fast_re
+    import time as _fast_time
+
+    if categories is None:
+        categories = msg_fast_compile_categories()
+
+    total_errors = 0
+    total_warnings = 0
+    build_verified = False
+    details = []
+    category_results = []
+    total_rows = 0
+    summary_re = _fast_re.compile(
+        r'(\d+)\s+error(?:\(s\)|s)?\s*,\s*(\d+)\s+warning(?:\(s\)|s)?',
+        _fast_re.IGNORECASE
+    )
+
+    for category_guid, category_name in categories:
+        started = _fast_time.time()
+        texts = []
+        read_error = None
+        try:
+            raw_rows = script_engine.system.get_messages(category_guid)
+            if raw_rows is not None:
+                for raw_row in raw_rows:
+                    texts.append(_to_unicode(raw_row))
+        except Exception as exc:
+            read_error = _to_unicode(exc)
+
+        category_errors = None
+        category_warnings = None
+        category_current = False
+        category_details = []
+        for text in texts:
+            total_rows += 1
+            match = summary_re.search(text)
+            if match:
+                category_errors = int(match.group(1))
+                category_warnings = int(match.group(2))
+                continue
+            if 'application is current' in text.lower():
+                category_current = True
+                continue
+            if text.strip() and not _msg_fast_is_progress(text):
+                category_details.append(text.strip())
+
+        category_verified = (category_errors is not None) or category_current
+        if category_name == 'Build' and category_verified:
+            build_verified = True
+        if category_errors is not None:
+            total_errors += category_errors
+            total_warnings += category_warnings
+        details.extend([
+            {'category': category_name, 'text': detail}
+            for detail in category_details
+        ])
+        category_results.append({
+            'category': category_name,
+            'verified': category_verified,
+            'errors': category_errors,
+            'warnings': category_warnings,
+            'messageCount': len(texts),
+            'elapsedSeconds': round(_fast_time.time() - started, 3),
+            'readError': read_error,
+        })
+
+    return {
+        'verified': build_verified,
+        'errorCount': total_errors,
+        'warningCount': total_warnings,
+        'messageCount': total_rows,
+        'details': details[:100],
+        'categoryResults': category_results,
+        'warningDetailsOmitted': True,
+    }
+
+def msg_fast_structured_entries(snapshot):
+    error_count = int(snapshot.get('errorCount', 0) or 0)
+    warning_count = int(snapshot.get('warningCount', 0) or 0)
+    details = snapshot.get('details', []) or []
+    entries = []
+
+    if not snapshot.get('verified', False):
+        detail_text = '\n'.join([d.get('text', '') for d in details[:40]])
+        text = 'Build finished, but the Build summary could not be verified.'
+        if detail_text:
+            text += '\nCached messages:\n' + detail_text
+        return [{'category': 'Build summary', 'severity': 'error', 'text': text}]
+
+    if error_count > 0:
+        detail_text = '\n'.join([d.get('text', '') for d in details[:40]])
+        for index in range(error_count):
+            text = 'Build reported error %d of %d.' % (index + 1, error_count)
+            if index == 0 and detail_text:
+                text += '\nCached Build details:\n' + detail_text
+            entries.append({'category': 'Build summary', 'severity': 'error', 'text': text})
+
+    for index in range(warning_count):
+        if error_count == 0 and index < len(details):
+            detail = details[index]
+            entries.append({
+                'category': detail.get('category', 'Build'),
+                'severity': 'warning',
+                'text': detail.get('text', 'Build warning %d of %d.' % (index + 1, warning_count)),
+            })
+        else:
+            entries.append({
+                'category': 'Build summary',
+                'severity': 'warning',
+                'text': 'Build warning %d of %d; details remain available in the IDE.' %
+                        (index + 1, warning_count),
+            })
+    return entries
+
+def msg_fast_summary_wire(snapshot):
+    return dict((key, value) for key, value in snapshot.items() if key != 'details')
+'@
+
+  [System.IO.File]::WriteAllText($messageUtilsFile, $source.TrimEnd("`n") + "`n" + $helper.TrimStart("`n"), $utf8nobom)
+  Write-Host "added bounded compile-message helper -> $messageUtilsFile"
+}
+
+function AddFastSummarySerialization([string]$source, [string]$path) {
+  if ($source.Contains('### COMPILE_SUMMARY_START ###')) { return $source }
+
+  $anchor = '    sys.stdout.write("### COMPILE_MESSAGES_START ###\n")'
+  if (-not $source.Contains($anchor)) {
+    Write-Error "compile summary serialization anchor not found: $path"
+  }
+  $block = @'
+    summary_json = json.dumps(msg_fast_summary_wire(compile_summary), ensure_ascii=False, default=_json_default)
+    if isinstance(summary_json, unicode):
+        summary_json_bytes = summary_json.encode('utf-8')
+    else:
+        summary_json_bytes = summary_json
+    sys.stdout.write("### COMPILE_SUMMARY_START ###\n")
+    sys.stdout.write(summary_json_bytes)
+    sys.stdout.write("\n### COMPILE_SUMMARY_END ###\n")
+    sys.stdout.write("### COMPILE_MESSAGES_START ###\n")
+'@.Replace("`r`n", "`n").TrimEnd("`n")
+  return $source.Replace($anchor, $block)
+}
+
+function PatchCompileProjectScript([string]$compileFile) {
+  if (-not (Test-Path -LiteralPath $compileFile)) { return }
+
+  $source = ReadText $compileFile
+  $isPatched = $source.Contains($fastCompileMarker)
+  if ($Check) {
+    Write-Host ("[{0}] {1} bounded application build" -f $(if ($isPatched) { "OK " } else { "TODO" }), $compileFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "bounded application build already present - skipped: $compileFile"
+    return
+  }
+
+  BackupOnce $compileFile "bak_pre_fast_compile"
+  $startAnchor = '    # --- Discover all message categories dynamically ---'
+  $endAnchor = '    # --- Serialize as JSON between markers for the Node.js side to parse ---'
+  $startIndex = $source.IndexOf($startAnchor)
+  $endIndex = $source.IndexOf($endAnchor)
+  if ($startIndex -lt 0 -or $endIndex -le $startIndex) {
+    Write-Error "compile_project.py fast-path anchors not found: $compileFile"
+  }
+
+  $replacement = @'
+    # ctrlX bounded application build (2026-08-20)
+    # ScriptApplication.build() is the documented IDE Build operation. Calling
+    # clean(), build(), and generate_code() back-to-back performs redundant
+    # work on large OpCon projects and can exceed the MCP client's 300 s limit.
+    # Clear only the categories this tool owns, invoke one Build, then read each
+    # category once through System.get_messages().
+    fast_categories = msg_fast_compile_categories()
+    for category_guid, category_name in fast_categories:
+        try:
+            script_engine.system.clear_messages(category_guid)
+        except Exception as clear_error:
+            print("WARN: clear_messages('%s') failed: %s" % (category_name, clear_error))
+
+    import time as _build_time
+    build_started = _build_time.time()
+    build_invoked = False
+
+    if project_kind == "application":
+        if hasattr(target_app, 'build'):
+            target_app.build()
+            print("DEBUG: build() executed once for application '%s'." % app_name)
+            build_invoked = True
+        elif hasattr(target_app, 'generate_code'):
+            target_app.generate_code()
+            print("WARN: build() unavailable; generate_code() fallback executed for '%s'." % app_name)
+            build_invoked = True
+    elif project_kind == "library":
+        if hasattr(primary_project, 'check_all_pool_objects'):
+            primary_project.check_all_pool_objects()
+            print("DEBUG: check_all_pool_objects() executed for library.")
+            build_invoked = True
+        else:
+            for method_name in ('checkall_pool_objects', 'check_pool_objects', 'compile_pool_objects'):
+                if hasattr(primary_project, method_name):
+                    getattr(primary_project, method_name)()
+                    print("DEBUG: primary_project.%s() executed for library." % method_name)
+                    build_invoked = True
+                    break
+
+    if not build_invoked:
+        raise TypeError(
+            "Target '%s' (kind=%s) supports no known compile entry point." % (app_name, project_kind)
+        )
+
+    print("DEBUG: Build invocation elapsed %.3f s." % (_build_time.time() - build_started))
+    _flush_debug_to_file()
+
+    snapshot_started = _build_time.time()
+    compile_summary = msg_fast_compile_snapshot(fast_categories)
+    compile_summary['buildElapsedSeconds'] = round(snapshot_started - build_started, 3)
+    compile_summary['snapshotElapsedSeconds'] = round(_build_time.time() - snapshot_started, 3)
+    messages = msg_fast_structured_entries(compile_summary)
+    print("DEBUG: bounded message snapshot verified=%s errors=%d warnings=%d rows=%d elapsed=%.3f s" %
+          (compile_summary.get('verified'), compile_summary.get('errorCount', 0),
+           compile_summary.get('warningCount', 0), compile_summary.get('messageCount', 0),
+           compile_summary.get('snapshotElapsedSeconds', 0.0)))
+
+'@.Replace("`r`n", "`n")
+
+  $source = $source.Substring(0, $startIndex) + $replacement + $source.Substring($endIndex)
+  $source = AddFastSummarySerialization $source $compileFile
+  [System.IO.File]::WriteAllText($compileFile, $source, $utf8nobom)
+  Write-Host "patched bounded application build -> $compileFile"
+}
+
+function PatchGetCompileMessagesScript([string]$cachedFile) {
+  if (-not (Test-Path -LiteralPath $cachedFile)) { return }
+
+  $source = ReadText $cachedFile
+  $isPatched = $source.Contains($fastCachedMarker)
+  if ($Check) {
+    Write-Host ("[{0}] {1} bounded cached-message read" -f $(if ($isPatched) { "OK " } else { "TODO" }), $cachedFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "bounded cached-message read already present - skipped: $cachedFile"
+    return
+  }
+
+  BackupOnce $cachedFile "bak_pre_fast_compile"
+  $startAnchor = '    # Extract compiler messages using multiple API patterns'
+  $endAnchor = '    for entry in messages:'
+  $startIndex = $source.IndexOf($startAnchor)
+  $endIndex = $source.IndexOf($endAnchor)
+  if ($startIndex -lt 0 -or $endIndex -le $startIndex) {
+    Write-Error "get_compile_messages.py fast-path anchors not found: $cachedFile"
+  }
+
+  $replacement = @'
+    # ctrlX bounded cached-message read (2026-08-20)
+    # Query each compile category once. Avoid the OEM get_message_objects
+    # overload, which may block for minutes even when no new build is started.
+    compile_summary = msg_fast_compile_snapshot()
+    messages = msg_fast_structured_entries(compile_summary)
+    messages_found = compile_summary.get('messageCount', 0) > 0
+    print("DEBUG: bounded cached snapshot verified=%s errors=%d warnings=%d rows=%d" %
+          (compile_summary.get('verified'), compile_summary.get('errorCount', 0),
+           compile_summary.get('warningCount', 0), compile_summary.get('messageCount', 0)))
+
+'@.Replace("`r`n", "`n")
+
+  $source = $source.Substring(0, $startIndex) + $replacement + $source.Substring($endIndex)
+  $source = AddFastSummarySerialization $source $cachedFile
+  [System.IO.File]::WriteAllText($cachedFile, $source, $utf8nobom)
+  Write-Host "patched bounded cached-message read -> $cachedFile"
+}
+
 # --- locate package ----------------------------------------------------------
 if (-not $PackageScriptsDir) {
   $npmRoot = (& npm root -g 2>$null) | Out-String
@@ -403,6 +750,19 @@ $mapTargets = @(
 )
 $mapTargets | Select-Object -Unique | ForEach-Object { PatchIoMappingScript $_ }
 
+# --- compile_project/get_compile_messages: bounded ctrlX message path ---------
+$packageScriptRoots = @(
+  $PackageScriptsDir,
+  (Join-Path $packageRoot "src\scripts")
+) | Select-Object -Unique
+
+foreach ($scriptRoot in $packageScriptRoots) {
+  if (-not (Test-Path -LiteralPath $scriptRoot)) { continue }
+  PatchFastMessageUtils (Join-Path $scriptRoot "_message_utils.py")
+  PatchCompileProjectScript (Join-Path $scriptRoot "compile_project.py")
+  PatchGetCompileMessagesScript (Join-Path $scriptRoot "get_compile_messages.py")
+}
+
 # --- verify --------------------------------------------------------------------
 if (-not $Check) {
   $py = Get-Command python -ErrorAction SilentlyContinue
@@ -415,8 +775,17 @@ if (-not $Check) {
         if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] py_compile map_io_channel.py passed: $mapTarget" } else { Write-Warning "py_compile failed - inspect $mapTarget" }
       }
     }
+    foreach ($scriptRoot in $packageScriptRoots) {
+      foreach ($scriptName in @("_message_utils.py", "compile_project.py", "get_compile_messages.py")) {
+        $scriptPath = Join-Path $scriptRoot $scriptName
+        if (Test-Path -LiteralPath $scriptPath) {
+          & python -m py_compile $scriptPath
+          if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] py_compile passed: $scriptPath" } else { Write-Warning "py_compile failed - inspect $scriptPath" }
+        }
+      }
+    }
   } else {
     Write-Host "python not found - skipped syntax verification"
   }
-  Write-Host "Done. Restart the MCP-managed IDE session for changes to take effect."
+  Write-Host "Done. Script-template changes apply on the next tool call; restart the MCP-managed IDE only when recovering an already-stuck call."
 }

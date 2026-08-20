@@ -2,7 +2,7 @@
 
 > 适用:`codesys-mcp-persistent` v0.6.3(npm 全局包)
 > 目标 IDE:ctrlX PLC Engineering(PLE-V-0206.x,profile `ctrlX PLC 2.6.8`)及其他 OEM CODESYS 品牌 IDE
-> 首次应用:2026-08-12 · connector I/O 扩展:2026-08-18 · 状态:已在本机验证
+> 首次应用:2026-08-12 · connector I/O 扩展:2026-08-18 · 编译消息扩展:2026-08-20 · 状态:已在本机验证
 
 ## 症状 1：CRLF 导致编译工具失败
 
@@ -29,6 +29,17 @@ device.connectors → connector.host_parameters
 
 因此 `inspect_device_node` 会显示 `children: []`，原始 `map_io_channel` 随后报 `Channel not found`，尽管 PLC Engineering 的 I/O Mapping 页里确实存在通道。
 
+## 症状 3：PLC 已完成 Build，但 MCP `compile_project` 超时
+
+典型表现是 PLC Engineering 的 Build 窗口已显示完成，MCP 调用却在 300 s 后才报超时；随后 `get_compile_messages` 也可能继续卡住。
+
+根因有两层：
+
+1. 原脚本连续执行 `clean()`、`clean_all()`、`build()` 和 `generate_code()`，对大型 OpCon 工程存在重复编译；
+2. 编译结束后，原脚本按“全部消息类别 × Fatal/Error/Warning/Information/Text”反复调用 `get_message_objects(category, severity)`，ctrlX PLE 2.6.8 的该 OEM 接口可能单次阻塞数分钟。
+
+兼容补丁改成一次官方 `ScriptApplication.build()`，并只读取 Build 与 Additional code checks 两类缓存；每类仅调用一次 `System.get_messages(category)`，由 IDE 自身的 Build summary 统计 error/warning。若拿不到 Build summary，工具按错误失败，不会把未知状态误报成成功。
+
 ## 补丁内容
 
 | 文件 | 修改 |
@@ -37,6 +48,9 @@ device.connectors → connector.host_parameters
 | `dist/scripts/_message_utils.py` | 全文 CRLF → LF |
 | `dist/scripts/map_io_channel.py` | 增加 connector mappable-parameter 查找；支持按 `Channel_6.Output` 或零基索引定位；写后强制回读校验；增加 `@batch-json` 事务式批量映射并只保存一次工程 |
 | `src/scripts/map_io_channel.py` | 同步源码副本，避免本机重建 `dist` 时丢失补丁 |
+| `dist/scripts` + `src/scripts` 的 `_message_utils.py` | 增加有界 Build 消息快照与向后兼容的结构化消息转换；未知摘要按失败处理 |
+| `dist/scripts` + `src/scripts` 的 `compile_project.py` | 应用工程只执行一次 `build()`；只读两个编译类别，不再全类别/严重级别扫描 |
+| `dist/scripts` + `src/scripts` 的 `get_compile_messages.py` | 使用同一有界缓存读取路径，避免只读消息也阻塞 IDE |
 
 ## 一键应用
 
@@ -56,6 +70,15 @@ python -m py_compile "$env:APPDATA\npm\node_modules\codesys-mcp-persistent\dist\
 ```
 
 然后通过 MCP 调用 `compile_project`,应返回结构化错误/警告列表而非 SyntaxError。
+
+无需 IDE 的编译消息回归测试：
+
+```powershell
+python .\test-fast-compile-message.py `
+  "$env:APPDATA\npm\node_modules\codesys-mcp-persistent\dist\scripts\_message_utils.py"
+```
+
+2026-08-20 在 Station010 实测：旧路径超过 300 s；补丁后 `compile_project` 约 7.6 s 返回 0 errors / 7 warnings，`get_compile_messages` 约 0.8 s 返回同一缓存。该验证是离线 Build，未连接、下载或运行实体 PLC。
 
 connector 通道补丁可直接通过正式工具验证：
 
@@ -96,7 +119,8 @@ map_io_channel(
 | `watcher.py.orig` | 原厂 watcher.py(v0.6.3,未打补丁) |
 | `watcher.py.patched` | 打补丁后的完整文件 |
 | `watcher_crlf_normalize.patch` | unified diff(仅 5 行插入) |
-| `apply-crlf-patch.ps1` | 一键应用/检查 ctrlX 兼容补丁（CRLF、docstring、connector I/O Mapping） |
+| `apply-crlf-patch.ps1` | 一键应用/检查 ctrlX 兼容补丁（CRLF、docstring、connector I/O Mapping、有界编译消息） |
+| `test-fast-compile-message.py` | 不启动 IDE 的编译摘要解析/失败关闭回归测试 |
 
 ## 附注:docstring 损坏修复
 

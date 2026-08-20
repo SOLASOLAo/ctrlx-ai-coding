@@ -79,6 +79,15 @@
 - 新工具 scripts/ioe_ipc.ps1:复用 MCP watcher 机制(--runscript + %TEMP%\ioe-ipc 文件命令队列)驱动独立 IOE 实例;open/树遍历/remove/save 全通;
 - 真工程修复:删坏节点 _100A740_BL(Burster 5877A 为 USB 设备,误挂 EtherCAT),树与图纸页4一致(EK1100 → A1-A4 EL1018×4 + C1-C3 EL2008×3),typeId 逐项校验;备份 .bak_20260818;
 - 9 条踩坑归档 docs/ioe_scripting_playbook.md(对话框阻塞主线程、.~u 残留锁、Environment.Exit 强退、插件初始化竞态、cp1252 回显假警报等)。
+
+### 2026-08-20 · MCP 编译完成后超时修复
+
+- 复现 Station010 的 Application Build 已在 PLE 完成，但 `compile_project` 超过 300 s；单独按消息类别/严重级别读取也超过 180 s。
+- 定位为原 MCP 的重复构建与 `get_message_objects(category, severity)` 全组合扫描，而不是 PLC 编译本身。
+- 扩展 `apply-crlf-patch.ps1`：应用工程只执行一次 `ScriptApplication.build()`，只按类别各调用一次 `System.get_messages(category)`，并以 IDE Build summary 计数；摘要不可验证时失败关闭。
+- 同步覆盖 `compile_project` 与 `get_compile_messages`，增加 `test-fast-compile-message.py` 离线回归；`dist/scripts` 与 `src/scripts` 一起修补且 `-Check` 幂等。
+- Station010 离线实测：编译约 7.6 s 返回 0 errors / 7 warnings；缓存读取约 0.8 s。未连接、下载或运行实体 PLC。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |
@@ -98,6 +107,7 @@
 | D14 | 路线④开发项目 = **FreePLCDemo**(/media/administrator/D/FreePLC/FreePLCDemo,ai-repo-skeleton 派生,独立仓库) | 08-12 |
 | D15 | **Editor 回退策略**:VS Code 替代 Editor 只是一条路线;Editor v4.2.11 常备后备(不卸载/不升级、格式不分叉、单写者、里程碑回退演练);详见 FreePLCDemo handover §5 | 08-13 |
 | D16 | **IO 工程只由 IOE 2.6.4 脚本驱动**(PLE 打开=版本污染+崩溃);IOE-IPC = --runscript watcher + 文件命令队列;优雅关闭 p.close(),禁 Environment.Exit;详见 docs/ioe_scripting_playbook.md | 08-18 |
+| D19 | **ctrlX 编译消息使用有界读取**：应用只做一次 `build()`；只读取 Build/Additional code checks，每类一次 `get_messages`；无 Build summary 时失败关闭，不再全类别×严重级别扫描 | 08-20 |
 
 ## 待办 / 下一步
 
@@ -121,3 +131,10 @@
 - 发现原 MCP `map_io_channel` 只遍历项目树子节点，无法处理 ctrlX/DataLayer 的 connector 通道。已扩展为遍历 `connectors/host_parameters/is_mappable_io/io_mapping`，支持 `Channel_6.Output` 名称定位并强制写后回读。
 - 补丁已并入既有 `apply-crlf-patch.ps1`，形成单一 ctrlX 兼容补丁入口；npm 升级后必须先 `-Check` 再应用。
 - 实测结果：清除 `_000SK010C1_Channel_6` 的 C1 Channel 6 映射和失效符号后，编译由 1 error / 9 warnings 恢复为 **0 errors / 7 warnings**；未连接或操作实体 PLC。
+
+## D19(2026-08-20)ctrlX 编译消息有界读取
+
+- `ScriptApplication.build()` 是应用工程唯一的常规 Build 入口；不把 `clean()`、`clean_all()` 与 `generate_code()`叠加到每次 MCP 编译。
+- 编译结果只从 Build 与 Additional code checks 两个类别读取，每类只调用一次 `System.get_messages(category)`；IDE summary 是 error/warning 计数事实源。
+- 不能解析 Build summary 时必须返回错误，不能以空消息推断编译成功。
+- 该扩展纳入统一 `apply-crlf-patch.ps1`，npm 升级后与 CRLF、connector I/O Mapping 补丁一同检查和重装。

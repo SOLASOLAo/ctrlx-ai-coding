@@ -58,7 +58,7 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 │   ├── codex.config.toml.example       ← 生效中的 Codex MCP 配置(路径按本机改)
 │   └── history/                        ← 配置演进备份
 ├── patches/
-│   └── codesys-mcp-persistent-crlf/    ← ⭐ ctrlX IDE 必需补丁 + 一键脚本
+│   └── codesys-mcp-persistent-crlf/    ← ⭐ ctrlX IDE 必需补丁（行尾、I/O、编译消息）+ 一键脚本
 ├── scripts/                            ← 环境采集脚本 + ioe_ipc.ps1(IOE 驱动)
 ├── mcp_test/                           ← MCP 验证用 IronPython 脚本(.project 二进制不入库)
 ├── templates/                          ← ai-repo-skeleton:新代码项目骨架模板(四文档纪律)
@@ -83,7 +83,7 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 
 - 🔴 `write_variable` 是**强制写值(FORCE)**,真机操作前确认安全状态;
 - 🔴 不手改 `.project` 字节;CpStudio 重新生成前必备份 AI 改动;
-- 🔴 npm 升级 `codesys-mcp-persistent` 会覆盖 CRLF 补丁 → 重跑 `apply-crlf-patch.ps1`;
+- 🔴 npm 升级 `codesys-mcp-persistent` 会覆盖 ctrlX 兼容补丁（含编译超时修复）→ 重跑 `apply-crlf-patch.ps1`;
 - 🟡 同一时间只开一个使用本 MCP 的 Codex 窗口(多实例竞态致 IDE 退出)。
 
 ## 路线图(产品方向)
