@@ -1,6 +1,6 @@
 ﻿# PLE SymbolConfig & Git Push 实测笔记(2026-08-18)
 
-> 项目:Station010_0708(电阻测试台);环境:ctrlX PLC Engineering 2.6.8 / ScriptEngine 4.1 / codesys-persistent MCP。
+> 项目:Station010(电阻测试台);环境:ctrlX PLC Engineering 2.6.8 / ScriptEngine 4.1 / codesys-persistent MCP。
 
 ## 1. SymbolConfig 接口边界(已实测，2026-08-18 修订)
 | 方法 | 结果 |
@@ -15,7 +15,7 @@
 
 IDE Symbols 编辑器导出的 Symbolconfiguration XML 仍是可读快照，根元素
 `<Symbolconfiguration xmlns="http://www.3s-software.com/schemas/Symbolconfiguration.xsd">`;
-实例:`Station010_0708/Plc/Stat010_V5.11_CtrlX_PLC.Device.Application.xml`(4208 行)。
+实例:`Station010/Plc/Stat010_V5.11_CtrlX_PLC.Device.Application.xml`(4208 行)。
 
 正式 REST 基地址必须使用 Swagger 声明值：
 
