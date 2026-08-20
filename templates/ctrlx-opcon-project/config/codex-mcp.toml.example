@@ -1,0 +1,19 @@
+# Merge only this block into the current user's %USERPROFILE%\.codex\config.toml.
+# Replace <LOCAL_WORKSPACE_ROOT> locally. Never commit a token, password, model
+# provider configuration or another developer's complete config.toml.
+
+[mcp_servers.codesys-persistent]
+command = "codesys-mcp-persistent"
+args = [
+  "--codesys-path",
+  "<PLC_ENGINEERING_EXE>",
+  "--codesys-profile",
+  "{{PLC_ENGINEERING_PROFILE}}",
+  "--workspace",
+  "<LOCAL_WORKSPACE_ROOT>",
+  "--mode",
+  "persistent",
+]
+startup_timeout_sec = 120
+tool_timeout_sec = 180
+enabled = true

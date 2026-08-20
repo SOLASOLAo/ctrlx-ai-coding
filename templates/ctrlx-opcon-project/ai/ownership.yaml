@@ -1,0 +1,10 @@
+schema_version: 1
+
+write_modes:
+  full_object: replace declaration and implementation through MCP, then read back
+  implementation: replace only an Action or Method implementation, then read back
+  semantic_merge: preserve CpStudio-owned content and restore only declared hooks
+  graphical_attributes: use official REST with hash guard and normalized readback
+  rest_composite: apply declaration, SFC graph and children as one guarded change set
+
+objects: []

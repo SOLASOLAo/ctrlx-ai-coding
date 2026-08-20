@@ -1,0 +1,6 @@
+interface:
+  display_name: "ctrlX OpCon Engineering"
+  short_description: "Develop and audit CpStudio OpCon ctrlX projects"
+  default_prompt: "Use $ctrlx-opcon-engineering to audit the latest CpStudio export offline."
+policy:
+  allow_implicit_invocation: true

@@ -1,6 +1,6 @@
 # ctrlX AI Coding — 讨论与决策记录(SESSION LOG)
 
-> 记录人:AI + AGZ1WX · 2026-08-04 ~ 2026-08-12
+> 记录人:AI + AGZ1WX · 2026-08-04 ~ 2026-08-20
 > 本文是过程流水账;结论性内容以 `ctrlX_AI_project_baseline.md` 为准。
 
 ## 背景
@@ -8,7 +8,8 @@
 用户用 ctrlX 做工程,原 Nexeed Control plus Studio(CpStudio)低代码平台过于冗余:
 - 真正需要的只是它提供的 OpCon 库与一键导出能力;
 - 平台本身不好用、库数量不完善;
-- 目标:**用 AI(MCP 驱动)替代 CpStudio 完成 PLC 程序主体**,CpStudio 退化为"骨架/HMI 一次性生成器"。
+- 初始目标曾是让 CpStudio 退化为一次性骨架/HMI 生成器；Station010 实战后于 2026-08-20 修正为
+  **CpStudio 持续维护供应商模型，AI 经 MCP/REST 维护声明归属的 PLC 应用逻辑**。
 
 ## 时间线
 
@@ -88,14 +89,21 @@
 - 同步覆盖 `compile_project` 与 `get_compile_messages`，增加 `test-fast-compile-message.py` 离线回归；`dist/scripts` 与 `src/scripts` 一起修补且 `-Check` 幂等。
 - Station010 离线实测：编译约 7.6 s 返回 0 errors / 7 warnings；缓存读取约 0.8 s。未连接、下载或运行实体 PLC。
 
+### 2026-08-20 · 跨项目初始化、Post-export 队列与 Codex Skill
+
+- 用户确认未来会用同一方案开发多台自动化设备；把 Station010 的目录经验提炼为通用 AI 旁车模板与事务化初始化器，拒绝覆盖、统一相对路径且不复制 `.project`/Std/闭源资料。
+- Post-export 从单一覆盖信号升级为 `pending/processing/done/failed` 独立队列；离线消费者只做 Git/指纹/ownership 审计，锁后枚举避免 stale candidate，并强校验请求 Station/PLC 与项目配置一致。
+- 建立并安装 `ctrlx-opcon-engineering` Skill，明确初始化、导出审计、PLC 离线开发、故障诊断可组合；两轮独立前向测试发现并推动修复模板缺执行器、profile 硬编码和错误工程请求门禁。
+- 产品化边界与优先级归档 `docs/mcp_productization_roadmap.md`；下一阶段先做受控 fork、会话租约、operation、`project_health`、`compile_project_v2` 与 `apply_change_set`。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |
 |---|---|---|
 | D1 | `.project` 只能经 IDE 脚本引擎修改,不手改字节 | 08-04 |
-| D2 | PLC 侧完全绕开 CpStudio(库走本地托管仓库) | 08-11 |
+| D2 | 历史结论：PLC 库可脱离 CpStudio 解析；“完全绕开 CpStudio”已由 D20 修正 | 08-11 |
 | D3 | MCP 模式 = persistent(headless 在品牌 IDE 不可用) | 08-11 |
-| D4 | 分工:用户骨架 / AI 细节;骨架模板 AI 不代做 | 08-11 |
+| D4 | 历史分工：用户骨架 / AI 细节；已由 D20/D21 扩展为长期协作与 AI 旁车初始化 | 08-11 |
 | D5 | 同一时间只允许一个 Codex 窗口使用本 MCP | 08-12 |
 | D6 | eval_python 仅用于审计;常规操作走正规工具 | 08-12 |
 | D7 | npm 包升级后必须重打 CRLF 补丁 | 08-12 |
@@ -108,13 +116,16 @@
 | D15 | **Editor 回退策略**:VS Code 替代 Editor 只是一条路线;Editor v4.2.11 常备后备(不卸载/不升级、格式不分叉、单写者、里程碑回退演练);详见 FreePLCDemo handover §5 | 08-13 |
 | D16 | **IO 工程只由 IOE 2.6.4 脚本驱动**(PLE 打开=版本污染+崩溃);IOE-IPC = --runscript watcher + 文件命令队列;优雅关闭 p.close(),禁 Environment.Exit;详见 docs/ioe_scripting_playbook.md | 08-18 |
 | D19 | **ctrlX 编译消息使用有界读取**：应用只做一次 `build()`；只读取 Build/Additional code checks，每类一次 `get_messages`；无 Build summary 时失败关闭，不再全类别×严重级别扫描 | 08-20 |
+| D20 | **CpStudio 持续作为 OpCon 模型/HMI/标准对象事实源**；AI 只维护 ownership 声明的 PLC 应用增量，导出后先审计再修复 | 08-20 |
+| D21 | **新项目统一使用事务化 AI 旁车初始化器和版本化 Skill**；不复制 Station010 项目事实、`.project`、Std 或闭源资料 | 08-20 |
+| D22 | **Post-export hook 只发布独立请求**；离线消费者不启动 PLE/MCP，且请求 Station/PLC 必须与项目配置强一致 | 08-20 |
 
 ## 待办 / 下一步
 
-1. 用户:CpStudio 骨架(层级/HMI/handler/变量)+ 骨架模板整理(剥离 TrainingStation IO);
-2. 骨架就绪 → AI 阶段 3:读骨架 → 写 SqM/SqS 细节 → compile 结构化错误闭环;
-3. 仿真验证(set_simulation_mode)→ 真机下载调试;
-4. 产品化方向:补丁/工具沉淀、自定义库集合、AI 代码生成规范、可复用的项目模板。
+1. 新项目使用统一初始化器创建 AI 旁车；用户继续在 CpStudio 维护模型/标准对象/HMI，AI 维护 ownership 声明的 PLC 增量；
+2. 配置真实 CpStudio Post-export hook，验证独立队列与第一阶段离线报告，再实现唯一 MCP 会话中的受控第二阶段；
+3. 按 `docs/mcp_productization_roadmap.md` 建立受控 fork、租约/operation、健康检查、结构化编译和 change set；
+4. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；
 5. **路线④**:开发机已就绪,P0~P2 完成(继承 PreemptRt);执行转入 **FreePLCDemo**(v4 安装 → P4 集成);
    交接见 `route4-rtpreempt-openplc/HANDOVER.md` §7。
 ## D17(2026-08-18 夜)PLE SymbolConfig 脚本极限实测 + Station010 GitHub 备份

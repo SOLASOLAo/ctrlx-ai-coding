@@ -1,0 +1,32 @@
+schema_version: 1
+
+project:
+  id: '{{PROJECT_ID}}'
+  display_name: {{DISPLAY_NAME_YAML}}
+  station_id: {{STATION_ID_YAML}}
+  platform: {{PLATFORM_YAML}}
+
+paths:
+  station_root: {{STATION_ROOT_YAML}}
+  standard_library_root: {{STANDARD_LIBRARY_ROOT_YAML}}
+  cpstudio_project: {{CPSTUDIO_PROJECT_YAML}}
+  plc_project: {{PLC_PROJECT_YAML}}
+  io_project: {{IO_PROJECT_YAML}}
+  bus_config: {{BUS_CONFIG_YAML}}
+  export_request: 'data/requests'
+
+tools:
+  plc_engineering_profile: {{PLC_ENGINEERING_PROFILE_YAML}}
+  plc_engineering_version: {{PLC_ENGINEERING_VERSION_YAML}}
+  io_engineering_version: {{IO_ENGINEERING_VERSION_YAML}}
+  plc_rest_base_url: {{PLC_REST_BASE_URL_YAML}}
+  persistent_mcp_single_session: true
+
+repositories:
+  engineering: {{ENGINEERING_REPOSITORY_YAML}}
+  integration: {{INTEGRATION_REPOSITORY_YAML}}
+
+manifests:
+  ownership: 'ai/ownership.yaml'
+  hooks: 'ai/hooks.yaml'
+  graphical: 'ai/graphical.yaml'

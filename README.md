@@ -1,10 +1,10 @@
 # ctrlX AI Coding
 
-**用 MCP + AI 驱动 Bosch ctrlX PLC 编程** —— 让 AI 直接编写符合 OpCon 标准的 ctrlX PLC 程序,
-把 Control plus Studio(CpStudio)低代码平台缩减为一次性骨架生成器。
+**用 MCP + AI 驱动 Bosch ctrlX PLC 编程** —— CpStudio 持续维护 OpCon 模型、标准对象与 HMI，
+AI 依据可读规格经受控 MCP/REST 开发 PLC 应用逻辑并完成离线验证。
 
 > AI-driven PLC programming for Bosch ctrlX via persistent MCP.
-> CpStudio stays for one-shot HMI/skeleton generation; AI writes the PLC logic.
+> CpStudio remains the model/HMI source; AI owns declared PLC application logic.
 
 ## 这个项目解决什么问题
 
@@ -17,8 +17,8 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 本项目验证并落地一条新路线:
 
 ```
-阶段1 CpStudio V5.11(人,一次性)
-   Station/Module/Command 层级 + HMI + handler/变量 + OpCon 状态机骨架 → 一键生成/导出
+阶段1 CpStudio V5.11(人,持续使用)
+   Station/Command/Unit 层级 + 标准对象 + HMI/Event/StationData/BMK → 生成/导出
         ↓
 阶段2 硬件组态(人)
    ctrlX 默认 IP 网页 → EtherCAT → ctrlX IO Engineering
@@ -30,10 +30,10 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
    simulation → connect → download → start/stop → read/write/monitor
 ```
 
-**核心结论(已实测)**:`.project` 是加密容器,只能经 IDE 脚本引擎修改;而所需 OpCon 库全部在
-本地托管仓库自动解析 —— **PLC 侧可完全绕开 CpStudio**。
+**核心结论(已实测)**:`.project` 是加密容器，只能经对应 IDE、MCP 或正式 REST 接口修改；
+CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型文件，也不覆盖未声明的生成对象。
 
-## 当前状态(2026-08-12)
+## 当前状态(2026-08-20)
 
 | 项 | 状态 |
 |---|---|
@@ -41,7 +41,36 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 | CRLF 缺陷补丁 | ✅ 已打 + 已产品化(`patches/`,含一键脚本) |
 | 冒烟编译 | ✅ 0 errors / 35 warnings(培训样板固有符号警告) |
 | 分工 | 用户做骨架(CpStudio),AI 做 PLC 代码细节 |
-| 阶段 | 等待用户骨架就绪 → 阶段 3 AI 填充逻辑 |
+| 项目模板 | ✅ 新项目初始化器 + 可执行 Post-export 离线审计队列 |
+| Codex Skill | ✅ `ctrlx-opcon-engineering`，源码可版本化、安装可校验 |
+| 产品化计划 | `docs/mcp_productization_roadmap.md` |
+
+## 创建新工站 AI 旁车
+
+不要复制某个现有 Station 项目的 BMK、规格和项目脚本。先预览，再由统一初始化器创建：
+
+```powershell
+.\scripts\New-CtrlXOpconProject.ps1 `
+  -ProjectId 'example-cell' `
+  -DisplayName 'Example Assembly Cell' `
+  -StationId 'Station020' `
+  -StationRoot 'C:\Engineering\ExampleCell\Station020' `
+  -OutputPath 'C:\Engineering\ExampleCell\McpCoding' `
+  -WhatIf
+```
+
+完整参数和离线测试见 `templates/README.md`。初始化器只创建 AI 旁车，所有工程路径写成相对路径；不会复制
+Station、`Std`、`.project` 或闭源资料，目标目录已存在时会拒绝覆盖。
+
+安装或校验 Codex Skill：
+
+```powershell
+.\scripts\Install-CtrlXOpconSkill.ps1 -Force
+.\scripts\Install-CtrlXOpconSkill.ps1 -Check
+```
+
+安装后重新加载 Codex，即可显式使用 `$ctrlx-opcon-engineering`。Skill 负责编排方法和安全边界；
+项目事实仍来自当前仓库的 `config/specs/ai/src/catalog`。
 
 ## 仓库结构
 
@@ -51,6 +80,7 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 ├── docs/
 │   ├── ctrlX_AI_project_baseline.md    ← 基线记录(权威文档,11 章)
 │   ├── ctrlX_AI_project_baseline.html  ← 基线记录 HTML 版
+│   ├── mcp_productization_roadmap.md    ← MCP 产品分层、优先级和验收标准
 │   ├── SESSION_LOG.md                  ← 讨论与决策流水账
 │   ├── ioe_scripting_playbook.md       ← IOE 脚本化操作手册(阶段2实战踩坑)
 │   └── PC_Info_Report.txt              ← 环境快照
@@ -59,9 +89,10 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 │   └── history/                        ← 配置演进备份
 ├── patches/
 │   └── codesys-mcp-persistent-crlf/    ← ⭐ ctrlX IDE 必需补丁（行尾、I/O、编译消息）+ 一键脚本
-├── scripts/                            ← 环境采集脚本 + ioe_ipc.ps1(IOE 驱动)
+├── scripts/                            ← 新项目初始化、环境采集和 IOE 驱动
 ├── mcp_test/                           ← MCP 验证用 IronPython 脚本(.project 二进制不入库)
-├── templates/                          ← ai-repo-skeleton:新代码项目骨架模板(四文档纪律)
+├── templates/                          ← ctrlX/OpCon AI 旁车 + 通用代码项目模板
+├── tests/                              ← 初始化器等纯离线工具测试
 └── route4-rtpreempt-openplc/           ← 路线④ PREEMPT_RT+IgH+OpenPLC 交接(独立 Linux 机开发)
 ```
 
@@ -93,7 +124,8 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 - [x] 阶段 2:硬件与 IO 组态(EtherCAT)(Station010 实测 2026-08-18,方法见 docs/ioe_scripting_playbook.md)
 - [ ] 阶段 3:AI 填充逻辑(SqM/SqS/自动/手动),compile 结构化错误闭环
 - [ ] 阶段 4:仿真 → 真机下载调试
-- [ ] 产品化:精简 OpCon 骨架模板、自定义库集合、AI 代码生成规范、可复用项目模板
+- [x] 产品化基础:可复用项目初始化器、Post-export 离线审计队列和 Codex Skill
+- [ ] 产品化 MCP:受控 fork、租约/operation、project_health、compile_project_v2、change set 与正式 SFC/Symbol/I/O 工具
 
 ## 版权说明
 

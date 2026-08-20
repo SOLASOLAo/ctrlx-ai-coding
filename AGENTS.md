@@ -5,8 +5,9 @@
 
 ## 1. 项目一句话
 
-用 **persistent MCP + AI** 驱动 Bosch ctrlX PLC 编程,逐步摆脱 Nexeed Control plus Studio(CpStudio)低代码平台;
-长期目标是沉淀一套可复用的 **AI coding 产品**(MCP 流水线 + HMI 框架 + 代码生成规范)。
+用 **CpStudio + persistent MCP + AI** 协作开发 Bosch OpCon/ctrlX 自动化项目：CpStudio 持续维护
+供应商模型、标准对象与 HMI，AI 依据可读规格维护声明归属的 PLC 应用逻辑；长期目标是沉淀可复用的
+**AI coding 产品**（MCP 工具、项目模板、Skill 与代码生成规范）。
 
 四条技术路线并行推进(详见 `docs/ctrlX_tech_routes.html`):
 ① CpStudio 骨架 + AI MCP(主线)→ ② 自研 HMI + ctrlX(主攻演进)→ ③ CODESYS 软PLC(备选验证)→ ④ 纯 RT Linux(远期储备)。
@@ -15,10 +16,10 @@
 
 | 角色 | 职责 |
 |---|---|
-| **用户** | CpStudio 骨架(Station/Module/Command 层级、HMI、handler/变量、库导出)、骨架模板制作、硬件组态、真机安全确认 |
-| **AI** | PLC 代码细节(SqM/SqS/自动/手动)、编译-修复闭环、IO 映射辅助、仿真/下载调试辅助、HMI 代码、文档维护 |
+| **用户** | CpStudio 模型（Station/Command/Unit 层级、标准对象、HMI/Event/StationData/BMK）、硬件组态、工艺与真机安全确认 |
+| **AI** | AI 旁车初始化、PLC 应用逻辑、编译-修复闭环、I/O/Symbol/SFC 审计、仿真辅助、文档与证据维护 |
 
-**AI 不代做骨架模板**;骨架就绪前不启动逻辑填充。
+AI 可以创建标准化的 AI 旁车目录，但不伪造 CpStudio 供应商模型；影响工艺或安全的未知内容先标记 pending。
 
 ## 3. 红线(违反会出事故)
 
@@ -29,7 +30,7 @@
 4. **同一时间只允许一个 Codex 窗口使用 codesys MCP**(多实例抢 profile 会致 IDE 退出)。
 5. **`write_variable` 是 FORCE 强制写值**,不解除一直生效;真机 download/start_stop/write 前必须与用户确认安全状态。
 6. **eval_python 仅作审计用途**;常规操作走正规 MCP 工具;**勿对已打开工程裸调 `se.projects.open()`**(卡死 IDE UI 线程)。
-7. CpStudio 重新生成会覆盖 AI 代码:生成前必备份 + diff;AI 自定义代码放独立 POU 并带项目前缀。
+7. CpStudio 重新生成可能覆盖 AI 代码：生成后先 diff，再按 ownership/hooks/graphical 清单恢复；先确认集成 Git 可恢复精确起点，不能恢复时只建一个内容寻址 checkpoint，禁止重复创建哈希相同的备份。
 
 ## 4. 环境关键事实(已实测,改前核对)
 
@@ -40,7 +41,7 @@
 | MCP 模式 | **persistent 唯一可行**(ctrlX 品牌 IDE headless 不可用) |
 | MCP resource server 名 | `codesys-persistent` |
 | Codex 配置 | `C:\Users\AGZ1WX\.codex\config.toml`(本仓库 `config/codex.config.toml.example` 为副本) |
-| 库仓库 | `C:\ProgramData\Rexroth\PLE-V-0206\0\Studio\Managed Libraries`(OpCon 全套,编译时占位符自动解析,**PLC 侧不依赖 CpStudio**) |
+| 库仓库 | `C:\ProgramData\Rexroth\PLE-V-0206\0\Studio\Managed Libraries`（OpCon 库编译时由占位符解析；不表示可以绕开 CpStudio 模型所有权） |
 | 模板 | `C:\ctrlXWORKS\ctrlXPLCEngineering\PLE_V_0206\Studio\Templates\Standard.project`(=TrainingStation 拷贝,含 OpCon 骨架+34 库占位符) |
 | 参考样板 | 桌面 `To_Participants_ctrlX_V2.6.10_CN\TrainingStation\...`(只读参考,不分发) |
 | 测试工程 | `C:\A_Documents\A_Projects\A_Software\PLC_Generate\TestOes\mcp_test\TS_PLC_TEST.project` |
@@ -62,9 +63,11 @@
 - 提交信息风格:`docs:` / `patches:` / `scripts:` / `config:` / `hmi:` 前缀 + 简述;中文正文可
 - 日期一律 ISO 格式(YYYY-MM-DD);新增决策追加到 SESSION_LOG 决策清单与基线红线章节
 
-## 7. 当前状态快照(2026-08-12)
+## 7. 当前状态快照(2026-08-20)
 
 - [x] 阶段 0:环境基线 + persistent 上线验证 + ctrlX 兼容补丁产品化（含编译超时修复）
+- [x] 通用 AI 旁车初始化器 + Post-export 离线审计队列 + `ctrlx-opcon-engineering` Skill
+- [x] MCP 分层产品化路线与验收标准：`docs/mcp_productization_roadmap.md`
 - [ ] 阶段 A(进行中):用户 CpStudio 骨架 → AI 填充逻辑(阶段 3)→ 仿真 → 真机
 - [ ] 阶段 B:路线② HMI 原型(OPC UA demo → hmi-framework,主画面 Avalonia 原生壳,Web 版远程备选)
 - [ ] 阶段 C:路线③ 标准 CODESYS + MCP 实测(先验证后买授权)

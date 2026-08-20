@@ -1,0 +1,6 @@
+schema_version: 1
+
+hooks: []
+
+# mixed 对象只登记最小 required_calls / required_symbols / required_outputs /
+# required_signals / invariants；不要在这里保存 CpStudio 生成对象的旧完整副本。

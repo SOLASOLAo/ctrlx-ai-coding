@@ -1,0 +1,6 @@
+schema_version: 1
+
+objects: []
+
+# SFC 图形对象至少登记 PLC 树 path、REST api_path、写入策略、Step Comment、
+# 并行分支和回读要求。写入前必须核对 hash，写入后必须 GET 并规范化比较。

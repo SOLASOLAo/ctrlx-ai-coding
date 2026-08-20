@@ -1,0 +1,6 @@
+schema_version: 1
+
+events: []
+
+# 每个事件至少记录 owner、symbol、designator、class、trigger、reset；
+# AdditionalInfo 若进入 OpCon STRING(63)，必须由静态检查限制长度。

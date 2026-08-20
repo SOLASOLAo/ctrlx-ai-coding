@@ -1,30 +1,30 @@
 ﻿# ctrlX AI 项目基线记录(MD 版)
 
 > Persistent MCP + Control plus Studio 混合工作流
-> 记录日期:2026-08-11 · 更新:2026-08-12(persistent 上线验证)· 机器:AGZ1WX-APAC
+> 记录日期:2026-08-11 · 更新:2026-08-20（CpStudio/AI 长期协作与跨项目产品化）· 机器:AGZ1WX-APAC
 > 配套 HTML:`ctrlX_AI_project_baseline.html`(同目录)
 
 ---
 
-## 0. 分工约定(2026-08-11 确定)
+## 0. 分工约定（2026-08-20 更新）
 
 | 角色 | 职责 |
 |---|---|
-| **用户(人)** | CpStudio 搭骨架:Station/Module/Command 层级、HMI 画面、handler/变量定义、库导出、**骨架模板的制作与维护** |
-| **AI(persistent MCP)** | **PLC 代码细节**:SqM_Auto/Manual、SqS 序列、单元工艺逻辑、编译-修复闭环、下载调试辅助 |
+| **用户(人)** | CpStudio 模型：Station/Command/Unit 层级、标准 Unit/AddOn/Peripheral、HMI、Event、StationData、BMK，以及工艺和真机安全决策 |
+| **AI(persistent MCP/REST)** | AI 旁车初始化、声明归属的 PLC 应用逻辑、SFC/Symbol/I/O 审计、编译-修复闭环、仿真辅助和证据维护 |
 
 约定要点:
-- 骨架模板(从 Standard.project 剥离 TrainingStation 专属内容)由**用户**自行整理,AI 不代做
-- CpStudio 重新生成后,AI 先 diff 确认自定义代码未被覆盖再继续
-- HMI 符号名一旦骨架阶段定下,PLC 侧保持不变,避免回炉 CpStudio
+- CpStudio 不是一次性工具；模型、标准对象或 HMI/BMK 变化继续在 CpStudio 完成并重新导出
+- AI 可以创建标准化的 AI 旁车目录，但不伪造或直接改写 CpStudio 的闭源模型文件
+- CpStudio 导出后先做 Git/指纹/ownership 离线审计，再由唯一 persistent 会话执行受控修复、回读和编译
 
 ---
 
 ## 1. 总体架构
 
 ```
-阶段1 CpStudio V5.11(人,一次性)
-   Station/Module/Command 层级 + HMI + handler/变量 + OpCon 状态机骨架 → 一键生成/导出
+阶段1 CpStudio V5.11(人,持续使用)
+   Station/Command/Unit + 标准对象 + HMI/Event/StationData/BMK → 生成/导出
         ↓
 阶段2 硬件组态(人)
    ctrlX 默认 IP 网页 → EtherCAT 配置 → ctrlX IO Engineering 组态 IO
@@ -38,7 +38,7 @@
 
 核心前提(均已实测):
 - `.project` 是**加密容器**,不能手改文件,只能经 IDE 脚本引擎(MCP 驱动)修改
-- 所需全部库已在本地托管库仓库,编译时占位符自动解析,**PLC 侧不再依赖 CpStudio**
+- 所需库可由本地托管仓库解析；这只解决 PLC 编译依赖，不改变 CpStudio 对供应商模型的所有权
 
 ---
 
@@ -46,7 +46,7 @@
 
 | 组件 | 版本 | 路径 | 角色 |
 |---|---|---|---|
-| Control plus Studio (CpStudio) | V5.11 (5.11.0.169);另有 V5.8/V5.5 | `C:\Nexeed\Automation\CSV5_11\Bosch.Nexeed.Automation.CpStudio.exe` | 低代码平台:HMI+PLC 代码生成、库管理、一键导出(仅搭骨架用) |
+| Control plus Studio (CpStudio) | V5.11 (5.11.0.169);另有 V5.8/V5.5 | `C:\Nexeed\Automation\CSV5_11\Bosch.Nexeed.Automation.CpStudio.exe` | OpCon 模型、标准对象、HMI/Event/StationData/BMK 与一键导出（持续使用） |
 | ctrlX WORKS | WRK-V-0206.4 (2.6.4) | `C:\ctrlXWORKS\ctrlXWORKS\WRK_V_0206` | ctrlX 套件容器 |
 | ctrlX PLC Engineering | PLE-V-0206.8 (2.6.8);exe 2.3.7.5,CODESYS 3.5.19.70 内核 | `C:\ctrlXWORKS\ctrlXPLCEngineering\PLE_V_0206\StudioPlc\Common\ctrlX-PLC-Engineering.exe` | **PLC 编程 IDE,MCP 驱动对象**;profile = `ctrlX PLC 2.6.8` |
 | ctrlX IO Engineering | IOE-V-0206.4 (2.6.4) | `C:\ctrlXWORKS\ctrlXIOEngineering` | IO 硬件组态(EtherCAT) |
@@ -306,24 +306,34 @@ ctrlX-PLC-Engineering.exe --profile="ctrlX PLC 2.6.8" --noUI --runscript="脚本
 ## 9. 项目实施路线
 
 - [x] **阶段 0 · 环境基线**(2026-08-11 完成,08-12 persistent 上线验证通过 → 见第 7 章):MCP 切 persistent;库/模板/样板盘点;~~干净骨架模板~~ → 归用户职责,不阻塞
-- [ ] **阶段 1 · CpStudio 搭骨架(用户,一次性)**:层级/HMI/handler/变量/库导出 → 一键生成;检查点 = PLE 打开编译 0 error,符号配置与 HMI 画面对上
+- [ ] **阶段 1 · CpStudio 模型(用户,持续使用)**:层级/标准对象/HMI/Event/StationData/BMK → 生成;检查点 = PLE 打开编译 0 error,符号配置与 HMI 对上
 - [ ] **阶段 2 · 硬件与 IO 组态(用户)**:默认 IP 网页 → EtherCAT → ctrlX IO Engineering;IO 符号对接(map_io_channel 可 AI 辅助)
 - [ ] **阶段 3 · AI 填充逻辑(主力)**:get_all_pou_code/search_code 读骨架 → 写 SqM_Auto/Manual、SqS、工艺逻辑(参考样板 = TrainingStation 生成代码)→ compile(结构化错误)→ 修复 → save;自定义代码放独立 POU/文件夹并带项目前缀
 - [ ] **阶段 4 · 下载调试**:set_simulation_mode 先验证 → 真机 connect/download/start_stop → read/write/monitor;里程碑 create_project_archive
-- [ ] **阶段 5 · 迭代**:HMI 改动回 CpStudio;PLC 改动只走 MCP 且保持符号名;每次重新生成后先 diff 存档
+- [ ] **阶段 5 · 迭代**:模型/HMI/BMK 改动回 CpStudio；应用逻辑按 ownership 走 MCP/REST；每次导出进入独立离线审计队列
 
 ---
 
 ## 10. 规则与红线
 
 - 🔴 `write_variable` 是**强制写值(FORCE)**,不解除一直生效;真机操作前确认安全状态。download/start_stop 对真机有实权
-- 🔴 不手改 .project 字节(加密容器);CpStudio 重新生成前必备份 AI 改动
+- 🔴 不手改 .project 字节（加密容器）；CpStudio 导出后先 diff/ownership 审计。先确认集成 Git 可恢复精确起点，不能恢复时只建一个内容寻址 checkpoint，不重复保存哈希相同备份
 - 🟡 每个 MCP 会话弹出可见 IDE 窗口(设计如此,便于监督);勿在窗口内做与 AI 冲突的手动修改
 - 🟡 勿同时打开多个使用 codesys-persistent 的 Codex 窗口(多实例竞态致 IDE 退出,见 §7.3)
 - 🟡 Codex 被强杀可能残留 IDE:下次启动自动接管,失败则手动结束(查 %TEMP%\codesys-mcp-persistent 会话目录)
 - 🟡 eval_python 可执行任意 IronPython,谨慎使用;**勿对已打开工程裸调 `se.projects.open()`**(卡死 UI 线程,见 §7.4)
 - 🟢 版本线:PLE 2.6.8 打开/编译 2.6.10 培训包工程无碍;更新版本生成的工程打开时留意转换提示
-- 🟢 备份约定:config 改动留 `.bak_YYYYMMDD`;模板改动先复制;里程碑用 create_project_archive
+- 🟢 恢复约定：优先使用 Git、可读源码和对象级指纹；只有现有事实源不能恢复时才创建单一受控 checkpoint
+
+---
+
+## 10.1 跨项目产品化基线（2026-08-20）
+
+- `scripts/New-CtrlXOpconProject.ps1` 是新 OpCon/ctrlX AI 旁车的唯一初始化入口；先 `-WhatIf`，目标存在即拒绝，不复制 Station、Std、`.project` 或闭源资料
+- `templates/ctrlx-opcon-project/` 是模板事实源，生成项目自带静态门禁与可执行 Post-export 离线审计队列
+- `skills/ctrlx-opcon-engineering/` 是 Codex 工作流/安全层；Skill 组合流程，项目事实仍来自当前项目的 `config/specs/ai/src/catalog`
+- Post-export 使用 `pending → processing → done/failed` 独立请求；hook 本身不得启动 PLE/MCP，消费者必须把 Station/PLC 路径与 `config/project.yaml` 强一致校验
+- MCP 继续按 `docs/mcp_productization_roadmap.md` 产品化：受控 fork、跨进程租约、异步 operation、`project_health`、`compile_project_v2`、FORCE 生命周期、`apply_change_set`，再实现正式 Symbol/I/O/SFC 接口
 
 ---
 

@@ -1,0 +1,19 @@
+schema_version: 1
+
+station:
+  id: {{STATION_ID_YAML}}
+  application_node: 'Station'
+  handler_type: mode_handler
+  status: pending_review
+  work_positions: []
+
+addons: []
+cyclic_application_controls: []
+
+mode_release:
+  modes: [AUTO, MANUAL, HOME, CHANGEOVER]
+  conditions: []
+  status: pending
+home_condition:
+  expression: null
+  status: pending

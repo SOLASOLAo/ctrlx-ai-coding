@@ -1,4 +1,37 @@
-# templates/ai-repo-skeleton — AI 协作项目骨架模板
+# templates — AI 协作项目骨架模板
+
+## ctrlX/OpCon 自动化项目（推荐）
+
+新 CpStudio + ctrlX 项目不要手工复制现有 Station010 仓库。使用受控初始化器：
+
+```powershell
+.\scripts\New-CtrlXOpconProject.ps1 `
+  -ProjectId 'example-cell' `
+  -DisplayName 'Example Assembly Cell' `
+  -StationId 'Station020' `
+  -StationRoot 'C:\Engineering\ExampleCell\Station020' `
+  -StandardLibraryRoot 'C:\Engineering\ExampleCell\Std' `
+  -CpStudioProject 'Engineering\Stat020.cpsp' `
+  -PlcProject 'Plc\Stat020_PLC.project' `
+  -IoProject 'Plc\Stat020_IO.project' `
+  -BusConfig 'PublicConfig\BusConfig_Stat020.yaml' `
+  -OutputPath 'C:\Engineering\ExampleCell\McpCoding' `
+  -WhatIf
+```
+
+去掉 `-WhatIf` 后才会创建。`OutputPath` 是将要生成的 AI 旁车仓库根目录，必须不存在；脚本绝不覆盖已有目录。
+相对的 CpStudio/PLC/IO/BusConfig 参数以 `StationRoot` 为基准。生成后的 `config/project.yaml` 只保存相对于
+`OutputPath` 的正斜杠路径，不复制 Station、`Std`、`.project` 或闭源资料。
+
+离线自测：
+
+```powershell
+.\tests\Test-New-CtrlXOpconProject.ps1
+```
+
+`templates/ctrlx-opcon-project/` 是该初始化器的唯一模板事实源；Codex Skill 只调用初始化器，不维护第二份模板。
+
+## 通用代码项目
 
 > Codex 标准开发框架:任何新代码型项目都从本骨架派生,继承"四文档纪律 + 会话循环"。
 

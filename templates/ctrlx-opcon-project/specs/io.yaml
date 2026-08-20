@@ -1,0 +1,15 @@
+schema_version: 1
+
+source_of_truth:
+  station_root: {{STATION_ROOT_YAML}}
+  bus_config: {{BUS_CONFIG_YAML}}
+  plc_mapping: {{PLC_PROJECT_YAML}}
+
+signals: []
+ethercat_devices: []
+
+verification:
+  io_engineering_reopen: pending
+  cpstudio_import: pending
+  plc_mapping: pending
+  symbol_configuration: pending

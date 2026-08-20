@@ -1,0 +1,25 @@
+schema_version: 1
+
+compile:
+  required_error_count: 0
+  warning_policy: signature_allowlist
+  warning_signature_fields: [code, object, position]
+  warning_allowlist: []
+
+ownership:
+  fail_if_ai_object_missing: true
+  fail_if_required_hook_missing: true
+  require_dry_run_before_write: true
+  require_readback_after_write: true
+
+plc:
+  prohibit_direct_project_byte_edits: true
+  require_single_business_writer_for_physical_outputs: true
+  require_chain_finish_cleanup_for_active_commands: true
+  require_io_mapping_and_symbol_consistency: true
+
+online:
+  require_user_approval_for_physical_connect: true
+  require_user_approval_for_download: true
+  require_user_approval_for_start_stop: true
+  require_user_approval_for_force_write: true
