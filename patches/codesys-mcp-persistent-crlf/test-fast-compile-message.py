@@ -88,6 +88,16 @@ def main():
     current = load_helper(path, ["Application is current"])
     assert_counts(current, 0, 0)
 
+    dual_summary = load_helper(
+        path,
+        [
+            "Compile complete -- 503 errors, 411 warnings",
+            "Build complete -- 2 errors, 0 warnings : No download possible",
+        ],
+    )
+    dual_snapshot, _ = assert_counts(dual_summary, 503, 411)
+    assert dual_snapshot["categoryResults"][0]["summarySource"] == "Compile complete", dual_snapshot
+
     unknown = load_helper(path, ["Generate code..."])
     snapshot = unknown["msg_fast_compile_snapshot"]()
     entries = unknown["msg_fast_structured_entries"](snapshot)

@@ -19,7 +19,8 @@
     5. Extends map_io_channel.py for ctrlX/DataLayer connector parameters
     6. Adds transactional @batch-json mapping with one final project save
     7. Replaces the timeout-prone compile/message scan with a bounded ctrlX path
-    8. Verifies syntax with `python -m py_compile` when python is available
+    8. Rejects stale persistent sessions whose PID was reused by another process
+    9. Verifies Python/JavaScript syntax when the runtimes are available
 
   WARNING: `npm install/update codesys-mcp-persistent` OVERWRITES the patch.
   Re-run this script after every upgrade.
@@ -45,9 +46,11 @@ $marker = "ctrlX PATCH (2026-08-12)"
 $connectorMarker = "ctrlX/DataLayer devices expose I/O channels as mappable"
 $readbackMarker = "I/O mapping read-back mismatch"
 $batchMarker = "ctrlX batch I/O mapping"
-$fastMessageMarker = "ctrlX fast compile message path (2026-08-20)"
+$fastMessageMarker = "ctrlX fast compile message path v2 (2026-08-20)"
+$fastMessageLegacyMarker = "ctrlX fast compile message path (2026-08-20)"
 $fastCompileMarker = "ctrlX bounded application build (2026-08-20)"
 $fastCachedMarker = "ctrlX bounded cached-message read (2026-08-20)"
+$safeAdoptionMarker = "ctrlX safe stale-session adoption (2026-08-20)"
 $utf8nobom = New-Object System.Text.UTF8Encoding($false)
 
 function ReadText([string]$p) {
@@ -330,6 +333,342 @@ function BackupOnce([string]$path, [string]$suffix) {
   }
 }
 
+function ReplaceRequired(
+  [string]$source,
+  [string]$anchor,
+  [string]$replacement,
+  [string]$label,
+  [string]$path
+) {
+  if (-not $source.Contains($anchor)) {
+    Write-Error "$label anchor not found - package layout changed: $path"
+  }
+  return $source.Replace($anchor, $replacement)
+}
+
+function PatchLauncherSource([string]$launcherFile) {
+  if (-not (Test-Path -LiteralPath $launcherFile)) { return }
+
+  $source = ReadText $launcherFile
+  $isPatched = $source.Contains($safeAdoptionMarker)
+  if ($Check) {
+    Write-Host ("[{0}] {1} stale-session PID identity/watcher probe" -f $(if ($isPatched) { "OK " } else { "TODO" }), $launcherFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "safe stale-session adoption already present - skipped: $launcherFile"
+    return
+  }
+
+  BackupOnce $launcherFile "bak_pre_safe_session_adoption"
+  $source = ReplaceRequired $source `
+    "import { spawn, ChildProcess } from 'child_process';" `
+    "import { spawn, ChildProcess, execFileSync } from 'child_process';" `
+    "launcher import" $launcherFile
+
+  $constantAnchor = "const HEALTH_CHECK_INTERVAL_MS = 5_000;"
+  $constantReplacement = @'
+const HEALTH_CHECK_INTERVAL_MS = 5_000;
+const ADOPTION_PROBE_TIMEOUT_MS = 3_000;
+'@.Replace("`r`n", "`n").TrimEnd("`n")
+  $source = ReplaceRequired $source $constantAnchor $constantReplacement "launcher timeout constant" $launcherFile
+
+  $methodAnchor = @'
+  /**
+   * Scan %TEMP%/codesys-mcp-persistent/ for an existing live session and
+'@.Replace("`r`n", "`n")
+  $methodReplacement = @'
+  // ctrlX safe stale-session adoption (2026-08-20)
+  // A ready.signal can outlive CODESYS. Windows may later reuse its PID for
+  // an unrelated process, so signal-0 alone is not a safe liveness check.
+  private isExpectedCodesysProcess(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return false;
+    }
+
+    if (process.platform === 'win32') {
+      try {
+        const output = execFileSync(
+          'tasklist',
+          ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'],
+          { encoding: 'utf8', windowsHide: true, timeout: 5_000 }
+        );
+        const match = output.match(/^\s*"([^"]+)"/m);
+        if (!match) return false;
+        return match[1].toLowerCase() === path.basename(this.config.codesysPath).toLowerCase();
+      } catch {
+        return false;
+      }
+    }
+
+    if (process.platform === 'linux') {
+      try {
+        const executable = fs.realpathSync(`/proc/${pid}/exe`);
+        return path.basename(executable) === path.basename(this.config.codesysPath);
+      } catch {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Scan %TEMP%/codesys-mcp-persistent/ for an existing live session and
+'@.Replace("`r`n", "`n")
+  $source = ReplaceRequired $source $methodAnchor $methodReplacement "launcher process identity method" $launcherFile
+
+  $livenessAnchor = @'
+        // Liveness check.
+        try { process.kill(parsed.pid, 0); } catch { continue; }
+'@.Replace("`r`n", "`n")
+  $livenessReplacement = @'
+        // Reject stale ready.signal files whose PID now belongs to another
+        // process. This also makes shutdown safe against Windows PID reuse.
+        if (!this.isExpectedCodesysProcess(parsed.pid)) continue;
+'@.Replace("`r`n", "`n")
+  $source = ReplaceRequired $source $livenessAnchor $livenessReplacement "launcher adoption liveness" $launcherFile
+
+  $adoptionAnchor = @'
+      if (candidates.length === 0) return false;
+      candidates.sort((a, b) => b.mtime - a.mtime);
+      const chosen = candidates[0];
+      launcherLog.info(`Adopting existing session: PID ${chosen.pid} dir ${chosen.dir}`);
+      this.sessionId = path.basename(chosen.dir);
+      this.ipcDir = chosen.dir;
+      this.ipcClient = new IpcClient({ baseDir: this.ipcDir, ...DEFAULT_IPC_CONFIG });
+      await this.ipcClient.ensureDirectories();
+      this.pid = chosen.pid;
+      this.process = null; // we didn't spawn it; no ChildProcess handle
+      this.startedAt = chosen.mtime;
+      this.lastError = null;
+      this.setState('ready');
+      this.startHealthMonitor();
+      return true;
+'@.Replace("`r`n", "`n")
+  $adoptionReplacement = @'
+      if (candidates.length === 0) return false;
+      candidates.sort((a, b) => b.mtime - a.mtime);
+      for (const chosen of candidates) {
+        const candidateClient = new IpcClient({
+          baseDir: chosen.dir,
+          ...DEFAULT_IPC_CONFIG,
+          commandTimeoutMs: ADOPTION_PROBE_TIMEOUT_MS,
+        });
+        await candidateClient.ensureDirectories();
+        try {
+          const probe = await candidateClient.sendCommand(
+            'print("SCRIPT_SUCCESS")\n',
+            ADOPTION_PROBE_TIMEOUT_MS
+          );
+          if (!probe.success || !probe.output.includes('SCRIPT_SUCCESS')) continue;
+        } catch {
+          launcherLog.warn(`Skipping unresponsive existing session: PID ${chosen.pid} dir ${chosen.dir}`);
+          continue;
+        }
+
+        launcherLog.info(`Adopting verified existing session: PID ${chosen.pid} dir ${chosen.dir}`);
+        this.sessionId = path.basename(chosen.dir);
+        this.ipcDir = chosen.dir;
+        this.ipcClient = candidateClient;
+        this.pid = chosen.pid;
+        this.process = null; // we didn't spawn it; no ChildProcess handle
+        this.startedAt = chosen.mtime;
+        this.lastError = null;
+        this.setState('ready');
+        this.startHealthMonitor();
+        return true;
+      }
+      return false;
+'@.Replace("`r`n", "`n")
+  $source = ReplaceRequired $source $adoptionAnchor $adoptionReplacement "launcher watcher probe" $launcherFile
+
+  $runningAnchor = @'
+  /** Check if the CODESYS process is still alive */
+  isRunning(): boolean {
+    if (this.pid === null) return false;
+    try {
+      process.kill(this.pid, 0); // Signal 0 = test if process exists
+      return true;
+    } catch {
+      return false;
+    }
+  }
+'@.Replace("`r`n", "`n")
+  $runningReplacement = @'
+  /** Check that the recorded PID is still the expected CODESYS executable. */
+  isRunning(): boolean {
+    if (this.pid === null) return false;
+    return this.isExpectedCodesysProcess(this.pid);
+  }
+'@.Replace("`r`n", "`n")
+  $source = ReplaceRequired $source $runningAnchor $runningReplacement "launcher health identity" $launcherFile
+
+  [System.IO.File]::WriteAllText($launcherFile, $source, $utf8nobom)
+  Write-Host "patched safe stale-session adoption -> $launcherFile"
+}
+
+function PatchLauncherDist([string]$launcherFile) {
+  if (-not (Test-Path -LiteralPath $launcherFile)) { return }
+
+  $source = ReadText $launcherFile
+  $isPatched = $source.Contains($safeAdoptionMarker)
+  if ($Check) {
+    Write-Host ("[{0}] {1} stale-session PID identity/watcher probe" -f $(if ($isPatched) { "OK " } else { "TODO" }), $launcherFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "safe stale-session adoption already present - skipped: $launcherFile"
+    return
+  }
+
+  BackupOnce $launcherFile "bak_pre_safe_session_adoption"
+  $constantAnchor = "const HEALTH_CHECK_INTERVAL_MS = 5000;"
+  $constantReplacement = "const HEALTH_CHECK_INTERVAL_MS = 5000;`nconst ADOPTION_PROBE_TIMEOUT_MS = 3000;"
+  $source = ReplaceRequired $source $constantAnchor $constantReplacement "launcher timeout constant" $launcherFile
+
+  $methodAnchor = @'
+    /**
+     * Scan %TEMP%/codesys-mcp-persistent/ for an existing live session and
+'@.Replace("`r`n", "`n")
+  $methodReplacement = @'
+    // ctrlX safe stale-session adoption (2026-08-20)
+    // Reject PID reuse before adopting or terminating a persisted session.
+    isExpectedCodesysProcess(pid) {
+        try {
+            process.kill(pid, 0);
+        }
+        catch {
+            return false;
+        }
+        if (process.platform === 'win32') {
+            try {
+                const output = (0, child_process_1.execFileSync)('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+                const match = output.match(/^\s*"([^"]+)"/m);
+                if (!match)
+                    return false;
+                return match[1].toLowerCase() === path.basename(this.config.codesysPath).toLowerCase();
+            }
+            catch {
+                return false;
+            }
+        }
+        if (process.platform === 'linux') {
+            try {
+                const executable = fs.realpathSync(`/proc/${pid}/exe`);
+                return path.basename(executable) === path.basename(this.config.codesysPath);
+            }
+            catch {
+                return false;
+            }
+        }
+        return true;
+    }
+    /**
+     * Scan %TEMP%/codesys-mcp-persistent/ for an existing live session and
+'@.Replace("`r`n", "`n")
+  $source = ReplaceRequired $source $methodAnchor $methodReplacement "launcher process identity method" $launcherFile
+
+  $livenessAnchor = @'
+                // Liveness check.
+                try {
+                    process.kill(parsed.pid, 0);
+                }
+                catch {
+                    continue;
+                }
+'@.Replace("`r`n", "`n")
+  $livenessReplacement = @'
+                // Reject stale ready.signal files whose PID was reused.
+                if (!this.isExpectedCodesysProcess(parsed.pid))
+                    continue;
+'@.Replace("`r`n", "`n")
+  $source = ReplaceRequired $source $livenessAnchor $livenessReplacement "launcher adoption liveness" $launcherFile
+
+  $adoptionAnchor = @'
+            if (candidates.length === 0)
+                return false;
+            candidates.sort((a, b) => b.mtime - a.mtime);
+            const chosen = candidates[0];
+            logger_1.launcherLog.info(`Adopting existing session: PID ${chosen.pid} dir ${chosen.dir}`);
+            this.sessionId = path.basename(chosen.dir);
+            this.ipcDir = chosen.dir;
+            this.ipcClient = new ipc_1.IpcClient({ baseDir: this.ipcDir, ...ipc_1.DEFAULT_IPC_CONFIG });
+            await this.ipcClient.ensureDirectories();
+            this.pid = chosen.pid;
+            this.process = null; // we didn't spawn it; no ChildProcess handle
+            this.startedAt = chosen.mtime;
+            this.lastError = null;
+            this.setState('ready');
+            this.startHealthMonitor();
+            return true;
+'@.Replace("`r`n", "`n")
+  $adoptionReplacement = @'
+            if (candidates.length === 0)
+                return false;
+            candidates.sort((a, b) => b.mtime - a.mtime);
+            for (const chosen of candidates) {
+                const candidateClient = new ipc_1.IpcClient({
+                    baseDir: chosen.dir,
+                    ...ipc_1.DEFAULT_IPC_CONFIG,
+                    commandTimeoutMs: ADOPTION_PROBE_TIMEOUT_MS,
+                });
+                await candidateClient.ensureDirectories();
+                try {
+                    const probe = await candidateClient.sendCommand('print("SCRIPT_SUCCESS")\n', ADOPTION_PROBE_TIMEOUT_MS);
+                    if (!probe.success || !probe.output.includes('SCRIPT_SUCCESS'))
+                        continue;
+                }
+                catch {
+                    logger_1.launcherLog.warn(`Skipping unresponsive existing session: PID ${chosen.pid} dir ${chosen.dir}`);
+                    continue;
+                }
+                logger_1.launcherLog.info(`Adopting verified existing session: PID ${chosen.pid} dir ${chosen.dir}`);
+                this.sessionId = path.basename(chosen.dir);
+                this.ipcDir = chosen.dir;
+                this.ipcClient = candidateClient;
+                this.pid = chosen.pid;
+                this.process = null;
+                this.startedAt = chosen.mtime;
+                this.lastError = null;
+                this.setState('ready');
+                this.startHealthMonitor();
+                return true;
+            }
+            return false;
+'@.Replace("`r`n", "`n")
+  $source = ReplaceRequired $source $adoptionAnchor $adoptionReplacement "launcher watcher probe" $launcherFile
+
+  $runningAnchor = @'
+    /** Check if the CODESYS process is still alive */
+    isRunning() {
+        if (this.pid === null)
+            return false;
+        try {
+            process.kill(this.pid, 0); // Signal 0 = test if process exists
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
+'@.Replace("`r`n", "`n")
+  $runningReplacement = @'
+    /** Check that the recorded PID is still the expected CODESYS executable. */
+    isRunning() {
+        if (this.pid === null)
+            return false;
+        return this.isExpectedCodesysProcess(this.pid);
+    }
+'@.Replace("`r`n", "`n")
+  $source = ReplaceRequired $source $runningAnchor $runningReplacement "launcher health identity" $launcherFile
+
+  [System.IO.File]::WriteAllText($launcherFile, $source, $utf8nobom)
+  Write-Host "patched safe stale-session adoption -> $launcherFile"
+}
+
 function PatchFastMessageUtils([string]$messageUtilsFile) {
   if (-not (Test-Path -LiteralPath $messageUtilsFile)) { return }
 
@@ -345,9 +684,14 @@ function PatchFastMessageUtils([string]$messageUtilsFile) {
   }
 
   BackupOnce $messageUtilsFile "bak_pre_fast_compile"
+  $legacyIndex = $source.IndexOf("# $fastMessageLegacyMarker")
+  if ($legacyIndex -ge 0) {
+    $source = $source.Substring(0, $legacyIndex).TrimEnd("`n") + "`n"
+    Write-Host "upgrading bounded compile-message helper v1 -> v2: $messageUtilsFile"
+  }
   $helper = @'
 
-# ctrlX fast compile message path (2026-08-20)
+# ctrlX fast compile message path v2 (2026-08-20)
 #
 # ctrlX PLE 2.6.8 can block for minutes when get_message_objects(category,
 # severity) is called once per category and severity. The documented
@@ -420,16 +764,23 @@ def msg_fast_compile_snapshot(categories=None):
         except Exception as exc:
             read_error = _to_unicode(exc)
 
-        category_errors = None
-        category_warnings = None
+        compile_counts = None
+        build_counts = None
+        fallback_counts = None
         category_current = False
         category_details = []
         for text in texts:
             total_rows += 1
             match = summary_re.search(text)
             if match:
-                category_errors = int(match.group(1))
-                category_warnings = int(match.group(2))
+                counts = (int(match.group(1)), int(match.group(2)))
+                lowered = text.strip().lower()
+                if lowered.startswith('compile complete'):
+                    compile_counts = counts
+                elif lowered.startswith('build complete'):
+                    build_counts = counts
+                else:
+                    fallback_counts = counts
                 continue
             if 'application is current' in text.lower():
                 category_current = True
@@ -437,7 +788,26 @@ def msg_fast_compile_snapshot(categories=None):
             if text.strip() and not _msg_fast_is_progress(text):
                 category_details.append(text.strip())
 
-        category_verified = (category_errors is not None) or category_current
+        # A ctrlX full build can emit both summaries. "Compile complete" is
+        # the application compiler result shown on the Build tab (for example
+        # 503/411), while the trailing "Build complete" may contain only the
+        # outer build-stage failures (for example 2/0). Prefer the compiler
+        # summary whenever both exist so MCP never under-reports the result.
+        selected_counts = compile_counts or build_counts or fallback_counts
+        category_errors = selected_counts[0] if selected_counts is not None else None
+        category_warnings = selected_counts[1] if selected_counts is not None else None
+        if compile_counts is not None:
+            summary_source = 'Compile complete'
+        elif build_counts is not None:
+            summary_source = 'Build complete'
+        elif fallback_counts is not None:
+            summary_source = 'Other summary'
+        elif category_current:
+            summary_source = 'Application is current'
+        else:
+            summary_source = None
+
+        category_verified = (selected_counts is not None) or category_current
         if category_name == 'Build' and category_verified:
             build_verified = True
         if category_errors is not None:
@@ -455,6 +825,7 @@ def msg_fast_compile_snapshot(categories=None):
             'messageCount': len(texts),
             'elapsedSeconds': round(_fast_time.time() - started, 3),
             'readError': read_error,
+            'summarySource': summary_source,
         })
 
     return {
@@ -744,6 +1115,13 @@ if (Test-Path $msgutils) {
 # --- map_io_channel.py: ctrlX connector parameters ---------------------------
 $packageDistDir = Split-Path $PackageScriptsDir -Parent
 $packageRoot = Split-Path $packageDistDir -Parent
+$launcherTargets = @(
+  (Join-Path $packageRoot "src\launcher.ts"),
+  (Join-Path $packageDistDir "launcher.js")
+)
+PatchLauncherSource $launcherTargets[0]
+PatchLauncherDist $launcherTargets[1]
+
 $mapTargets = @(
   (Join-Path $PackageScriptsDir "map_io_channel.py"),
   (Join-Path $packageRoot "src\scripts\map_io_channel.py")
@@ -786,6 +1164,17 @@ if (-not $Check) {
     }
   } else {
     Write-Host "python not found - skipped syntax verification"
+  }
+
+  $node = Get-Command node -ErrorAction SilentlyContinue
+  if ($node) {
+    $distLauncher = Join-Path $packageDistDir "launcher.js"
+    if (Test-Path -LiteralPath $distLauncher) {
+      & node --check $distLauncher
+      if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] node --check launcher.js passed" } else { Write-Warning "node --check failed - inspect $distLauncher" }
+    }
+  } else {
+    Write-Host "node not found - skipped launcher.js syntax verification"
   }
   Write-Host "Done. Script-template changes apply on the next tool call; restart the MCP-managed IDE only when recovering an already-stuck call."
 }

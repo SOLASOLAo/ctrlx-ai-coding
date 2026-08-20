@@ -2,7 +2,7 @@
 
 > 适用:`codesys-mcp-persistent` v0.6.3(npm 全局包)
 > 目标 IDE:ctrlX PLC Engineering(PLE-V-0206.x,profile `ctrlX PLC 2.6.8`)及其他 OEM CODESYS 品牌 IDE
-> 首次应用:2026-08-12 · connector I/O 扩展:2026-08-18 · 编译消息扩展:2026-08-20 · 状态:已在本机验证
+> 首次应用:2026-08-12 · connector I/O 扩展:2026-08-18 · 编译消息/会话接管扩展:2026-08-20 · 状态:已在本机验证
 
 ## 症状 1：CRLF 导致编译工具失败
 
@@ -40,6 +40,14 @@ device.connectors → connector.host_parameters
 
 兼容补丁改成一次官方 `ScriptApplication.build()`，并只读取 Build 与 Additional code checks 两类缓存；每类仅调用一次 `System.get_messages(category)`，由 IDE 自身的 Build summary 统计 error/warning。若拿不到 Build summary，工具按错误失败，不会把未知状态误报成成功。
 
+同一 Build 类别同时出现 `Compile complete` 与尾部 `Build complete` 时，以前者为应用编译结果。后者可能只统计外层生成阶段，不能用它把实际数百条错误误报为少量错误。
+
+## 症状 4：扩展重启后 MCP 接管了错误的 Windows 进程
+
+持久会话目录中的 `ready.signal` 可能在 PLE 已退出后残留。Windows 随后会复用其中的 PID；原启动器只用 signal-0 判断 PID 存活，因此可能把无关进程（实测为 `python.exe`）误认为原 PLE 会话，导致所有 MCP 命令失败，shutdown 还存在结束无关进程的风险。
+
+补丁在接管、健康检查和 shutdown 前校验 PID 对应的可执行文件名必须与配置的 PLE 一致；接管前还用候选 watcher 执行一次有界 `SCRIPT_SUCCESS` 握手。身份错误或 watcher 无响应时跳过旧会话并启动新的 PLE。
+
 ## 补丁内容
 
 | 文件 | 修改 |
@@ -51,6 +59,7 @@ device.connectors → connector.host_parameters
 | `dist/scripts` + `src/scripts` 的 `_message_utils.py` | 增加有界 Build 消息快照与向后兼容的结构化消息转换；未知摘要按失败处理 |
 | `dist/scripts` + `src/scripts` 的 `compile_project.py` | 应用工程只执行一次 `build()`；只读两个编译类别，不再全类别/严重级别扫描 |
 | `dist/scripts` + `src/scripts` 的 `get_compile_messages.py` | 使用同一有界缓存读取路径，避免只读消息也阻塞 IDE |
+| `dist/launcher.js` + `src/launcher.ts` | 校验持久会话 PID 的 PLE 可执行文件身份，并在接管前探测 watcher；健康检查和 shutdown 同样防 PID 复用 |
 
 ## 一键应用
 
@@ -79,6 +88,8 @@ python .\test-fast-compile-message.py `
 ```
 
 2026-08-20 在 Station010 实测：旧路径超过 300 s；补丁后 `compile_project` 约 7.6 s 返回 0 errors / 7 warnings，`get_compile_messages` 约 0.8 s 返回同一缓存。该验证是离线 Build，未连接、下载或运行实体 PLC。
+
+同日会话恢复实测：残留 `ready.signal` 指向一个已被 `python.exe` 复用的 PID；补丁拒绝该候选并成功启动、连接新的 ctrlX PLE watcher。`apply-crlf-patch.ps1 -Check` 会同时检查源码和运行时 launcher 标记，应用模式还执行 `node --check dist/launcher.js`。
 
 connector 通道补丁可直接通过正式工具验证：
 
@@ -119,7 +130,7 @@ map_io_channel(
 | `watcher.py.orig` | 原厂 watcher.py(v0.6.3,未打补丁) |
 | `watcher.py.patched` | 打补丁后的完整文件 |
 | `watcher_crlf_normalize.patch` | unified diff(仅 5 行插入) |
-| `apply-crlf-patch.ps1` | 一键应用/检查 ctrlX 兼容补丁（CRLF、docstring、connector I/O Mapping、有界编译消息） |
+| `apply-crlf-patch.ps1` | 一键应用/检查 ctrlX 兼容补丁（CRLF、docstring、connector I/O Mapping、有界编译消息、安全会话接管） |
 | `test-fast-compile-message.py` | 不启动 IDE 的编译摘要解析/失败关闭回归测试 |
 
 ## 附注:docstring 损坏修复
