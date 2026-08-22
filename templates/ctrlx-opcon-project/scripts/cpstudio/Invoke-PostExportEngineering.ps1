@@ -142,6 +142,37 @@ function Read-JsonDocument {
     }
 }
 
+function Assert-JsonArrayProperty {
+    param(
+        [Parameter(Mandatory = $true)][string]$RawJson,
+        [Parameter(Mandatory = $true)][string[]]$PropertyPath,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    try {
+        Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
+        $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+        $rawRoot = $serializer.DeserializeObject($RawJson)
+    }
+    catch {
+        throw "$Context JSON shape could not be validated. $($_.Exception.Message)"
+    }
+    $rawValue = $rawRoot
+    foreach ($propertyName in $PropertyPath) {
+        if (($rawValue -isnot [System.Collections.IDictionary]) -or (-not ($rawValue.Keys -contains $propertyName))) {
+            throw "$Context is missing $($PropertyPath -join '.')."
+        }
+        $rawValue = $rawValue[$propertyName]
+    }
+    $displayPath = $PropertyPath -join '.'
+    if ($null -eq $rawValue) {
+        throw "$Context $displayPath must be an array, not null."
+    }
+    if ($rawValue -isnot [System.Array]) {
+        throw "$Context $displayPath must be a JSON array."
+    }
+}
+
 function Get-PropertyValue {
     param(
         [Parameter(Mandatory = $false)][object]$Object,
@@ -167,6 +198,31 @@ function Get-PropertyValue {
         return $DefaultValue
     }
     return $property.Value
+}
+
+function Assert-ExactPropertySet {
+    param(
+        [Parameter(Mandatory = $true)][object]$Object,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedNames,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $actualNames = if ($Object -is [System.Collections.IDictionary]) {
+        @($Object.Keys | ForEach-Object { [string]$_ })
+    }
+    else {
+        @($Object.PSObject.Properties.Name)
+    }
+    foreach ($expectedName in $ExpectedNames) {
+        if ($actualNames -notcontains $expectedName) {
+            throw "$Context is missing required property '$expectedName'."
+        }
+    }
+    foreach ($actualName in $actualNames) {
+        if ($ExpectedNames -notcontains $actualName) {
+            throw "$Context contains unsupported property '$actualName'."
+        }
+    }
 }
 
 function Get-RequiredString {
@@ -397,12 +453,40 @@ function Get-SafeFailureText {
 }
 
 function Assert-NoOnlineCapabilities {
-    param([Parameter(Mandatory = $true)][object]$Evidence)
+    param(
+        [Parameter(Mandatory = $true)][object]$Evidence,
+        [Parameter(Mandatory = $true)][string]$RawJson
+    )
 
-    $prohibitedPattern = '(?i)(connect[_-]?to[_-]?device|download[_-]?to[_-]?device|start[_-]?stop|write[_-]?variable|read[_-]?variable|monitor[_-]?variables|force|set[_-]?simulation|online)'
-    foreach ($capability in @(Get-PropertyValue -Object $Evidence -Name 'capabilitiesInvoked' -DefaultValue @())) {
+    $capabilityProperty = $Evidence.PSObject.Properties['capabilitiesInvoked']
+    if ($null -eq $capabilityProperty) {
+        throw 'Runner evidence is missing the producer capabilitiesInvoked field.'
+    }
+    Assert-JsonArrayProperty -RawJson $RawJson -PropertyPath @('capabilitiesInvoked') -Context 'Runner evidence'
+    $prohibitedPattern = '(?i)(connect[_-]?to[_-]?device|download[_-]?to[_-]?device|start[_-]?stop|write[_-]?variable|read[_-]?variable|monitor[_-]?variables|force|set[_-]?simulation|online|launch[_-]?(codesys|ple|mcp)|watcher[_-]?ipc)'
+    $approvedOfflineCapabilities = @(
+        'get_codesys_status',
+        'get_all_pou_code',
+        'find_references',
+        'inspect_device_node',
+        'list_project_libraries',
+        'search_code',
+        'compile_project',
+        'get_compile_messages',
+        'set_pou_code'
+    )
+    foreach ($capability in @($capabilityProperty.Value)) {
+        if ($null -eq $capability) {
+            throw 'Runner evidence contains a null capability identifier.'
+        }
+        if ([string]$capability -notmatch '^[A-Za-z0-9_.-]{1,96}$') {
+            throw "Runner evidence reports an invalid capability identifier: $capability"
+        }
         if ([string]$capability -match $prohibitedPattern) {
             throw "Runner evidence reports a prohibited online capability: $capability"
+        }
+        if ($approvedOfflineCapabilities -notcontains [string]$capability) {
+            throw "Runner evidence reports an unapproved offline capability: $capability"
         }
     }
 }
@@ -866,7 +950,7 @@ function New-RunnerAction {
         'apply_change_set_and_build' {
             @(
                 'Apply only the included ownership-approved change set through the unique persistent session.',
-                'Verify every expected-before hash, read back every target, save at most once, then run a fresh offline Build.',
+                'Verify every expected-before hash and read back every target; set_pou_code auto-saves, so do not call save_project redundantly; then run a fresh offline Build.',
                 'Do not write CpStudio-owned interfaces or any OES Declaration merge area.'
             )
         }
@@ -925,8 +1009,9 @@ function New-RunnerAction {
             requireActionRequestSha256  = $true
             requireOfflineOnly          = $true
             requireProjectLeaseReleased = $true
-            requireReadback             = $true
-            requireFreshBuild            = $true
+            requireReadbackOnSuccess     = $true
+            requireFreshBuildOnSuccess   = $true
+            terminalFailureMayOmitBuild  = $true
             warningComparison            = 'signature-multiset-not-count-only'
         }
     }
@@ -1324,16 +1409,84 @@ function Assert-ProposedChangesSafe {
     }
 }
 
+function Assert-AppliedChangesMatchAction {
+    param(
+        [Parameter(Mandatory = $true)][object]$Result,
+        [Parameter(Mandatory = $true)][object]$Operation,
+        [Parameter(Mandatory = $true)][bool]$RequireComplete,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Capabilities
+    )
+
+    $appliedChanges = @(Get-PropertyValue -Object $Result -Name 'appliedChanges' -DefaultValue @())
+    if ([string]$Operation.currentAction.kind -ne 'apply_change_set_and_build') {
+        if ($appliedChanges.Count -ne 0) {
+            throw 'Non-apply evidence cannot contain appliedChanges.'
+        }
+        return
+    }
+
+    $requestedChanges = @((Read-JsonDocument -Path ([string]$Operation.currentAction.path) -Description 'Runner action').payload.changeSet)
+    if ($RequireComplete -and ($requestedChanges.Count -ne $appliedChanges.Count)) {
+        throw 'Successful repair evidence must contain one readback result per requested change.'
+    }
+    if ($appliedChanges.Count -gt $requestedChanges.Count) {
+        throw 'Repair evidence contains more applied results than requested changes.'
+    }
+
+    $seenAppliedIds = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::Ordinal)
+    foreach ($applied in $appliedChanges) {
+        $changeId = Get-RequiredString -Object $applied -Name 'changeId' -Context 'Applied change'
+        if (-not $seenAppliedIds.Add($changeId)) {
+            throw "Repair evidence contains duplicate change '$changeId'."
+        }
+        $matches = @($requestedChanges | Where-Object { [string]$_.changeId -eq $changeId })
+        if ($matches.Count -ne 1) {
+            throw "Repair evidence does not uniquely identify requested change '$changeId'."
+        }
+        $requested = $matches[0]
+        if ((Get-RequiredString -Object $applied -Name 'status' -Context 'Applied change') -ne 'applied') {
+            throw "Repair evidence did not apply change '$changeId'."
+        }
+        if ((Get-RequiredString -Object $applied -Name 'targetPath' -Context 'Applied change') -ne [string]$requested.targetPath) {
+            throw "Repair evidence read back the wrong target for change '$changeId'."
+        }
+        $expectedBefore = Get-RequiredString -Object $requested.expectedBefore -Name 'sha256' -Context "Requested change '$changeId' expectedBefore"
+        $desired = Get-RequiredString -Object $requested.desired -Name 'sha256' -Context "Requested change '$changeId' desired"
+        foreach ($name in @('expectedBeforeSha256', 'observedBeforeSha256', 'desiredSha256', 'readbackSha256')) {
+            $reportedSha = Get-RequiredString -Object $applied -Name $name -Context "Applied change '$changeId'"
+            if (-not (Test-HexSha256 -Value $reportedSha)) {
+                throw "Repair evidence contains an invalid $name for change '$changeId'."
+            }
+        }
+        if ((-not ([string]$applied.expectedBeforeSha256).Equals($expectedBefore, [System.StringComparison]::OrdinalIgnoreCase)) -or
+            (-not ([string]$applied.observedBeforeSha256).Equals($expectedBefore, [System.StringComparison]::OrdinalIgnoreCase)) -or
+            (-not ([string]$applied.desiredSha256).Equals($desired, [System.StringComparison]::OrdinalIgnoreCase)) -or
+            (-not ([string]$applied.readbackSha256).Equals($desired, [System.StringComparison]::OrdinalIgnoreCase))) {
+            throw "Repair evidence hash/readback mismatch for change '$changeId'."
+        }
+    }
+
+    if ((-not $RequireComplete) -and ($appliedChanges.Count -ne 0)) {
+        if ((@($Capabilities | Where-Object { [string]$_ -eq 'set_pou_code' }).Count -lt 1) -or
+            (@($Capabilities | Where-Object { [string]$_ -match '^(get_all_pou_code|search_code|find_references)$' }).Count -lt 1)) {
+            throw 'Terminal repair evidence with applied changes must report write and readback capabilities.'
+        }
+    }
+}
+
 function Read-AndValidateEvidence {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][object]$Operation
     )
 
-    $document = Read-JsonDocument -Path $Path -Description 'Runner evidence'
+    $producerEvidenceRoot = Join-Path ([string]$Operation.identity.engineeringRoot) 'data\runner-evidence'
+    $resolvedEvidencePath = Assert-PathInsideRoot -Root $producerEvidenceRoot -Path $Path -Description 'Producer runner evidence'
+    $document = Read-JsonDocument -Path $resolvedEvidencePath -Description 'Runner evidence'
     $evidence = $document.payload
     Assert-NoSensitiveEvidence -Value $evidence
-    Assert-NoOnlineCapabilities -Evidence $evidence
+    Assert-NoOnlineCapabilities -Evidence $evidence -RawJson $document.raw
+    $capabilities = @((Get-PropertyValue -Object $evidence -Name 'capabilitiesInvoked'))
 
     if ([int](Get-PropertyValue -Object $evidence -Name 'schemaVersion' -DefaultValue 0) -ne 1) {
         throw 'Runner evidence schemaVersion must be 1.'
@@ -1367,6 +1520,7 @@ function Read-AndValidateEvidence {
     if ($null -eq $evidenceProject) {
         throw 'Runner evidence has no project identity.'
     }
+    Assert-ExactPropertySet -Object $evidenceProject -ExpectedNames @('engineeringRoot', 'stationRoot', 'plcProject', 'profile') -Context 'Runner evidence project'
     Assert-SamePath -Expected $Operation.identity.engineeringRoot -Actual (Get-RequiredString -Object $evidenceProject -Name 'engineeringRoot' -Context 'Runner evidence project') -Description 'Evidence engineering root'
     Assert-SamePath -Expected $Operation.identity.stationRoot -Actual (Get-RequiredString -Object $evidenceProject -Name 'stationRoot' -Context 'Runner evidence project') -Description 'Evidence Station root'
     Assert-SamePath -Expected $Operation.identity.plcProject -Actual (Get-RequiredString -Object $evidenceProject -Name 'plcProject' -Context 'Runner evidence project') -Description 'Evidence PLC project'
@@ -1378,17 +1532,37 @@ function Read-AndValidateEvidence {
     if ($null -eq $guardrails) {
         throw 'Runner evidence has no guardrails object.'
     }
+    Assert-ExactPropertySet -Object $guardrails -ExpectedNames @(
+        'onlineOperationsUsed',
+        'secondPleStarted',
+        'projectLeaseAcquired',
+        'projectLeaseReleased',
+        'projectLeaseScope',
+        'symbolLeaseHeld',
+        'pleOrMcpStarted',
+        'directWatcherIpcUsed'
+    ) -Context 'Runner evidence guardrails'
     if (Get-BooleanValue -Object $guardrails -Name 'onlineOperationsUsed' -Required -Context 'Runner evidence guardrails') {
         throw 'Runner evidence reports onlineOperationsUsed=true.'
     }
     if (Get-BooleanValue -Object $guardrails -Name 'secondPleStarted' -Required -Context 'Runner evidence guardrails') {
         throw 'Runner evidence reports that a second PLE was started.'
     }
+    $projectLeaseAcquired = Get-BooleanValue -Object $guardrails -Name 'projectLeaseAcquired' -Required -Context 'Runner evidence guardrails'
     if (-not (Get-BooleanValue -Object $guardrails -Name 'projectLeaseReleased' -Required -Context 'Runner evidence guardrails')) {
         throw 'Runner evidence must prove that the project lease was released.'
     }
+    if ((Get-RequiredString -Object $guardrails -Name 'projectLeaseScope' -Context 'Runner evidence guardrails') -ne 'workflow-local') {
+        throw 'Runner evidence projectLeaseScope must be workflow-local.'
+    }
     if (Get-BooleanValue -Object $guardrails -Name 'symbolLeaseHeld' -Required -Context 'Runner evidence guardrails') {
         throw 'Runner evidence still holds the Symbol lease.'
+    }
+    if (Get-BooleanValue -Object $guardrails -Name 'pleOrMcpStarted' -Required -Context 'Runner evidence guardrails') {
+        throw 'Runner evidence reports that PLE or MCP was started by the runner.'
+    }
+    if (Get-BooleanValue -Object $guardrails -Name 'directWatcherIpcUsed' -Required -Context 'Runner evidence guardrails') {
+        throw 'Runner evidence reports direct watcher IPC use.'
     }
 
     $result = Get-PropertyValue -Object $evidence -Name 'result'
@@ -1398,6 +1572,160 @@ function Read-AndValidateEvidence {
     $resultStatus = Get-RequiredString -Object $result -Name 'status' -Context 'Runner result'
     if (@('succeeded', 'blocked', 'failed') -notcontains $resultStatus) {
         throw "Unsupported runner result status: $resultStatus"
+    }
+    $terminalRunnerResult = @('blocked', 'failed') -contains $resultStatus
+    Assert-JsonArrayProperty -RawJson $document.raw -PropertyPath @('result', 'proposedChanges') -Context 'Runner evidence'
+    Assert-JsonArrayProperty -RawJson $document.raw -PropertyPath @('result', 'appliedChanges') -Context 'Runner evidence'
+    $expectedTopLevelProperties = @(
+        'schemaVersion',
+        'operationId',
+        'actionId',
+        'actionKind',
+        'actionRequestSha256',
+        'completedAtUtc',
+        'project',
+        'capabilitiesInvoked',
+        'guardrails',
+        'result'
+    )
+    $expectedResultProperties = @(
+        'status',
+        'verificationOk',
+        'appliedReadbackOk',
+        'repairRequired',
+        'requiresSecondExport',
+        'requiresCpStudioChange',
+        'proposedChanges',
+        'appliedChanges'
+    )
+    if ($terminalRunnerResult) {
+        $expectedResultProperties += @('failureStage', 'reasonCode')
+    }
+    else {
+        $expectedTopLevelProperties += 'session'
+        $expectedResultProperties += @('build', 'acceptance')
+    }
+    Assert-ExactPropertySet -Object $evidence -ExpectedNames $expectedTopLevelProperties -Context 'Runner evidence'
+    Assert-ExactPropertySet -Object $result -ExpectedNames $expectedResultProperties -Context 'Runner result'
+    foreach ($name in @('verificationOk', 'appliedReadbackOk', 'repairRequired', 'requiresSecondExport', 'requiresCpStudioChange')) {
+        $null = Get-BooleanValue -Object $result -Name $name -Required -Context 'Runner result'
+    }
+    if ($terminalRunnerResult) {
+        if ($null -ne $evidence.PSObject.Properties['session']) {
+            throw 'Blocked/failed producer evidence must not contain a session object.'
+        }
+        foreach ($name in @('build', 'acceptance')) {
+            if ($null -ne $result.PSObject.Properties[$name]) {
+                throw "Blocked/failed producer evidence must not contain result.$name."
+            }
+        }
+        foreach ($name in @('repairRequired', 'requiresSecondExport', 'requiresCpStudioChange')) {
+            if (Get-BooleanValue -Object $result -Name $name -Required -Context 'Runner result') {
+                throw "Blocked/failed producer evidence requires result.$name=false."
+            }
+        }
+        $failureStage = Get-RequiredString -Object $result -Name 'failureStage' -Context 'Runner result'
+        $reasonCode = Get-RequiredString -Object $result -Name 'reasonCode' -Context 'Runner result'
+        if (($failureStage -notmatch '^[A-Za-z0-9_.-]{1,64}$') -or
+            ($reasonCode -notmatch '^[A-Za-z0-9_.-]{1,96}$')) {
+            throw 'Blocked/failed producer evidence has an unsafe failure stage or reason code.'
+        }
+        if (@(Get-PropertyValue -Object $result -Name 'proposedChanges' -DefaultValue @()).Count -ne 0) {
+            throw 'Blocked/failed producer evidence must not contain proposed changes.'
+        }
+    }
+    Assert-AppliedChangesMatchAction `
+        -Result $result `
+        -Operation $Operation `
+        -RequireComplete ($resultStatus -eq 'succeeded') `
+        -Capabilities $capabilities
+    if (([string]$Operation.currentAction.kind -ne 'apply_change_set_and_build') -and
+        (@($capabilities | Where-Object { [string]$_ -eq 'set_pou_code' }).Count -ne 0)) {
+        throw 'Inspect and verify evidence cannot report project write capabilities.'
+    }
+    if ($resultStatus -eq 'succeeded') {
+        if (-not $projectLeaseAcquired) {
+            throw 'Successful runner evidence must prove that the workflow-local project lease was acquired.'
+        }
+
+        $requiredCapabilities = @('get_codesys_status', 'compile_project', 'get_compile_messages')
+        foreach ($requiredCapability in $requiredCapabilities) {
+            if (@($capabilities | Where-Object { [string]$_ -eq $requiredCapability }).Count -ne 1) {
+                throw "Successful runner evidence must report capability '$requiredCapability' exactly once."
+            }
+        }
+        if ([string]$Operation.currentAction.kind -eq 'apply_change_set_and_build') {
+            $writeCapabilities = @($capabilities | Where-Object {
+                [string]$_ -eq 'set_pou_code'
+            })
+            $readbackCapabilities = @($capabilities | Where-Object {
+                [string]$_ -match '^(get_all_pou_code|search_code|find_references)$'
+            })
+            if (($writeCapabilities.Count -lt 1) -or ($readbackCapabilities.Count -lt 1)) {
+                throw 'Successful apply evidence must report an approved write capability and an approved readback capability.'
+            }
+        }
+
+        $session = Get-PropertyValue -Object $evidence -Name 'session'
+        if ($null -eq $session) {
+            throw 'Successful runner evidence has no producer-validated persistent session identity.'
+        }
+        Assert-ExactPropertySet -Object $session -ExpectedNames @('state', 'mode', 'sessionId', 'plePid', 'profile', 'activeProjectPath', 'startedByRunner') -Context 'Runner evidence session'
+
+        $successBuild = Get-PropertyValue -Object $result -Name 'build'
+        Assert-JsonArrayProperty -RawJson $document.raw -PropertyPath @('result', 'build', 'warningSignatures') -Context 'Runner evidence'
+        Assert-ExactPropertySet -Object $successBuild -ExpectedNames @(
+            'buildId',
+            'projectPath',
+            'profile',
+            'projectSha256',
+            'startedAtUtc',
+            'completedAtUtc',
+            'verified',
+            'errors',
+            'warnings',
+            'signatureComplete',
+            'signatureAlgorithm',
+            'summarySource',
+            'warningSignatures'
+        ) -Context 'Runner evidence build'
+        $successAcceptance = Get-PropertyValue -Object $result -Name 'acceptance'
+        Assert-ExactPropertySet -Object $successAcceptance -ExpectedNames @(
+            'ownershipVerified',
+            'mappingConsistent',
+            'readbackVerified',
+            'recoverableBaselineVerified',
+            'warningSignaturesReviewed',
+            'existingSessionReused',
+            'pleOrMcpStarted',
+            'directWatcherIpcUsed',
+            'symbolPostProcessingVerified'
+        ) -Context 'Runner evidence acceptance'
+        if ((Get-RequiredString -Object $session -Name 'state' -Context 'Runner evidence session') -ne 'ready') {
+            throw 'Runner evidence session state must be ready.'
+        }
+        if ((Get-RequiredString -Object $session -Name 'mode' -Context 'Runner evidence session') -ne 'persistent') {
+            throw 'Runner evidence session mode must be persistent.'
+        }
+        $sessionId = Get-RequiredString -Object $session -Name 'sessionId' -Context 'Runner evidence session'
+        if ($sessionId -notmatch '^[A-Za-z0-9_.-]{1,128}$') {
+            throw 'Runner evidence sessionId is invalid.'
+        }
+        $sessionPid = 0
+        if ((-not [int]::TryParse([string](Get-PropertyValue -Object $session -Name 'plePid'), [ref]$sessionPid)) -or
+            ($sessionPid -le 0)) {
+            throw 'Runner evidence session plePid must be a positive producer-validated process identifier.'
+        }
+        if ((Get-RequiredString -Object $session -Name 'profile' -Context 'Runner evidence session') -ne [string]$Operation.identity.profile) {
+            throw 'Runner evidence session profile does not match the configured PLE profile.'
+        }
+        Assert-SamePath `
+            -Expected ([string]$Operation.identity.plcProject) `
+            -Actual (Get-RequiredString -Object $session -Name 'activeProjectPath' -Context 'Runner evidence session') `
+            -Description 'Runner evidence session active project'
+        if (Get-BooleanValue -Object $session -Name 'startedByRunner' -Required -Context 'Runner evidence session') {
+            throw 'Runner evidence reports that the persistent session was started by the runner.'
+        }
     }
     $completedAtText = Get-RequiredString -Object $evidence -Name 'completedAtUtc' -Context 'Runner evidence'
     $completedAt = [DateTime]::MinValue
@@ -1434,8 +1762,12 @@ function Assert-BuildEvidence {
         throw 'Runner result has no fresh Build evidence.'
     }
     $buildId = Get-RequiredString -Object $build -Name 'buildId' -Context 'Build evidence'
-    $null = $buildId
-    $null = Get-RequiredString -Object $build -Name 'summarySource' -Context 'Build evidence'
+    if ($buildId -notmatch '^[A-Za-z0-9_.:-]{1,128}$') {
+        throw 'Build evidence buildId is invalid.'
+    }
+    if ((Get-RequiredString -Object $build -Name 'summarySource' -Context 'Build evidence') -ne 'codesys-persistent.compile_project') {
+        throw 'Build evidence summarySource must be codesys-persistent.compile_project.'
+    }
     Assert-SamePath -Expected ([string]$Operation.identity.plcProject) -Actual (Get-RequiredString -Object $build -Name 'projectPath' -Context 'Build evidence') -Description 'Build PLC project'
     if ((Get-RequiredString -Object $build -Name 'profile' -Context 'Build evidence') -ne [string]$Operation.identity.profile) {
         throw 'Build evidence profile does not match the configured PLE profile.'
@@ -1476,26 +1808,32 @@ function Assert-BuildEvidence {
     if ((-not $AllowErrors) -and (($errors -ne 0) -or (-not $verified))) {
         throw "Final Build evidence is not clean: errors=$errors, verified=$verified."
     }
-    if ($errors -eq 0) {
-        if (-not (Get-BooleanValue -Object $build -Name 'signatureComplete' -Required -Context 'Build evidence')) {
-            throw 'Zero-error Build evidence must include a complete warning-signature set.'
+    if (-not (Get-BooleanValue -Object $build -Name 'signatureComplete' -Required -Context 'Build evidence')) {
+        throw 'Build evidence must include a complete warning-signature set.'
+    }
+    if ((Get-RequiredString -Object $build -Name 'signatureAlgorithm' -Context 'Build evidence') -ne 'sha256:v1:normalized-warning-record') {
+        throw 'Build warning signatureAlgorithm is unsupported.'
+    }
+    $signatureOccurrences = 0
+    $signatures = @(Get-PropertyValue -Object $build -Name 'warningSignatures' -DefaultValue @())
+    $seenSignatureShas = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($signature in $signatures) {
+        Assert-ExactPropertySet -Object $signature -ExpectedNames @('sha256', 'occurrences') -Context 'Build warning signature'
+        $signatureSha = [string](Get-PropertyValue -Object $signature -Name 'sha256')
+        $occurrences = [int](Get-PropertyValue -Object $signature -Name 'occurrences' -DefaultValue 0)
+        if (-not (Test-HexSha256 -Value $signatureSha)) {
+            throw 'Build warning evidence contains an invalid signature SHA-256.'
         }
-        $signatureOccurrences = 0
-        $signatures = @(Get-PropertyValue -Object $build -Name 'warningSignatures' -DefaultValue @())
-        foreach ($signature in $signatures) {
-            $signatureSha = [string](Get-PropertyValue -Object $signature -Name 'sha256')
-            $occurrences = [int](Get-PropertyValue -Object $signature -Name 'occurrences' -DefaultValue 0)
-            if (-not (Test-HexSha256 -Value $signatureSha)) {
-                throw 'Build warning evidence contains an invalid signature SHA-256.'
-            }
-            if ($occurrences -lt 1) {
-                throw 'Build warning signature occurrences must be at least 1.'
-            }
-            $signatureOccurrences += $occurrences
+        if (-not $seenSignatureShas.Add($signatureSha)) {
+            throw 'Build warning evidence contains a duplicate signature SHA-256.'
         }
-        if ($signatureOccurrences -ne $warnings) {
-            throw "Build warning signature multiset does not match warnings=$warnings."
+        if ($occurrences -lt 1) {
+            throw 'Build warning signature occurrences must be at least 1.'
         }
+        $signatureOccurrences += $occurrences
+    }
+    if ($signatureOccurrences -ne $warnings) {
+        throw "Build warning signature multiset does not match warnings=$warnings."
     }
     return [pscustomobject]@{
         build    = $build
@@ -1531,35 +1869,6 @@ function Assert-StructuredAcceptance {
         throw 'Final acceptance did not prove Symbol post-processing.'
     }
 
-    if ([string]$Operation.currentAction.kind -eq 'apply_change_set_and_build') {
-        $requestedChanges = @((Read-JsonDocument -Path ([string]$Operation.currentAction.path) -Description 'Runner action').payload.changeSet)
-        $appliedChanges = @(Get-PropertyValue -Object $Result -Name 'appliedChanges' -DefaultValue @())
-        if ($requestedChanges.Count -ne $appliedChanges.Count) {
-            throw 'Repair evidence does not contain one readback result per requested change.'
-        }
-        foreach ($requested in $requestedChanges) {
-            $changeId = Get-RequiredString -Object $requested -Name 'changeId' -Context 'Requested change'
-            $matches = @($appliedChanges | Where-Object { [string]$_.changeId -eq $changeId })
-            if ($matches.Count -ne 1) {
-                throw "Repair evidence does not uniquely identify requested change '$changeId'."
-            }
-            $applied = $matches[0]
-            if ((Get-RequiredString -Object $applied -Name 'status' -Context 'Applied change') -ne 'applied') {
-                throw "Repair evidence did not apply change '$changeId'."
-            }
-            if ((Get-RequiredString -Object $applied -Name 'targetPath' -Context 'Applied change') -ne [string]$requested.targetPath) {
-                throw "Repair evidence read back the wrong target for change '$changeId'."
-            }
-            $expectedBefore = [string]$requested.expectedBefore.sha256
-            $desired = [string]$requested.desired.sha256
-            if ((-not ([string]$applied.expectedBeforeSha256).Equals($expectedBefore, [System.StringComparison]::OrdinalIgnoreCase)) -or
-                (-not ([string]$applied.observedBeforeSha256).Equals($expectedBefore, [System.StringComparison]::OrdinalIgnoreCase)) -or
-                (-not ([string]$applied.desiredSha256).Equals($desired, [System.StringComparison]::OrdinalIgnoreCase)) -or
-                (-not ([string]$applied.readbackSha256).Equals($desired, [System.StringComparison]::OrdinalIgnoreCase))) {
-                throw "Repair evidence hash/readback mismatch for change '$changeId'."
-            }
-        }
-    }
 }
 
 function Add-EvidenceReference {

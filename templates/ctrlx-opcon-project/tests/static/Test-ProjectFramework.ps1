@@ -24,9 +24,11 @@ $requiredFiles = @(
     'scripts/cpstudio/write_export_request.ps1',
     'scripts/cpstudio/Invoke-PostExportAudit.ps1',
     'scripts/cpstudio/Invoke-PostExportEngineering.ps1',
+    'scripts/cpstudio/New-PostExportRunnerEvidence.ps1',
     'scripts/git/Get-ReadOnlyGitAudit.ps1',
     'tests/cpstudio/Test-PostExportQueue.ps1',
-    'tests/cpstudio/Test-PostExportEngineering.ps1'
+    'tests/cpstudio/Test-PostExportEngineering.ps1',
+    'tests/cpstudio/Test-PostExportRunnerEvidence.ps1'
 )
 
 $requiredDirectories = @(

@@ -368,6 +368,7 @@ function New-RunnerEvidence {
         [Parameter(Mandatory = $false)][bool]$RequiresSecondExport = $false,
         [Parameter(Mandatory = $false)][bool]$RequiresCpStudioChange = $false,
         [Parameter(Mandatory = $false)][object[]]$ProposedChanges = @(),
+        [Parameter(Mandatory = $false)][object[]]$CapabilitiesInvoked,
         [Parameter(Mandatory = $false)][bool]$OnlineOperationsUsed = $false,
         [Parameter(Mandatory = $false)][bool]$SecondPleStarted = $false,
         [Parameter(Mandatory = $false)][bool]$ProjectLeaseReleased = $true,
@@ -377,6 +378,24 @@ function New-RunnerEvidence {
 
     if (-not $ActionRequestSha256) {
         $ActionRequestSha256 = $Action.sha256
+    }
+    if (-not $PSBoundParameters.ContainsKey('CapabilitiesInvoked')) {
+        $CapabilitiesInvoked = if ($ResultStatus -eq 'succeeded') {
+            $baseCapabilities = @('get_codesys_status', 'compile_project', 'get_compile_messages')
+            if ([string]$Action.kind -eq 'apply_change_set_and_build') {
+                @($baseCapabilities + @('get_all_pou_code', 'set_pou_code'))
+            }
+            else {
+                @($baseCapabilities)
+            }
+        }
+        else {
+            @()
+        }
+    }
+    $serializedCapabilities = [object[]]::new(0)
+    if (@($CapabilitiesInvoked).Count -ne 0) {
+        $serializedCapabilities = @($CapabilitiesInvoked)
     }
     $completedAt = [DateTime]::UtcNow
     $actionCreatedAt = [DateTime]::MinValue
@@ -393,15 +412,17 @@ function New-RunnerEvidence {
         $completedAt = $buildCompletedAt.AddMilliseconds(100)
     }
     $appliedChanges = @()
-    foreach ($change in @($Action.payload.changeSet)) {
-        $appliedChanges += [ordered]@{
-            changeId            = $change.changeId
-            status              = 'applied'
-            targetPath          = $change.targetPath
-            expectedBeforeSha256 = $change.expectedBefore.sha256
-            observedBeforeSha256 = $change.expectedBefore.sha256
-            desiredSha256       = $change.desired.sha256
-            readbackSha256      = $change.desired.sha256
+    if ($ResultStatus -eq 'succeeded') {
+        foreach ($change in @($Action.payload.changeSet)) {
+            $appliedChanges += [ordered]@{
+                changeId             = $change.changeId
+                status               = 'applied'
+                targetPath           = $change.targetPath
+                expectedBeforeSha256 = $change.expectedBefore.sha256
+                observedBeforeSha256 = $change.expectedBefore.sha256
+                desiredSha256        = $change.desired.sha256
+                readbackSha256       = $change.desired.sha256
+            }
         }
     }
     $evidence = [ordered]@{
@@ -417,12 +438,16 @@ function New-RunnerEvidence {
             plcProject      = $Action.payload.project.plcProject
             profile         = $Action.payload.project.profile
         }
-        capabilitiesInvoked = @()
+        capabilitiesInvoked = $serializedCapabilities
         guardrails          = [ordered]@{
             onlineOperationsUsed = $OnlineOperationsUsed
             secondPleStarted     = $SecondPleStarted
+            projectLeaseAcquired = ($ResultStatus -eq 'succeeded')
             projectLeaseReleased = $ProjectLeaseReleased
+            projectLeaseScope    = 'workflow-local'
             symbolLeaseHeld      = $false
+            pleOrMcpStarted      = $false
+            directWatcherIpcUsed = $false
         }
         result              = [ordered]@{
             status              = $ResultStatus
@@ -439,7 +464,8 @@ function New-RunnerEvidence {
                 errors           = $BuildErrors
                 warnings         = 9
                 signatureComplete = $true
-                summarySource    = 'offline-self-test'
+                signatureAlgorithm = 'sha256:v1:normalized-warning-record'
+                summarySource    = 'codesys-persistent.compile_project'
                 warningSignatures = @(
                     [ordered]@{ sha256 = ('C' * 64); occurrences = 9 }
                 )
@@ -464,6 +490,23 @@ function New-RunnerEvidence {
             }
         }
     }
+    if ($ResultStatus -eq 'succeeded') {
+        $evidence.result.Remove('failureStage')
+        $evidence.result.Remove('reasonCode')
+        $evidence['session'] = [ordered]@{
+            state             = 'ready'
+            mode              = 'persistent'
+            sessionId         = 'fixture-stage2-session'
+            plePid            = 1234
+            profile           = $Action.payload.project.profile
+            activeProjectPath = $Action.payload.project.plcProject
+            startedByRunner   = $false
+        }
+    }
+    else {
+        $evidence.result.Remove('build')
+        $evidence.result.Remove('acceptance')
+    }
     if ($OmitBuild) {
         $evidence.result.Remove('build')
     }
@@ -471,9 +514,108 @@ function New-RunnerEvidence {
     return $evidence
 }
 
+function New-ProducerBackedEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProducerPath,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ObservationPath,
+        [Parameter(Mandatory = $true)][object]$Action
+    )
+
+    $actionCreatedAt = [DateTime]::Parse([string]$Action.payload.createdAtUtc).ToUniversalTime()
+    $buildStartedAt = [DateTime]::UtcNow
+    if ($buildStartedAt -le $actionCreatedAt) {
+        $buildStartedAt = $actionCreatedAt.AddMilliseconds(100)
+    }
+    $buildCompletedAt = $buildStartedAt.AddMilliseconds(100)
+    $completedAt = $buildCompletedAt.AddMilliseconds(100)
+    $warningRecords = @()
+    for ($index = 1; $index -le 9; $index++) {
+        $warningRecords += [ordered]@{
+            code       = 'C0543'
+            source     = 'Build'
+            objectPath = 'Fixture'
+            position   = 'Line ' + $index
+            message    = 'fixture warning'
+        }
+    }
+    $observation = [ordered]@{
+        schemaVersion       = 1
+        operationId         = $Action.payload.operationId
+        actionId            = $Action.actionId
+        actionKind          = $Action.kind
+        actionRequestSha256 = $Action.sha256
+        status              = 'succeeded'
+        completedAtUtc      = $completedAt.ToString('o')
+        capabilitiesInvoked = @('get_codesys_status', 'get_all_pou_code', 'compile_project', 'get_compile_messages')
+        session             = [ordered]@{
+            state             = 'ready'
+            mode              = 'persistent'
+            sessionId         = 'fixture-stage2-session'
+            plePid            = 1234
+            profile           = $Action.payload.project.profile
+            activeProjectPath = $Action.payload.project.plcProject
+            startedByRunner   = $false
+        }
+        guardrails          = [ordered]@{
+            onlineOperationsUsed = $false
+            secondPleStarted     = $false
+            projectLeaseAcquired = $true
+            projectLeaseReleased = $true
+            projectLeaseScope    = 'workflow-local'
+            symbolLeaseHeld      = $false
+            pleOrMcpStarted      = $false
+            directWatcherIpcUsed = $false
+        }
+        result              = [ordered]@{
+            verificationOk         = $true
+            appliedReadbackOk      = $true
+            repairRequired         = $false
+            requiresSecondExport   = $false
+            requiresCpStudioChange = $false
+            proposedChanges        = @()
+            appliedChanges         = @()
+            build                  = [ordered]@{
+                buildId        = 'fixture:stage2:build'
+                projectPath    = $Action.payload.project.plcProject
+                profile        = $Action.payload.project.profile
+                projectSha256  = (Get-FileHash -LiteralPath $Action.payload.project.plcProject -Algorithm SHA256).Hash
+                startedAtUtc   = $buildStartedAt.ToString('o')
+                completedAtUtc = $buildCompletedAt.ToString('o')
+                verified       = $true
+                errors         = 0
+                warnings       = 9
+                summarySource  = 'codesys-persistent.compile_project'
+                warningRecords = @($warningRecords)
+            }
+            acceptance             = [ordered]@{
+                ownershipVerified           = $true
+                mappingConsistent            = $true
+                readbackVerified             = $true
+                recoverableBaselineVerified  = $true
+                warningSignaturesReviewed    = $true
+                existingSessionReused        = $true
+                pleOrMcpStarted               = $false
+                directWatcherIpcUsed          = $false
+                symbolPostProcessingVerified = $true
+            }
+        }
+    }
+    Write-JsonFile -Path $ObservationPath -Value $observation
+    $producerOutput = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProducerPath `
+        -ActionPath $Action.path `
+        -ExpectedActionSha256 $Action.sha256 `
+        -ObservationPath $ObservationPath `
+        -OutputPath $Path 2>&1
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Runner evidence producer failed in Stage2 E2E: " + ($producerOutput -join ' '))
+    return Read-JsonFile -Path $Path
+}
+
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $consumer = Join-Path $repositoryRoot 'scripts\cpstudio\Invoke-PostExportEngineering.ps1'
+$producer = Join-Path $repositoryRoot 'scripts\cpstudio\New-PostExportRunnerEvidence.ps1'
 Assert-True -Condition ([System.IO.File]::Exists($consumer)) -Message "Stage2 consumer is missing: $consumer"
+Assert-True -Condition ([System.IO.File]::Exists($producer)) -Message "Runner evidence producer is missing: $producer"
 
 $temporaryBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\', '/')
 $testRoot = Join-Path $temporaryBase ('mcp-cpstudio-stage2-selftest-' + [guid]::NewGuid().ToString('N'))
@@ -481,7 +623,8 @@ $engineeringRoot = Join-Path $testRoot 'McpCoding'
 $stationRoot = Join-Path $testRoot 'StationDemo'
 $operationRoot = Join-Path $engineeringRoot 'data\operations\cpstudio-stage2'
 $reportRoot = Join-Path $engineeringRoot 'data\reports\cpstudio'
-$evidenceRoot = Join-Path $engineeringRoot 'data\evidence\cpstudio-stage2'
+$evidenceRoot = Join-Path $engineeringRoot 'data\runner-evidence'
+$directEvidenceRoot = Join-Path $engineeringRoot 'data\evidence\cpstudio-stage2'
 $plcProject = Join-Path $stationRoot 'Plc\Demo_PLC.project'
 
 try {
@@ -490,6 +633,7 @@ try {
         (Join-Path $engineeringRoot 'config'),
         $reportRoot,
         $evidenceRoot,
+        $directEvidenceRoot,
         (Join-Path $stationRoot 'Engineering'),
         (Join-Path $stationRoot 'Plc')
     )) {
@@ -593,6 +737,236 @@ tools:
     }
     Assert-True -Condition ($idempotentQuery.operationId -eq $idempotentStart.operationId) -Message 'OperationId query returned the wrong operation.'
 
+    # Stage2 accepts evidence only from the producer-owned output root. A
+    # complete-looking JSON document written directly to the legacy evidence
+    # location cannot bypass the producer boundary.
+    $directBypassPath = Join-Path $directEvidenceRoot 'direct-evidence-bypass.json'
+    $null = New-RunnerEvidence `
+        -Path $directBypassPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction
+    $directBypassResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $directBypassPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $directBypassResult.rejected -Message 'Direct evidence outside data/runner-evidence bypassed the producer-contract path gate.'
+
+    # A legacy hand-written payload inside the producer root is still rejected
+    # when it omits the producer-validated session and lease contract.
+    $legacyDirectPath = Join-Path $evidenceRoot 'legacy-direct-evidence.json'
+    $legacyDirect = New-RunnerEvidence `
+        -Path $legacyDirectPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction
+    $legacyDirect.Remove('session')
+    $legacyDirect.guardrails.Remove('projectLeaseAcquired')
+    $legacyDirect.guardrails.Remove('projectLeaseScope')
+    $legacyDirect.guardrails.Remove('pleOrMcpStarted')
+    $legacyDirect.guardrails.Remove('directWatcherIpcUsed')
+    $legacyDirect['capabilitiesInvoked'] = @()
+    Write-JsonFile -Path $legacyDirectPath -Value $legacyDirect
+    $legacyDirectResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $legacyDirectPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $legacyDirectResult.rejected -Message 'Legacy hand-written evidence bypassed the producer field contract.'
+
+    # Required capabilities must each be reported exactly once. Additional
+    # safe read-only audit capabilities are allowed and exercised in the
+    # producer-backed DONE path below.
+    $extraCapabilityPath = Join-Path $evidenceRoot 'duplicate-required-capability.json'
+    $null = New-RunnerEvidence `
+        -Path $extraCapabilityPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction `
+        -CapabilitiesInvoked @('get_codesys_status', 'compile_project', 'compile_project', 'get_compile_messages')
+    $extraCapabilityResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $extraCapabilityPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $extraCapabilityResult.rejected -Message 'Successful evidence with a duplicated required capability was accepted.'
+
+    $unapprovedCapabilityPath = Join-Path $evidenceRoot 'unapproved-capability.json'
+    $null = New-RunnerEvidence `
+        -Path $unapprovedCapabilityPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction `
+        -CapabilitiesInvoked @('get_codesys_status', 'delete_object', 'compile_project', 'get_compile_messages')
+    $unapprovedCapabilityResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $unapprovedCapabilityPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $unapprovedCapabilityResult.rejected -Message 'Successful evidence with an unapproved offline capability was accepted.'
+
+    $redundantSavePath = Join-Path $evidenceRoot 'redundant-save-capability.json'
+    $null = New-RunnerEvidence `
+        -Path $redundantSavePath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction `
+        -CapabilitiesInvoked @('get_codesys_status', 'save_project', 'compile_project', 'get_compile_messages')
+    $redundantSaveResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $redundantSavePath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $redundantSaveResult.rejected -Message 'Evidence with redundant save_project was accepted.'
+
+    $inspectWriteCapabilityPath = Join-Path $evidenceRoot 'inspect-write-capability.json'
+    $null = New-RunnerEvidence `
+        -Path $inspectWriteCapabilityPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction `
+        -CapabilitiesInvoked @('get_codesys_status', 'get_all_pou_code', 'set_pou_code', 'compile_project', 'get_compile_messages')
+    $inspectWriteCapabilityResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $inspectWriteCapabilityPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $inspectWriteCapabilityResult.rejected -Message 'Inspect evidence with a project write capability was accepted.'
+
+    $nullCapabilityPath = Join-Path $evidenceRoot 'null-capability.json'
+    $nullCapability = New-RunnerEvidence `
+        -Path $nullCapabilityPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction `
+        -ResultStatus 'blocked' `
+        -OmitBuild $true
+    $nullCapability.capabilitiesInvoked = [object[]](,$null)
+    Write-JsonFile -Path $nullCapabilityPath -Value $nullCapability
+    $nullCapabilityResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $nullCapabilityPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $nullCapabilityResult.rejected -Message 'Blocked evidence with a null capability identifier was accepted.'
+
+    $topLevelNullCapabilityPath = Join-Path $evidenceRoot 'top-level-null-capability.json'
+    $topLevelNullCapability = New-RunnerEvidence `
+        -Path $topLevelNullCapabilityPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction `
+        -ResultStatus 'blocked' `
+        -OmitBuild $true
+    $topLevelNullCapability.capabilitiesInvoked = $null
+    Write-JsonFile -Path $topLevelNullCapabilityPath -Value $topLevelNullCapability
+    $topLevelNullCapabilityResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $topLevelNullCapabilityPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $topLevelNullCapabilityResult.rejected -Message 'Blocked evidence with capabilitiesInvoked=null was accepted.'
+
+    $nullAppliedChangesPath = Join-Path $evidenceRoot 'null-applied-changes.json'
+    $nullAppliedChanges = New-RunnerEvidence `
+        -Path $nullAppliedChangesPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction `
+        -ResultStatus 'blocked' `
+        -OmitBuild $true
+    $nullAppliedChanges.result.appliedChanges = $null
+    Write-JsonFile -Path $nullAppliedChangesPath -Value $nullAppliedChanges
+    $nullAppliedChangesResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $nullAppliedChangesPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $nullAppliedChangesResult.rejected -Message 'Blocked evidence with appliedChanges=null was accepted.'
+
+    $invalidSessionPath = Join-Path $evidenceRoot 'invalid-session.json'
+    $invalidSession = New-RunnerEvidence `
+        -Path $invalidSessionPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction
+    $invalidSession.session.state = 'starting'
+    Write-JsonFile -Path $invalidSessionPath -Value $invalidSession
+    $invalidSessionResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $invalidSessionPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $invalidSessionResult.rejected -Message 'Successful evidence without a ready persistent session was accepted.'
+
+    $invalidBuildSourcePath = Join-Path $evidenceRoot 'invalid-build-source.json'
+    $invalidBuildSource = New-RunnerEvidence `
+        -Path $invalidBuildSourcePath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction
+    $invalidBuildSource.result.build.summarySource = 'hand-written-summary'
+    Write-JsonFile -Path $invalidBuildSourcePath -Value $invalidBuildSource
+    $invalidBuildSourceResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $invalidBuildSourcePath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $invalidBuildSourceResult.rejected -Message 'Successful evidence with a non-persistent Build summary source was accepted.'
+
+    $invalidBuildIdPath = Join-Path $evidenceRoot 'invalid-build-id.json'
+    $invalidBuildId = New-RunnerEvidence `
+        -Path $invalidBuildIdPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction
+    $invalidBuildId.result.build.buildId = '../unsafe-build-id'
+    Write-JsonFile -Path $invalidBuildIdPath -Value $invalidBuildId
+    $invalidBuildIdResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $invalidBuildIdPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $invalidBuildIdResult.rejected -Message 'Successful evidence with an unsafe Build identifier was accepted.'
+
+    $invalidSignatureAlgorithmPath = Join-Path $evidenceRoot 'invalid-signature-algorithm.json'
+    $invalidSignatureAlgorithm = New-RunnerEvidence `
+        -Path $invalidSignatureAlgorithmPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction
+    $invalidSignatureAlgorithm.result.build.signatureAlgorithm = 'sha256:unknown'
+    Write-JsonFile -Path $invalidSignatureAlgorithmPath -Value $invalidSignatureAlgorithm
+    $invalidSignatureAlgorithmResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $invalidSignatureAlgorithmPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $invalidSignatureAlgorithmResult.rejected -Message 'Successful evidence with an unsupported warning signature algorithm was accepted.'
+
+    $nullWarningSignaturesPath = Join-Path $evidenceRoot 'null-warning-signatures.json'
+    $nullWarningSignatures = New-RunnerEvidence `
+        -Path $nullWarningSignaturesPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction
+    $nullWarningSignatures.result.build.warningSignatures = $null
+    Write-JsonFile -Path $nullWarningSignaturesPath -Value $nullWarningSignatures
+    $nullWarningSignaturesResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $nullWarningSignaturesPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $nullWarningSignaturesResult.rejected -Message 'Successful evidence with warningSignatures=null was accepted.'
+
+    $idempotentStillWaiting = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition (([string]$idempotentStillWaiting.status).ToUpperInvariant() -eq 'WAITING_FOR_RUNNER') -Message 'Rejected direct evidence changed the pending operation state.'
+
     # An evidence payload cannot be applied to a different action request hash.
     $wrongHashEvidencePath = Join-Path $evidenceRoot 'wrong-action-hash.json'
     $null = New-RunnerEvidence `
@@ -683,7 +1057,11 @@ tools:
     }
     $cleanAction = Get-ActionRequestInfo -Result $cleanStart -OperationRoot $operationRoot -OperationId $cleanStart.operationId
     $cleanEvidencePath = Join-Path $evidenceRoot 'clean.json'
-    $null = New-RunnerEvidence -Path $cleanEvidencePath -OperationId $cleanStart.operationId -Action $cleanAction
+    $cleanObservationPath = Join-Path $engineeringRoot 'data\runner-observations\clean.json'
+    $cleanProducedEvidence = New-ProducerBackedEvidence -ProducerPath $producer -Path $cleanEvidencePath -ObservationPath $cleanObservationPath -Action $cleanAction
+    Assert-True -Condition ([string]$cleanProducedEvidence.actionId -eq [string]$cleanAction.actionId) -Message 'Producer-backed E2E evidence lost the Stage2 action identity.'
+    Assert-True -Condition ([string]$cleanProducedEvidence.session.state -eq 'ready') -Message 'Producer-backed E2E evidence lost the ready persistent session identity.'
+    Assert-True -Condition (@($cleanProducedEvidence.capabilitiesInvoked).Count -eq 4) -Message 'Producer-backed E2E evidence did not preserve the safe read-only audit capability.'
     $cleanEvidenceText = [System.IO.File]::ReadAllText($cleanEvidencePath)
     $utf8WithBom = New-Object System.Text.UTF8Encoding $true
     [System.IO.File]::WriteAllText($cleanEvidencePath, $cleanEvidenceText, $utf8WithBom)
@@ -780,6 +1158,141 @@ tools:
         OperationRoot = $operationRoot
     }
     Assert-True -Condition (([string]$repairDone.status).ToUpperInvariant() -eq 'DONE') -Message 'Verified repair evidence did not reach DONE.'
+
+    # An apply action may stop before its first tool call. Empty capabilities and
+    # no Build/readback are valid only for an explicit terminal result.
+    $applyBlockedAudit = Join-Path $reportRoot 'apply-blocked.json'
+    $null = New-Stage1AuditReport `
+        -Path $applyBlockedAudit `
+        -RequestId ('apply-blocked-' + [guid]::NewGuid().ToString('N')) `
+        -RequestedAtUtc $baseTime.AddSeconds(42) `
+        -EngineeringRoot $engineeringRoot `
+        -StationRoot $stationRoot `
+        -PlcProject $plcProject
+    $applyBlockedStart = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+        AuditReport = $applyBlockedAudit
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    $applyBlockedInspect = Get-ActionRequestInfo -Result $applyBlockedStart -OperationRoot $operationRoot -OperationId $applyBlockedStart.operationId
+    $applyBlockedPlanPath = Join-Path $evidenceRoot 'apply-blocked-plan.json'
+    $null = New-RunnerEvidence `
+        -Path $applyBlockedPlanPath `
+        -OperationId $applyBlockedStart.operationId `
+        -Action $applyBlockedInspect `
+        -RepairRequired $true `
+        -ProposedChanges @((New-ProposedChange -Authorization 'mixed_declared_hook'))
+    $applyBlockedWaiting = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+        OperationId = $applyBlockedStart.operationId
+        EvidencePath = $applyBlockedPlanPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    $applyBlockedAction = Get-ActionRequestInfo -Result $applyBlockedWaiting -OperationRoot $operationRoot -OperationId $applyBlockedStart.operationId
+    $applyBlockedEvidencePath = Join-Path $evidenceRoot 'apply-blocked-terminal.json'
+    $null = New-RunnerEvidence `
+        -Path $applyBlockedEvidencePath `
+        -OperationId $applyBlockedStart.operationId `
+        -Action $applyBlockedAction `
+        -ResultStatus 'blocked' `
+        -VerificationOk $false `
+        -AppliedReadbackOk $false `
+        -OmitBuild $true
+    $applyBlockedFinal = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+        OperationId = $applyBlockedStart.operationId
+        EvidencePath = $applyBlockedEvidencePath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition (([string]$applyBlockedFinal.status).ToUpperInvariant() -eq 'BLOCKED') -Message 'Apply-before-call evidence with an empty capability array did not reach BLOCKED.'
+
+    # A failed apply may honestly report the verified subset already written.
+    $partialFailedAudit = Join-Path $reportRoot 'apply-partial-failed.json'
+    $null = New-Stage1AuditReport `
+        -Path $partialFailedAudit `
+        -RequestId ('apply-partial-failed-' + [guid]::NewGuid().ToString('N')) `
+        -RequestedAtUtc $baseTime.AddSeconds(44) `
+        -EngineeringRoot $engineeringRoot `
+        -StationRoot $stationRoot `
+        -PlcProject $plcProject
+    $partialFailedStart = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+        AuditReport = $partialFailedAudit
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    $partialFailedInspect = Get-ActionRequestInfo -Result $partialFailedStart -OperationRoot $operationRoot -OperationId $partialFailedStart.operationId
+    $partialFailedPlanPath = Join-Path $evidenceRoot 'apply-partial-plan.json'
+    $partialChangeOne = New-ProposedChange -Authorization 'mixed_declared_hook'
+    $partialChangeTwo = New-ProposedChange -Authorization 'mixed_declared_hook'
+    $null = New-RunnerEvidence `
+        -Path $partialFailedPlanPath `
+        -OperationId $partialFailedStart.operationId `
+        -Action $partialFailedInspect `
+        -RepairRequired $true `
+        -ProposedChanges @($partialChangeOne, $partialChangeTwo)
+    $partialFailedWaiting = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+        OperationId = $partialFailedStart.operationId
+        EvidencePath = $partialFailedPlanPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    $partialFailedAction = Get-ActionRequestInfo -Result $partialFailedWaiting -OperationRoot $operationRoot -OperationId $partialFailedStart.operationId
+    $partialCapabilities = @('get_codesys_status', 'set_pou_code', 'get_all_pou_code')
+    $unknownPartialPath = Join-Path $evidenceRoot 'apply-partial-unknown.json'
+    $unknownPartial = New-RunnerEvidence `
+        -Path $unknownPartialPath `
+        -OperationId $partialFailedStart.operationId `
+        -Action $partialFailedAction `
+        -ResultStatus 'failed' `
+        -VerificationOk $false `
+        -AppliedReadbackOk $false `
+        -CapabilitiesInvoked $partialCapabilities `
+        -OmitBuild $true
+    $unknownPartial.result.appliedChanges = @([ordered]@{
+        changeId = 'not-in-action'
+        status = 'applied'
+        targetPath = $partialChangeOne.targetPath
+        expectedBeforeSha256 = $partialChangeOne.expectedBefore.sha256
+        observedBeforeSha256 = $partialChangeOne.expectedBefore.sha256
+        desiredSha256 = $partialChangeOne.desired.sha256
+        readbackSha256 = $partialChangeOne.desired.sha256
+    })
+    Write-JsonFile -Path $unknownPartialPath -Value $unknownPartial
+    $unknownPartialResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $partialFailedStart.operationId
+        EvidencePath = $unknownPartialPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $unknownPartialResult.rejected -Message 'Terminal apply evidence with an unknown changeId was accepted.'
+
+    $validPartialPath = Join-Path $evidenceRoot 'apply-partial-valid.json'
+    $validPartial = New-RunnerEvidence `
+        -Path $validPartialPath `
+        -OperationId $partialFailedStart.operationId `
+        -Action $partialFailedAction `
+        -ResultStatus 'failed' `
+        -VerificationOk $false `
+        -AppliedReadbackOk $false `
+        -CapabilitiesInvoked $partialCapabilities `
+        -OmitBuild $true
+    $validPartial.result.appliedChanges = @([ordered]@{
+        changeId = $partialChangeOne.changeId
+        status = 'applied'
+        targetPath = $partialChangeOne.targetPath
+        expectedBeforeSha256 = $partialChangeOne.expectedBefore.sha256
+        observedBeforeSha256 = $partialChangeOne.expectedBefore.sha256
+        desiredSha256 = $partialChangeOne.desired.sha256
+        readbackSha256 = $partialChangeOne.desired.sha256
+    })
+    Write-JsonFile -Path $validPartialPath -Value $validPartial
+    $partialFailedFinal = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+        OperationId = $partialFailedStart.operationId
+        EvidencePath = $validPartialPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition (([string]$partialFailedFinal.status).ToUpperInvariant() -eq 'FAILED') -Message 'Verified partial apply failure did not reach FAILED.'
 
     # CpStudio-owned/interface writes are never converted into an AI repair.
     $blockedAudit = Join-Path $reportRoot 'blocked.json'
@@ -1017,7 +1530,7 @@ tools:
     Assert-True -Condition (([string]$cpStudioWaiting.status).ToUpperInvariant() -eq 'WAITING_FOR_CPSTUDIO') -Message 'CpStudio-owned change did not enter WAITING_FOR_CPSTUDIO.'
 
     Assert-FingerprintMapsEqual -Expected $stationBefore -Actual (Get-FileFingerprintMap -Root $stationRoot) -Context 'Stage2 offline workflow Station'
-    Write-Output 'Post-export Stage2 self-test OK: WhatIf, deterministic operation, manifest ownership, structured evidence, offline-only guard, clean/repair/Export2/CpStudio paths, immutable evidence and unchanged Station.'
+    Write-Output 'Post-export Stage2 self-test OK: WhatIf, deterministic operation, producer-contract evidence gate, session/capability/Build contract, producer-to-consumer DONE, manifest ownership, clean/repair/Export2/CpStudio paths, immutable evidence and unchanged Station.'
 }
 finally {
     $resolvedTestRoot = [System.IO.Path]::GetFullPath($testRoot)

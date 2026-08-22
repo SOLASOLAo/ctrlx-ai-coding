@@ -51,6 +51,17 @@ Codex/PLE session, then submit the resulting evidence with
 `-OperationId <id> -EvidencePath <evidence.json>`. Query with `-OperationId
 <id>` alone.
 
+If `scripts/cpstudio/New-PostExportRunnerEvidence.ps1` exists, use it after the
+runner action. Pass the immutable action path and ledger SHA plus a structured
+observation produced by the active session. The producer must remain a pure
+validator/formatter: it rechecks the Stage 1 report, manifests, the required
+critical Station fingerprints, Build freshness and current project SHA,
+derives the warning signature multiset, and atomically seals evidence. It must not call or start
+PLE, MCP, REST, Symbol Configuration, or watcher IPC. All guardrail and
+acceptance facts must be explicit; never default them to true. When the
+persistent session is unhealthy, emit a `blocked` observation without Build
+instead of fabricating a successful result.
+
 The valid coordination states are `WAITING_FOR_RUNNER`,
 `WAITING_FOR_CPSTUDIO`, `WAITING_FOR_EXPORT_2`, `DONE`, `BLOCKED`, and
 `FAILED`. Treat `WAITING_FOR_CPSTUDIO` as an ownership boundary: the user must
@@ -66,9 +77,17 @@ not execution evidence. Do not claim the operation `DONE` until a fresh final
 Build and required readbacks are present.
 
 Because CpStudio cannot currently host this control loop, keep the state
-machine in the AI sidecar rather than modifying CpStudio internals. A future
-MCP lease/runner can consume the same action contract, but the current PlanOnly
-coordinator is not that live runner.
+machine in the AI sidecar rather than modifying CpStudio internals. The current
+`workflow-local` lease means only the established one-Codex-session rule; it is
+not an OS-level cross-process lock. Do not claim `cross-process` until a real
+lease implementation exists. The PlanOnly coordinator and evidence producer
+still do not execute the live engineering action themselves.
+
+Treat the reported session PID, session reuse, acceptance flags, and
+workflow-local lease as structured runner self-attestations. The pure producer
+checks their required form and internal consistency but does not independently
+query the process table or MCP session. They are audit evidence, not a
+cryptographic or OS-enforced boundary.
 
 ## EtherCAT BMK rename
 

@@ -100,7 +100,8 @@
 
 - 新增 `Invoke-PostExportEngineering.ps1`：把成功的 Stage 1 报告转换为幂等 operation、不可变 action 和哈希绑定 evidence，覆盖 clean、repair、CpStudio-owned、条件 Export #2 与最终验证状态。
 - 协调器只维护旁车状态，不启动 PLE、MCP 或 REST，也不访问实体 PLC；action 必须由当前唯一 persistent Codex 会话执行。
-- 新项目模板、初始化器自测、质量门禁和 `ctrlx-opcon-engineering` Skill 已同步 Stage 2 合约；live runner 与跨进程 MCP 租约仍未实现。
+- 新增 `New-PostExportRunnerEvidence.ps1`：只验证/封装当前 runner 的显式 observation，重验 action、Stage 1、ownership、所需关键 Station 指纹、Build/PLC SHA，并生成确定性的 warning signature multiset；不会启动或调用工程工具，也不会默认把验收项设为 true。
+- 新项目模板、初始化器自测、质量门禁和 `ctrlx-opcon-engineering` Skill 已同步；live engineering runner 仍由唯一 persistent Codex 会话承担，真正的跨进程 MCP 租约仍未实现。
 
 ## 关键决策清单
 

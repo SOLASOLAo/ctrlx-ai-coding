@@ -83,39 +83,102 @@ after a person or Codex reviews the offline report.
 
 ## Stage 2 PlanOnly coordinator
 
-`Invoke-PostExportEngineering.ps1` converts a successful Stage 1 JSON report
-into an idempotent, hash-bound ledger under
-`data/operations/cpstudio-stage2/<operation-id>/`. This project-owned sidecar
-exists because CpStudio cannot host the coordination logic. It never starts
-PLE, MCP, or REST and never opens or edits the Station project.
+`Invoke-PostExportEngineering.ps1` turns one successful Stage 1 JSON report
+into an idempotent, hash-bound operation ledger. It is a sidecar coordinator
+because CpStudio V5.11 cannot be changed to provide this orchestration itself.
+The coordinator never starts PLE, MCP, or REST, never opens Symbol
+Configuration, and never changes the Station project.
+
+Start an operation (or query the same operation idempotently), inspect it, and
+submit evidence produced by the one active persistent Codex runner:
 
 ```powershell
-# Start, or idempotently query by the same Stage 1 report
 .\scripts\cpstudio\Invoke-PostExportEngineering.ps1 `
   -AuditReport .\data\reports\cpstudio\<stage1-report>.json
 
-# Query current state
 .\scripts\cpstudio\Invoke-PostExportEngineering.ps1 `
   -OperationId <operation-id>
 
-# Advance with evidence from the unique persistent Codex runner
 .\scripts\cpstudio\Invoke-PostExportEngineering.ps1 `
   -OperationId <operation-id> `
   -EvidencePath .\path\to\runner-evidence.json
+```
 
-# Only after the ledger explicitly requests Export #2
+When the ledger reaches `WAITING_FOR_EXPORT_2`, finish the requested CpStudio
+export, run the Stage 1 offline auditor for that new request, then bind the new
+report:
+
+```powershell
 .\scripts\cpstudio\Invoke-PostExportEngineering.ps1 `
   -OperationId <operation-id> `
   -SecondExportAuditReport .\data\reports\cpstudio\<new-stage1-report>.json
 ```
 
-The states are `WAITING_FOR_RUNNER`, `WAITING_FOR_CPSTUDIO`,
-`WAITING_FOR_EXPORT_2`, `DONE`, `BLOCKED`, and `FAILED`. `-WhatIf` previews
-without writing. Evidence must be bound to the action hash and prove that no
-online operation or second PLE was used. The action file is a plan, not proof
-of execution.
+The default ledger is
+`data/operations/cpstudio-stage2/<operation-id>/`. `-WhatIf` previews a
+transition without writing it; `-EngineeringRoot` and `-OperationRoot` are
+available for controlled tests or non-default layouts. The state set is:
 
-For an EtherCAT BMK change, keep the order
-`Save -> Write designators -> Export #1 -> Link I/O -> audit/merge owned references -> Build -> conditional Export #2 -> final Build`.
-Do not access Symbol Configuration concurrently with CpStudio export; serialize
-both through the one active engineering session.
+- `WAITING_FOR_RUNNER`: an immutable action is ready for the unique persistent
+  Codex runner;
+- `WAITING_FOR_CPSTUDIO`: the required correction belongs to the CpStudio model
+  and must be made by the user;
+- `WAITING_FOR_EXPORT_2`: a second export is justified by recorded evidence;
+- `DONE`: final readback and a fresh Build meet the gates;
+- `BLOCKED`: a recoverable ownership, safety, or prerequisite problem needs
+  intervention;
+- `FAILED`: evidence or execution failed and is retained for diagnosis.
+
+Runner evidence must reference the exact operation, action, action SHA-256,
+configured Station/PLC paths, and must confirm that no online operation or
+second PLE was used. The coordinator rejects mismatched or replayed evidence;
+it does not pretend that writing an action file is the same as executing it.
+
+### Seal runner observations into evidence
+
+`New-PostExportRunnerEvidence.ps1` is the offline evidence boundary for the
+existing unique Codex/persistent session. It does not start or call PLE, MCP,
+REST, Symbol Configuration, or the watcher. After that session has executed
+the immutable action, it validates the action hash, Stage 1 report, ownership
+manifests, the required critical Station fingerprints, timestamps, explicit
+offline guardrails, and the current PLC project hash. It also converts one
+structured record per Build warning into a deterministic SHA-256 signature
+multiset; raw warning text is not copied into the operation ledger.
+
+```powershell
+.\scripts\cpstudio\New-PostExportRunnerEvidence.ps1 `
+  -ActionPath <operation-dir>\actions\0001-inspect_and_build.json `
+  -ExpectedActionSha256 <sha256-from-operation-ledger> `
+  -ObservationPath .\data\runner-observations\<action-id>.json `
+  -OutputPath .\data\runner-evidence\<action-id>.json `
+  -WhatIf
+```
+
+Remove `-WhatIf` only after reviewing the observation, then submit the output
+with `Invoke-PostExportEngineering.ps1 -EvidencePath`. Every success fact is
+required explicitly; the producer supplies no default `TRUE` values. A runner
+that cannot reuse the existing session writes `status: blocked`, omits Build,
+and records a safe reason code instead of fabricating acceptance.
+An apply action that fails after a partial write may report only the verified
+subset already read back; a terminal failure before the first call uses an
+empty `capabilitiesInvoked` array. Successful actions still require complete
+readback and a fresh Build.
+
+`projectLeaseScope: workflow-local` describes the present one-Codex-session
+coordination rule. It is not an OS-level cross-process lock. Record
+`projectLeaseAcquired` and `projectLeaseReleased` explicitly and do not claim
+`cross-process` until that lease implementation exists.
+
+The session PID, session reuse, and workflow-local lease fields are structured
+self-attestations from the active runner. The pure producer validates that they
+are present and internally consistent, but it does not independently query the
+process table or MCP session. They are therefore operational audit evidence,
+not a cryptographic or OS-enforced trust boundary.
+
+For EtherCAT BMK work, the coordinated order remains:
+
+`Save -> Write designators -> Export #1 -> Link I/O -> audit/merge owned references -> Build -> conditional Export #2 -> final Build`
+
+During any CpStudio export, the runner must release Symbol Configuration and
+perform no concurrent Symbol read/write. `This object is already in use` is a
+serialization failure, not a reason to launch another PLE.
