@@ -547,7 +547,7 @@ function New-ProducerBackedEvidence {
         actionRequestSha256 = $Action.sha256
         status              = 'succeeded'
         completedAtUtc      = $completedAt.ToString('o')
-        capabilitiesInvoked = @('get_codesys_status', 'get_all_pou_code', 'compile_project', 'get_compile_messages')
+        capabilitiesInvoked = @('get_codesys_status', 'open_project', 'get_all_pou_code', 'compile_project', 'get_compile_messages')
         session             = [ordered]@{
             state             = 'ready'
             mode              = 'persistent'
@@ -1061,7 +1061,7 @@ tools:
     $cleanProducedEvidence = New-ProducerBackedEvidence -ProducerPath $producer -Path $cleanEvidencePath -ObservationPath $cleanObservationPath -Action $cleanAction
     Assert-True -Condition ([string]$cleanProducedEvidence.actionId -eq [string]$cleanAction.actionId) -Message 'Producer-backed E2E evidence lost the Stage2 action identity.'
     Assert-True -Condition ([string]$cleanProducedEvidence.session.state -eq 'ready') -Message 'Producer-backed E2E evidence lost the ready persistent session identity.'
-    Assert-True -Condition (@($cleanProducedEvidence.capabilitiesInvoked).Count -eq 4) -Message 'Producer-backed E2E evidence did not preserve the safe read-only audit capability.'
+    Assert-True -Condition (@($cleanProducedEvidence.capabilitiesInvoked).Count -eq 5) -Message 'Producer-backed E2E evidence did not preserve the safe read-only audit capability.'
     $cleanEvidenceText = [System.IO.File]::ReadAllText($cleanEvidencePath)
     $utf8WithBom = New-Object System.Text.UTF8Encoding $true
     [System.IO.File]::WriteAllText($cleanEvidencePath, $cleanEvidenceText, $utf8WithBom)

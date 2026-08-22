@@ -340,13 +340,13 @@ try {
     Assert-True -Condition (@($zeroWarningEvidence.result.build.warningSignatures).Count -eq 0) -Message 'A zero-warning Build did not produce an empty complete signature set.'
 
     $readOnlyAudit = Copy-JsonValue -Value $observation
-    $readOnlyAudit.capabilitiesInvoked = @('get_codesys_status', 'get_all_pou_code', 'compile_project', 'get_compile_messages')
+    $readOnlyAudit.capabilitiesInvoked = @('get_codesys_status', 'open_project', 'get_all_pou_code', 'compile_project', 'get_compile_messages')
     $readOnlyAuditObservationPath = Join-Path $engineeringRoot 'data\observations\read-only-audit.json'
     $readOnlyAuditEvidencePath = Join-Path $outputRoot 'read-only-audit.json'
     Write-Utf8Json -Path $readOnlyAuditObservationPath -Value $readOnlyAudit
     $null = Invoke-Producer -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $readOnlyAuditObservationPath -OutputPath $readOnlyAuditEvidencePath
     $readOnlyAuditEvidence = Read-Utf8Json -Path $readOnlyAuditEvidencePath
-    Assert-True -Condition (@($readOnlyAuditEvidence.capabilitiesInvoked).Count -eq 4) -Message 'A safe read-only audit capability was not preserved.'
+    Assert-True -Condition (@($readOnlyAuditEvidence.capabilitiesInvoked).Count -eq 5) -Message 'A safe read-only audit capability was not preserved.'
 
     $whatIfDirectory = Join-Path $outputRoot 'whatif-new\nested'
     $whatIfPath = Join-Path $whatIfDirectory 'whatif.json'

@@ -598,6 +598,7 @@ $approvedOfflineCapabilities = @(
     'inspect_device_node',
     'list_project_libraries',
     'search_code',
+    'open_project',
     'compile_project',
     'get_compile_messages',
     'set_pou_code'
