@@ -14,7 +14,8 @@
 - CpStudio/PLE/IOE 的项目实际版本；
 - 第一次完整离线编译的 warning 签名基线；
 - 初始 BMK、Event、Unit、Peripheral、AddOn 和 Chain 规格；
-- CpStudio Post-export hook 的安装位置；队列/离线审计工具已随骨架生成，尚待真实导出验证。
+- CpStudio Post-export hook 的安装位置；Stage 1 队列/离线审计与 Stage 2 PlanOnly ledger 已随骨架生成，尚待真实导出验证；
+- Stage 2 不含 live runner 或跨进程 MCP 租约，action 仍须由既有唯一 persistent Codex 会话执行。
 
 ## 下次第一步
 

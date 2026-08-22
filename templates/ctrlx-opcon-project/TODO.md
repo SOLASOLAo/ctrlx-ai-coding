@@ -14,8 +14,10 @@
 
 - [ ] 配置只向 `data/requests/pending/` 发布独立请求的 Post-export hook；
 - [ ] 运行 `tests/cpstudio/Test-PostExportQueue.ps1`，验证队列、锁、失败留痕和只读 Station 审计；
+- [ ] 运行 `tests/cpstudio/Test-PostExportEngineering.ps1`，验证 PlanOnly operation/action/evidence 与条件 Export #2 状态机；
 - [ ] 验证导出后 ownership/hooks/graphical、I/O Mapping 和 Symbol Configuration 审计；
-- [ ] 记录导出批次、回读结果和编译证据。
+- [ ] 用真实 Stage 1 报告建立一次 Stage 2 ledger，并由既有唯一 persistent 会话提交 action evidence；
+- [ ] 记录导出批次、回读结果和编译证据。live runner 与跨进程 MCP 租约尚未实现。
 
 ## P2：仿真与真机
 

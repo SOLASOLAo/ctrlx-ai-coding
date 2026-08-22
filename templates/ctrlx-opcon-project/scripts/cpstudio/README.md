@@ -80,3 +80,42 @@ station. It performs only:
 It does not run the live snapshot, I/O/Symbol repair, compile or code merge.
 Those remain an explicit second stage in the one active engineering session
 after a person or Codex reviews the offline report.
+
+## Stage 2 PlanOnly coordinator
+
+`Invoke-PostExportEngineering.ps1` converts a successful Stage 1 JSON report
+into an idempotent, hash-bound ledger under
+`data/operations/cpstudio-stage2/<operation-id>/`. This project-owned sidecar
+exists because CpStudio cannot host the coordination logic. It never starts
+PLE, MCP, or REST and never opens or edits the Station project.
+
+```powershell
+# Start, or idempotently query by the same Stage 1 report
+.\scripts\cpstudio\Invoke-PostExportEngineering.ps1 `
+  -AuditReport .\data\reports\cpstudio\<stage1-report>.json
+
+# Query current state
+.\scripts\cpstudio\Invoke-PostExportEngineering.ps1 `
+  -OperationId <operation-id>
+
+# Advance with evidence from the unique persistent Codex runner
+.\scripts\cpstudio\Invoke-PostExportEngineering.ps1 `
+  -OperationId <operation-id> `
+  -EvidencePath .\path\to\runner-evidence.json
+
+# Only after the ledger explicitly requests Export #2
+.\scripts\cpstudio\Invoke-PostExportEngineering.ps1 `
+  -OperationId <operation-id> `
+  -SecondExportAuditReport .\data\reports\cpstudio\<new-stage1-report>.json
+```
+
+The states are `WAITING_FOR_RUNNER`, `WAITING_FOR_CPSTUDIO`,
+`WAITING_FOR_EXPORT_2`, `DONE`, `BLOCKED`, and `FAILED`. `-WhatIf` previews
+without writing. Evidence must be bound to the action hash and prove that no
+online operation or second PLE was used. The action file is a plan, not proof
+of execution.
+
+For an EtherCAT BMK change, keep the order
+`Save -> Write designators -> Export #1 -> Link I/O -> audit/merge owned references -> Build -> conditional Export #2 -> final Build`.
+Do not access Symbol Configuration concurrently with CpStudio export; serialize
+both through the one active engineering session.

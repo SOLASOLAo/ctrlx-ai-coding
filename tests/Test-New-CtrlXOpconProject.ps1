@@ -131,8 +131,10 @@ try {
             'scripts\cpstudio\post_export_signal.bat',
             'scripts\cpstudio\write_export_request.ps1',
             'scripts\cpstudio\Invoke-PostExportAudit.ps1',
+            'scripts\cpstudio\Invoke-PostExportEngineering.ps1',
             'scripts\git\Get-ReadOnlyGitAudit.ps1',
             'tests\cpstudio\Test-PostExportQueue.ps1',
+            'tests\cpstudio\Test-PostExportEngineering.ps1',
             'tests\static\Test-ProjectFramework.ps1',
             'data\requests\.gitkeep',
             'docs\project_structure.md'
@@ -176,6 +178,11 @@ try {
     $queueOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $queueTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated post-export queue test failed: " + ($queueOutput -join ' '))
     Assert-True -Condition (($queueOutput -join ' ') -match 'Post-export queue self-test OK') -Message 'Generated queue test did not report success.'
+
+    $engineeringTest = Join-Path $outputPath 'tests\cpstudio\Test-PostExportEngineering.ps1'
+    $engineeringOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $engineeringTest 2>&1
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated post-export Stage2 test failed: " + ($engineeringOutput -join ' '))
+    Assert-True -Condition (($engineeringOutput -join ' ') -match 'Post-export Stage2 self-test OK') -Message 'Generated Stage2 test did not report success.'
 
     & $initializer `
         -ProjectId 'minimal-cell' `

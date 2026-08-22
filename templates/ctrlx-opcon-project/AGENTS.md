@@ -45,7 +45,9 @@
 6. 记录证据、更新 HANDOVER/TODO，再提交和推送。
 
 CpStudio 导出后，必须同时审计 AI-owned 对象、mixed hooks、I/O Mapping、BinIo、Symbol
-Configuration 和 SFC 图形属性。Post-export 脚本只发布请求，不启动第二个 PLE 或 MCP server。
+Configuration 和 SFC 图形属性。Post-export hook 只发布 Stage 1 请求；Stage 2 PlanOnly coordinator 只生成
+哈希绑定的 action 并校验 evidence，不启动 PLE、MCP 或 REST。action 由既有的唯一 persistent Codex 会话执行；
+live runner 与跨进程 MCP 租约尚未实现。
 
 ## 6. PLC ST 风格
 
@@ -68,4 +70,4 @@ THEN
 - [x] {{CREATED_DATE}}：创建标准 AI 旁车骨架；
 - [ ] 补齐工程路径、初始规格和 Catalog；
 - [ ] 建立首次离线编译与 warning 签名基线；
-- [ ] 配置并验证 CpStudio Post-export 请求流程。
+- [ ] 配置并验证 CpStudio Post-export Stage 1 请求与 Stage 2 PlanOnly ledger。

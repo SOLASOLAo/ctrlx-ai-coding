@@ -335,6 +335,8 @@ ctrlX-PLC-Engineering.exe --profile="ctrlX PLC 2.6.8" --noUI --runscript="脚本
 - `templates/ctrlx-opcon-project/` 是模板事实源，生成项目自带静态门禁与可执行 Post-export 离线审计队列
 - `skills/ctrlx-opcon-engineering/` 是 Codex 工作流/安全层；Skill 组合流程，项目事实仍来自当前项目的 `config/specs/ai/src/catalog`
 - Post-export 使用 `pending → processing → done/failed` 独立请求；hook 本身不得启动 PLE/MCP，消费者必须把 Station/PLC 路径与 `config/project.yaml` 强一致校验
+- 2026-08-22 已增加 Stage 2 PlanOnly operation ledger：成功的 Stage 1 报告生成不可变 action，并只接受与 operation/action 哈希绑定的 runner evidence；它本身不启动 PLE、MCP 或 REST
+- Stage 2 的 live runner 与跨进程 MCP 租约尚未实现；当前 action 仍由既有的唯一 persistent Codex 会话执行，条件 Export #2 只在记录到 Symbol/后处理需求时进入人工同步点
 - MCP 继续按 `docs/mcp_productization_roadmap.md` 产品化：受控 fork、跨进程租约、异步 operation、`project_health`、`compile_project_v2`、FORCE 生命周期、`apply_change_set`，再实现正式 Symbol/I/O/SFC 接口
 
 ---

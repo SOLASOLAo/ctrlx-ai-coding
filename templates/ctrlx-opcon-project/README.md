@@ -22,7 +22,18 @@
    .\tests\cpstudio\Test-PostExportQueue.ps1
    ```
 
-6. 首次操作 PLC 工程前，确认只有一个 persistent MCP 会话使用该 PLE profile。
+6. 运行 Stage 2 PlanOnly operation ledger 的纯离线自测：
+
+   ```powershell
+   .\tests\cpstudio\Test-PostExportEngineering.ps1
+   ```
+
+7. 首次操作 PLC 工程前，确认只有一个 persistent MCP 会话使用该 PLE profile。
+
+CpStudio Export #1 的离线报告可交给
+`scripts/cpstudio/Invoke-PostExportEngineering.ps1`。该工具只生成带哈希的
+operation/action 并接收 runner 证据，不启动 PLE/MCP/REST；action 必须由唯一
+persistent Codex 会话执行。只有 Symbol/后处理证据明确要求时才安排 Export #2。
 
 ## 目录
 

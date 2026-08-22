@@ -1,6 +1,6 @@
 # ctrlX AI Coding — 讨论与决策记录(SESSION LOG)
 
-> 记录人:AI + AGZ1WX · 2026-08-04 ~ 2026-08-20
+> 记录人:AI + AGZ1WX · 2026-08-04 ~ 2026-08-22
 > 本文是过程流水账;结论性内容以 `ctrlX_AI_project_baseline.md` 为准。
 
 ## 背景
@@ -96,6 +96,12 @@
 - 建立并安装 `ctrlx-opcon-engineering` Skill，明确初始化、导出审计、PLC 离线开发、故障诊断可组合；两轮独立前向测试发现并推动修复模板缺执行器、profile 硬编码和错误工程请求门禁。
 - 产品化边界与优先级归档 `docs/mcp_productization_roadmap.md`；下一阶段先做受控 fork、会话租约、operation、`project_health`、`compile_project_v2` 与 `apply_change_set`。
 
+### 2026-08-22 · Post-export Stage 2 PlanOnly operation ledger
+
+- 新增 `Invoke-PostExportEngineering.ps1`：把成功的 Stage 1 报告转换为幂等 operation、不可变 action 和哈希绑定 evidence，覆盖 clean、repair、CpStudio-owned、条件 Export #2 与最终验证状态。
+- 协调器只维护旁车状态，不启动 PLE、MCP 或 REST，也不访问实体 PLC；action 必须由当前唯一 persistent Codex 会话执行。
+- 新项目模板、初始化器自测、质量门禁和 `ctrlx-opcon-engineering` Skill 已同步 Stage 2 合约；live runner 与跨进程 MCP 租约仍未实现。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |
@@ -119,12 +125,13 @@
 | D20 | **CpStudio 持续作为 OpCon 模型/HMI/标准对象事实源**；AI 只维护 ownership 声明的 PLC 应用增量，导出后先审计再修复 | 08-20 |
 | D21 | **新项目统一使用事务化 AI 旁车初始化器和版本化 Skill**；不复制 Station010 项目事实、`.project`、Std 或闭源资料 | 08-20 |
 | D22 | **Post-export hook 只发布独立请求**；离线消费者不启动 PLE/MCP，且请求 Station/PLC 必须与项目配置强一致 | 08-20 |
+| D23 | **Stage 2 先采用 PlanOnly operation ledger**；action/evidence 必须哈希绑定，协调器不启动 PLE/MCP/REST；live runner 与跨进程 MCP 租约后续实现 | 08-22 |
 
 ## 待办 / 下一步
 
 1. 新项目使用统一初始化器创建 AI 旁车；用户继续在 CpStudio 维护模型/标准对象/HMI，AI 维护 ownership 声明的 PLC 增量；
-2. 配置真实 CpStudio Post-export hook，验证独立队列与第一阶段离线报告，再实现唯一 MCP 会话中的受控第二阶段；
-3. 按 `docs/mcp_productization_roadmap.md` 建立受控 fork、租约/operation、健康检查、结构化编译和 change set；
+2. 配置真实 CpStudio Post-export hook，验证 Stage 1 报告和 Stage 2 PlanOnly ledger，再由既有唯一 persistent 会话执行首个 action/evidence 闭环；
+3. 按 `docs/mcp_productization_roadmap.md` 建立 live runner、跨进程 MCP 租约、健康检查、结构化编译和 change set；
 4. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；
 5. **路线④**:开发机已就绪,P0~P2 完成(继承 PreemptRt);执行转入 **FreePLCDemo**(v4 安装 → P4 集成);
    交接见 `route4-rtpreempt-openplc/HANDOVER.md` §7。

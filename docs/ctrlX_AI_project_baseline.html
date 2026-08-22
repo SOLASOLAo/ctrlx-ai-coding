@@ -548,6 +548,8 @@ System.Environment.Exit(0)
 <li><code>templates/ctrlx-opcon-project/</code> 是模板事实源，生成项目自带静态门禁与可执行 Post-export 离线审计队列</li>
 <li><code>skills/ctrlx-opcon-engineering/</code> 是 Codex 工作流/安全层；Skill 组合流程，项目事实仍来自当前项目的 <code>config/specs/ai/src/catalog</code></li>
 <li>Post-export 使用 <code>pending → processing → done/failed</code> 独立请求；hook 本身不得启动 PLE/MCP，消费者必须把 Station/PLC 路径与 <code>config/project.yaml</code> 强一致校验</li>
+<li>2026-08-22 已增加 Stage 2 PlanOnly operation ledger：成功的 Stage 1 报告生成不可变 action，并只接受与 operation/action 哈希绑定的 runner evidence；它本身不启动 PLE、MCP 或 REST</li>
+<li>Stage 2 的 live runner 与跨进程 MCP 租约尚未实现；当前 action 仍由既有的唯一 persistent Codex 会话执行，条件 Export #2 只在记录到 Symbol/后处理需求时进入人工同步点</li>
 <li>MCP 继续按 <code>docs/mcp_productization_roadmap.md</code> 产品化：受控 fork、跨进程租约、异步 operation、<code>project_health</code>、<code>compile_project_v2</code>、FORCE 生命周期、<code>apply_change_set</code>，再实现正式 Symbol/I/O/SFC 接口</li>
 </ul>
 <hr />

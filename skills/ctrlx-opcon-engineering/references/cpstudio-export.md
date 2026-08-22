@@ -33,6 +33,43 @@ Use this mode after the user exports from CpStudio.
 
 The CpStudio hook itself may publish a request only. It must not launch PLE, call MCP, modify a project, or perform online operations.
 
+## Stage 2 PlanOnly operation ledger
+
+When the project provides `scripts/cpstudio/Invoke-PostExportEngineering.ps1`,
+feed it the successful Stage 1 JSON report before doing live engineering work:
+
+```powershell
+.\scripts\cpstudio\Invoke-PostExportEngineering.ps1 `
+  -AuditReport .\data\reports\cpstudio\<stage1-report>.json
+```
+
+The coordinator is intentionally PlanOnly. It creates an immutable,
+hash-addressed runner action and records state under
+`data/operations/cpstudio-stage2/<operation-id>/`; it does not start PLE, MCP,
+or REST. Execute the action only in the already-authorized, unique persistent
+Codex/PLE session, then submit the resulting evidence with
+`-OperationId <id> -EvidencePath <evidence.json>`. Query with `-OperationId
+<id>` alone.
+
+The valid coordination states are `WAITING_FOR_RUNNER`,
+`WAITING_FOR_CPSTUDIO`, `WAITING_FOR_EXPORT_2`, `DONE`, `BLOCKED`, and
+`FAILED`. Treat `WAITING_FOR_CPSTUDIO` as an ownership boundary: the user must
+make the model change in CpStudio and export again; do not patch a generated
+interface through PLE. Treat `WAITING_FOR_EXPORT_2` as a synchronization point:
+release all Symbol Configuration access, ask for the second export, run Stage 1
+on that new request, and attach its report using `-SecondExportAuditReport`.
+
+Accept runner evidence only when it matches the exact operation/action/hash,
+configured Station and PLC project, and confirms no physical connect,
+download, start/stop, variable write/FORCE, or second PLE. An action request is
+not execution evidence. Do not claim the operation `DONE` until a fresh final
+Build and required readbacks are present.
+
+Because CpStudio cannot currently host this control loop, keep the state
+machine in the AI sidecar rather than modifying CpStudio internals. A future
+MCP lease/runner can consume the same action contract, but the current PlanOnly
+coordinator is not that live runner.
+
 ## EtherCAT BMK rename
 
 For an already mapped EtherCAT channel, use this ordered workflow:

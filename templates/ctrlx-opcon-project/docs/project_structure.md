@@ -25,10 +25,13 @@
 
 1. 用户在 CpStudio 修改并导出；
 2. Post-export hook 原子发布请求；
-3. 唯一 persistent MCP 会话执行差异与文本快照；
-4. 根据 ownership/hooks/graphical 审计或恢复 AI 增量；
-5. 检查 I/O Mapping、BinIo、Symbol Configuration 和 SFC metadata；
-6. 完整离线编译、回读、报告并提交。
+3. Stage 1 消费者只读生成 Git/指纹/ownership 审计报告；
+4. Stage 2 PlanOnly coordinator 建立 operation ledger 和不可变、哈希绑定的 runner action；
+5. 既有的唯一 persistent Codex 会话执行 action：按 ownership/hooks/graphical 审计或恢复 AI 增量，检查 I/O Mapping、BinIo、Symbol Configuration 和 SFC metadata，并回传 evidence；
+6. 仅在 evidence 明确要求时由用户执行 Export #2，再绑定新的 Stage 1 报告并完成最终 Build；
+7. 回读、记录 warning 签名、更新报告并提交。
+
+Stage 2 coordinator 不启动 PLE、MCP 或 REST；live runner 与跨进程 MCP 租约尚未实现。
 
 ## 通用与项目专用
 

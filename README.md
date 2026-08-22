@@ -33,7 +33,7 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 **核心结论(已实测)**:`.project` 是加密容器，只能经对应 IDE、MCP 或正式 REST 接口修改；
 CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型文件，也不覆盖未声明的生成对象。
 
-## 当前状态(2026-08-20)
+## 当前状态(2026-08-22)
 
 | 项 | 状态 |
 |---|---|
@@ -41,9 +41,13 @@ CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型�
 | CRLF 缺陷补丁 | ✅ 已打 + 已产品化(`patches/`,含一键脚本) |
 | 冒烟编译 | ✅ 0 errors / 35 warnings(培训样板固有符号警告) |
 | 分工 | 用户做骨架(CpStudio),AI 做 PLC 代码细节 |
-| 项目模板 | ✅ 新项目初始化器 + 可执行 Post-export 离线审计队列 |
+| 项目模板 | ✅ 新项目初始化器 + Stage 1 离线审计队列 + Stage 2 PlanOnly operation ledger |
 | Codex Skill | ✅ `ctrlx-opcon-engineering`，源码可版本化、安装可校验 |
 | 产品化计划 | `docs/mcp_productization_roadmap.md` |
+
+Stage 2 已实现为哈希绑定、可恢复的 PlanOnly 协调器，只生成 action 并校验 runner evidence；它不会自行启动
+PLE、MCP 或 REST。live runner 与跨进程 MCP 租约仍未实现，当前 action 只能由既有的唯一 persistent Codex
+会话执行。
 
 ## 创建新工站 AI 旁车
 
@@ -124,7 +128,7 @@ Station、`Std`、`.project` 或闭源资料，目标目录已存在时会拒绝
 - [x] 阶段 2:硬件与 IO 组态(EtherCAT)(Station010 实测 2026-08-18,方法见 docs/ioe_scripting_playbook.md)
 - [ ] 阶段 3:AI 填充逻辑(SqM/SqS/自动/手动),compile 结构化错误闭环
 - [ ] 阶段 4:仿真 → 真机下载调试
-- [x] 产品化基础:可复用项目初始化器、Post-export 离线审计队列和 Codex Skill
+- [x] 产品化基础:可复用项目初始化器、Post-export Stage 1 审计队列、Stage 2 PlanOnly ledger 和 Codex Skill
 - [ ] 产品化 MCP:受控 fork、租约/operation、project_health、compile_project_v2、change set 与正式 SFC/Symbol/I/O 工具
 
 ## 版权说明
