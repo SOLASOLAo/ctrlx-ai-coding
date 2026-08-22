@@ -570,6 +570,12 @@ tools:
         OperationRoot = $operationRoot
     }
     Assert-True -Condition (([string]$idempotentStart.status).ToUpperInvariant() -eq 'WAITING_FOR_RUNNER') -Message 'New operation did not wait for the offline runner.'
+    Assert-True -Condition (-not [string]::IsNullOrWhiteSpace([string]$idempotentStart.actionRequestPath)) -Message 'New operation result omitted actionRequestPath.'
+    Assert-True -Condition ([System.IO.File]::Exists([string]$idempotentStart.actionRequestPath)) -Message 'New operation result returned a missing actionRequestPath.'
+    Assert-True -Condition (-not [string]::IsNullOrWhiteSpace([string]$idempotentStart.actionRequestSha256)) -Message 'New operation result omitted actionRequestSha256.'
+    Assert-True -Condition (-not [string]::IsNullOrWhiteSpace([string]$idempotentStart.actionId)) -Message 'New operation result omitted actionId.'
+    Assert-True -Condition ([string]$idempotentStart.actionKind -eq 'inspect_and_build') -Message 'New operation result omitted or misreported actionKind.'
+    Assert-True -Condition ((Get-FileHash -LiteralPath ([string]$idempotentStart.actionRequestPath) -Algorithm SHA256).Hash -eq [string]$idempotentStart.actionRequestSha256) -Message 'New operation result action hash does not match the immutable action file.'
     $idempotentAction = Get-ActionRequestInfo -Result $idempotentStart -OperationRoot $operationRoot -OperationId $idempotentStart.operationId
     Assert-True -Condition ($idempotentAction.kind -eq 'inspect_and_build') -Message 'Initial action kind is not inspect_and_build.'
     $operationFilesBeforeRepeat = Get-FileFingerprintMap -Root $operationRoot
