@@ -13,7 +13,8 @@ Use evidence from the active project before regenerating CpStudio or rewriting P
 ## Known fault classes
 
 - Hundreds of contradictory missing-member or ambiguous-library errors with identical serialized source, libraries, and mappings: normally close the project, quarantine only its exact sibling `.precompilecache`, reopen, wait for libraries, and perform a true Clean Build. Validate the resolved absolute cache path before moving it.
-- CpStudio BMK rename followed by `bus_* is no component`: audit both physical I/O mapping and Symbol Configuration stale entries.
+- CpStudio BMK rename followed by `bus_* is no component`: audit `BinIo`, the physical connector mapping, direct references in AI-owned/mixed ST, and then Symbol Configuration. For EtherCAT channels, Link I/O is a distinct required step.
+- `Symbol Configuration ... already in use` during CpStudio export: stop concurrent REST/MCP/UI Symbol access. If the lock remains, reuse the same PLE process for Save, Close, Open, and Build before retrying; do not launch another PLE.
 - SFC graphical failure such as `Bit type at the wrong position!`: inspect every Transition internal `VariableName`, stale Step-derived names, local ID uniqueness, parents, and Action references. A visually plausible graph can still contain invalid native metadata.
 - C0198 or truncation warning around OpCon `SetEvent`: validate `AdditionalInfo` against the actual formal parameter length and keep the project static gate aligned with it.
 - MCP timeout after IDE work appears complete: query operation/session status before retrying. A timed-out command may still finish later; do not duplicate mutations without an idempotency check.

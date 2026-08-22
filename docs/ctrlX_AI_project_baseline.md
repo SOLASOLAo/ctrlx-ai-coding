@@ -1,7 +1,7 @@
 ﻿# ctrlX AI 项目基线记录(MD 版)
 
 > Persistent MCP + Control plus Studio 混合工作流
-> 记录日期:2026-08-11 · 更新:2026-08-20（CpStudio/AI 长期协作与跨项目产品化）· 机器:AGZ1WX-APAC
+> 记录日期:2026-08-11 · 更新:2026-08-22（EtherCAT BMK 与 Symbol 导出闭环实测）· 机器:AGZ1WX-APAC
 > 配套 HTML:`ctrlX_AI_project_baseline.html`(同目录)
 
 ---
@@ -235,7 +235,7 @@ args = ["--codesys-path", "C:\\ctrlXWORKS\\ctrlXPLCEngineering\\PLE_V_0206\\Stud
 
 ### 7.7 ctrlX connector I/O Mapping 与 Symbol Configuration REST（2026-08-18）
 
-- **复现背景**：CpStudio 修改/停用 I/O BMK 后，`BinIo` 声明会更新，但 PLC 工程可能同时残留两层旧引用：EtherCAT I/O Mapping 与 Symbol Configuration。典型结果是 `bus_<旧名> is no component of BinIo` 编译错误，加一条 `variable is no longer available ... still configured` 警告。
+- **复现背景**：CpStudio 修改/停用 I/O BMK 后，`BinIo` 声明会更新，但 PLC 工程可能同时残留 EtherCAT connector mapping、AI-owned/mixed ST 直接引用和 Symbol Configuration 旧选择。典型结果是 `bus_<旧名> is no component of BinIo` 编译错误，以及 `variable is no longer available ... still configured` 警告。
 - **ctrlX 通道结构**：DataLayer/EtherCAT 模块的通道不是 `device.get_children(False)` 子节点，而是：
 
   ```text
@@ -251,8 +251,10 @@ args = ["--codesys-path", "C:\\ctrlXWORKS\\ctrlXPLCEngineering\\PLE_V_0206\\Stud
   PUT /devices/Device/Plc%20Logic/Application/symbol-config?symbolsAction=Select|UnSelect|UpdateAll
   ```
 
-- `GET` 只返回当前编译器可用成员，因此已失效但仍配置的旧变量不会出现在响应中；仍可用 `UnSelect`，以“数据类型名 + 旧变量名”的最小请求精确删除。`GET` 中已选成员的 `accessRights` 可能显示 `Void`，实际持久化权限应以底层 `SelectedTypes`/编译结果复核。
+- `GET` 只返回当前编译器可用成员。对响应中可枚举且能唯一核验的目标可以使用 `Select/UnSelect`；对 GET 不可见的 orphan 不得猜测类型、路径或 payload 执行精确 `UnSelect`。`UpdateAll` 也不证明隐藏旧选择已经删除。`GET` 中已选成员的 `accessRights` 可能显示 `Void`，实际持久化权限应以底层 `SelectedTypes`/编译结果复核。
 - **验证结果**：Station010 两个独立 CpStudio 导出批次均通过该闭环恢复到 **0 errors / 7 baseline warnings**；第二批仅清除 C1 `Channel_6.Output` 的旧映射与 `_000SK010C1_Channel_6` 符号成员，全程未使用 UI 自动化或 `eval_python` 写工程。
+- **2026-08-22 EtherCAT 单通道双向实测**：固定顺序为 `CpStudio Save → Write designators → Export #1 → Link I/O → ownership/mixed ST 引用审计与语义合并 → Build 0 errors → 条件 Export #2 → final Build`。Save、Write designators、Export 和 Link I/O 分属不同层，不能相互替代。Export #1 因 Build error 产生的 OPC UA Method、PersistentVars 和 Symbol 错误通常是下游连锁结果，先消除 `BinIo`、mapping 和代码旧引用。
+- **Symbol 并发边界**：CpStudio Export 期间禁止 REST/MCP/UI 并发读取或写入 Symbol Configuration。若出现 `This object is already in use`，先停止并发访问；锁仍存在时只在同一 PLE 进程内 Save → Close → Open，重新 Build 后再 Export，禁止启动第二个 PLE。Build 0 errors 后由 CpStudio 条件二次 Export 协调当前选择；隐藏旧项仍存在时先重开验证，最后才用编辑器 `Remove...`，不裸用 `UnSelectAll`。
 - **产品化**：`patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1` 已扩展为 ctrlX 兼容补丁入口，同时修补 npm 包 `dist/scripts` 与 `src/scripts` 的 `map_io_channel.py`。脚本幂等，npm 升级后先 `-Check`。
 
 ### 7.8 `compile_project` 完成后超时（2026-08-20）
@@ -349,6 +351,6 @@ ctrlX-PLC-Engineering.exe --profile="ctrlX PLC 2.6.8" --noUI --runscript="脚本
 | 残留 ctrlX-PLC-Engineering 进程 | 按 StartTime 甄别后再杀,别杀用户实例 |
 | 编译脚本报 `SyntaxError: unexpected token '\r'` | CRLF 缺陷 → 按 §7.2 打 watcher.py 行尾归一化补丁;注意 npm 升级会覆盖补丁 |
 | `map_io_channel` 报 Channel not found，且设备 `children: []` | ctrlX 通道在 connector mappable parameters，不是树子节点 → 重跑兼容补丁并按 `Channel_6.Output` 形式定位，见 §7.7 |
-| CpStudio 改 BMK 后同时出现旧 `bus_*` error 与 Symbol warning | 先清/重映射物理通道，再用 PLE REST `symbol-config?symbolsAction=UnSelect/Select` 同步公开成员，最后保存编译，见 §7.7 |
+| CpStudio 改 EtherCAT BMK 后出现旧 `bus_*` error 或 Symbol warning | Save → Write designators → Export #1 → Link I/O → 审计 mixed/AI ST 旧引用 → Build 0 errors；仅在后处理失败或目标未选中时再 Export #2 和 final Build，见 §7.7 |
 | IDE 自行退出(code 0)且当时开了多个 Codex 窗口 | 多实例争抢 profile,见 §7.3:只保留一个窗口;ready 后新 server 自动接管 |
 | eval_python 卡死整个 MCP 队列 | shutdown_codesys 强杀重启;已打开工程用 se.projects.primary,勿裸调 projects.open() |

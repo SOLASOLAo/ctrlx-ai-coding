@@ -32,3 +32,16 @@ Use this mode after the user exports from CpStudio.
 11. Complete the queue request with a compact JSON/Markdown report. Record errors and leave a failed request retryable; never hide or overwrite the previous batch.
 
 The CpStudio hook itself may publish a request only. It must not launch PLE, call MCP, modify a project, or perform online operations.
+
+## EtherCAT BMK rename
+
+For an already mapped EtherCAT channel, use this ordered workflow:
+
+`CpStudio Save -> Write peripheral and I/O designators -> Export #1 -> Link I/O with variables -> audit/merge owned ST references -> Build with 0 errors -> conditional Export #2 -> final Build`
+
+- Save updates the CpStudio model and public bus configuration. Write designators updates the IO Engineering project. Neither action replaces PLC connector mapping.
+- Export #1 can create the new `BinIo` member while the connector mapping still points to the old member. Use Link I/O before treating the resulting `bus_* is no component` error as a Symbol fault.
+- CpStudio does not rewrite direct BMK references in AI-owned or mixed ST. Change only declared ownership/hooks through a guarded semantic merge, then read back and build.
+- Perform Export #2 only when Export #1 reported OPC UA Method, PersistentVars, or Symbol post-processing failure, or the target Symbol is not correctly selected after a successful Build.
+- Do not read, open, or update Symbol Configuration concurrently with a CpStudio export. `This object is already in use` indicates concurrent object ownership. Stop the competing access; if the lock remains, Save, Close, and Open the project in the same PLE process, rebuild, then retry the export. Never launch a second PLE.
+- A clean-looking message pane is not sufficient. Verify the complete CpStudio Output, target I/O mapping, owned ST references, Symbol post-processing, and final Build.
