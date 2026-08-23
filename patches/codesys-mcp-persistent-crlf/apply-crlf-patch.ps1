@@ -20,7 +20,8 @@
     6. Adds transactional @batch-json mapping with one final project save
     7. Replaces the timeout-prone compile/message scan with a bounded ctrlX path
     8. Rejects stale persistent sessions whose PID was reused by another process
-    9. Verifies Python/JavaScript syntax when the runtimes are available
+    9. Refuses compile_project when the project is dirty instead of implicitly saving it
+   10. Verifies Python/JavaScript syntax when the runtimes are available
 
   WARNING: `npm install/update codesys-mcp-persistent` OVERWRITES the patch.
   Re-run this script after every upgrade.
@@ -51,6 +52,7 @@ $fastMessageLegacyMarker = "ctrlX fast compile message path (2026-08-20)"
 $fastCompileMarker = "ctrlX bounded application build (2026-08-20)"
 $fastCachedMarker = "ctrlX bounded cached-message read (2026-08-20)"
 $safeAdoptionMarker = "ctrlX safe stale-session adoption (2026-08-20)"
+$strictCompileMarker = "ctrlX strict no-save compile guard v2 (2026-08-23)"
 $utf8nobom = New-Object System.Text.UTF8Encoding($false)
 
 function ReadText([string]$p) {
@@ -994,6 +996,60 @@ function PatchCompileProjectScript([string]$compileFile) {
   Write-Host "patched bounded application build -> $compileFile"
 }
 
+function PatchStrictCompileNoSaveGuard([string]$compileFile) {
+  if (-not (Test-Path -LiteralPath $compileFile)) { return }
+
+  $source = ReadText $compileFile
+  $isPatched = $source.Contains($strictCompileMarker)
+  if ($Check) {
+    Write-Host ("[{0}] {1} strict no-save compile guard" -f $(if ($isPatched) { "OK " } else { "TODO" }), $compileFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "strict no-save compile guard already present - skipped: $compileFile"
+    return
+  }
+
+  BackupOnce $compileFile "bak_pre_strict_compile"
+  $legacyGuardAnchor = '    # ctrlX strict no-save compile guard (2026-08-23)'
+  $saveAnchor = '    # --- Save any pending edits so the build sees them ---'
+  $startAnchor = if ($source.Contains($legacyGuardAnchor)) { $legacyGuardAnchor } else { $saveAnchor }
+  $endAnchor = '    # ctrlX bounded application build (2026-08-20)'
+  $startIndex = $source.IndexOf($startAnchor)
+  $endIndex = $source.IndexOf($endAnchor)
+  if ($startIndex -lt 0 -or $endIndex -le $startIndex) {
+    Write-Error "compile_project.py no-save guard anchors not found: $compileFile"
+  }
+
+  $replacement = @'
+    # ctrlX strict no-save compile guard v2 (2026-08-23)
+    # compile_project is a Build/readback operation. It must never turn an
+    # implicit IDE migration or another unsaved edit into a project-file write.
+    # Mutating MCP tools already save explicitly; a dirty project here is an
+    # ambiguous state, so fail closed before invoking Build.
+    if not hasattr(primary_project, 'dirty'):
+        raise RuntimeError(
+            "Project dirty state is unavailable; refusing a no-save Build."
+        )
+    try:
+        project_is_dirty = bool(primary_project.dirty)
+    except Exception as dirty_error:
+        raise RuntimeError(
+            "Could not verify the project dirty state before Build: %s" % dirty_error
+        )
+    if project_is_dirty:
+        raise RuntimeError(
+            "Project is dirty before Build; refusing implicit project.save(). "
+            "Save through the owning workflow or reopen the project first."
+        )
+
+'@.Replace("`r`n", "`n")
+
+  $source = $source.Substring(0, $startIndex) + $replacement + $source.Substring($endIndex)
+  [System.IO.File]::WriteAllText($compileFile, $source, $utf8nobom)
+  Write-Host "patched strict no-save compile guard -> $compileFile"
+}
+
 function PatchGetCompileMessagesScript([string]$cachedFile) {
   if (-not (Test-Path -LiteralPath $cachedFile)) { return }
 
@@ -1138,6 +1194,7 @@ foreach ($scriptRoot in $packageScriptRoots) {
   if (-not (Test-Path -LiteralPath $scriptRoot)) { continue }
   PatchFastMessageUtils (Join-Path $scriptRoot "_message_utils.py")
   PatchCompileProjectScript (Join-Path $scriptRoot "compile_project.py")
+  PatchStrictCompileNoSaveGuard (Join-Path $scriptRoot "compile_project.py")
   PatchGetCompileMessagesScript (Join-Path $scriptRoot "get_compile_messages.py")
 }
 

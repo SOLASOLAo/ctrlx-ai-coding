@@ -2,7 +2,7 @@
 
 > 适用:`codesys-mcp-persistent` v0.6.3(npm 全局包)
 > 目标 IDE:ctrlX PLC Engineering(PLE-V-0206.x,profile `ctrlX PLC 2.6.8`)及其他 OEM CODESYS 品牌 IDE
-> 首次应用:2026-08-12 · connector I/O 扩展:2026-08-18 · 编译消息/会话接管扩展:2026-08-20 · 状态:已在本机验证
+> 首次应用:2026-08-12 · connector I/O 扩展:2026-08-18 · 编译消息/会话接管扩展:2026-08-20 · no-save Build 门禁:2026-08-23 · 状态:已在本机验证
 
 ## 症状 1：CRLF 导致编译工具失败
 
@@ -48,6 +48,13 @@ device.connectors → connector.host_parameters
 
 补丁在接管、健康检查和 shutdown 前校验 PID 对应的可执行文件名必须与配置的 PLE 一致；接管前还用候选 watcher 执行一次有界 `SCRIPT_SUCCESS` 握手。身份错误或 watcher 无响应时跳过旧会话并启动新的 PLE。
 
+## 症状 5：只读 Build 隐式保存 dirty 工程
+
+原始 `compile_project.py` 在工程为 dirty 时会先执行 `primary_project.save()`。
+这会把 IDE 迁移或其他未确认编辑写回加密 `.project`，不适合作为离线只读门禁。
+补丁移除隐式保存：若工程 dirty、或无法确认 dirty 状态，Build 在调用前失败关闭；
+需要写入的 MCP 工具仍由各自受控流程显式保存。
+
 ## 补丁内容
 
 | 文件 | 修改 |
@@ -57,7 +64,7 @@ device.connectors → connector.host_parameters
 | `dist/scripts/map_io_channel.py` | 增加 connector mappable-parameter 查找；支持按 `Channel_6.Output` 或零基索引定位；写后强制回读校验；增加 `@batch-json` 事务式批量映射并只保存一次工程 |
 | `src/scripts/map_io_channel.py` | 同步源码副本，避免本机重建 `dist` 时丢失补丁 |
 | `dist/scripts` + `src/scripts` 的 `_message_utils.py` | 增加有界 Build 消息快照与向后兼容的结构化消息转换；未知摘要按失败处理 |
-| `dist/scripts` + `src/scripts` 的 `compile_project.py` | 应用工程只执行一次 `build()`；只读两个编译类别，不再全类别/严重级别扫描 |
+| `dist/scripts` + `src/scripts` 的 `compile_project.py` | 应用工程只执行一次 `build()`；只读两个编译类别；移除 dirty 工程的隐式 save，dirty/未知状态失败关闭 |
 | `dist/scripts` + `src/scripts` 的 `get_compile_messages.py` | 使用同一有界缓存读取路径，避免只读消息也阻塞 IDE |
 | `dist/launcher.js` + `src/launcher.ts` | 校验持久会话 PID 的 PLE 可执行文件身份，并在接管前探测 watcher；健康检查和 shutdown 同样防 PID 复用 |
 
@@ -79,6 +86,11 @@ python -m py_compile "$env:APPDATA\npm\node_modules\codesys-mcp-persistent\dist\
 ```
 
 然后通过 MCP 调用 `compile_project`,应返回结构化错误/警告列表而非 SyntaxError。
+`-Check` 还必须显示 dist/src 两份 `compile_project.py` 的
+`strict no-save compile guard` 均为 `[OK]`。
+2026-08-23 本机已完成补丁应用、`-Check`、Python/Node 语法和离线 fixture
+验证；由于当时仍有既有 PLE/MCP owner 与活动 `.project.~u`，新的独立
+checker 生命周期实测按门禁延期，不能把静态验证表述为已完成真实启动/退出验收。
 
 无需 IDE 的编译消息回归测试：
 
@@ -130,7 +142,7 @@ map_io_channel(
 | `watcher.py.orig` | 原厂 watcher.py(v0.6.3,未打补丁) |
 | `watcher.py.patched` | 打补丁后的完整文件 |
 | `watcher_crlf_normalize.patch` | unified diff(仅 5 行插入) |
-| `apply-crlf-patch.ps1` | 一键应用/检查 ctrlX 兼容补丁（CRLF、docstring、connector I/O Mapping、有界编译消息、安全会话接管） |
+| `apply-crlf-patch.ps1` | 一键应用/检查 ctrlX 兼容补丁（CRLF、docstring、connector I/O Mapping、有界编译消息、no-save Build、安全会话接管） |
 | `test-fast-compile-message.py` | 不启动 IDE 的编译摘要解析/失败关闭回归测试 |
 
 ## 附注:docstring 损坏修复

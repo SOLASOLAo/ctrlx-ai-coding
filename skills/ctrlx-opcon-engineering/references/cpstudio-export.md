@@ -33,6 +33,58 @@ Use this mode after the user exports from CpStudio.
 
 The CpStudio hook itself may publish a request only. It must not launch PLE, call MCP, modify a project, or perform online operations.
 
+## User-triggered offline checker
+
+When the project includes
+`scripts/cpstudio/Run-OfflinePostExportCheck.cmd`, recommend it for a person who
+must continue after a CpStudio export while Codex is offline. It is not a hook
+and must never be added to the CpStudio pre/post-export fields.
+
+Before running it, require the person to save and close every PLE window and
+any Codex/VS Code process that owns `codesys-persistent`. The checker must fail
+closed unless there are zero existing PLE/MCP processes. It may then own one
+isolated local MCP/PLE lifecycle, call only `get_codesys_status`,
+`open_project`, `compile_project`, `get_compile_messages`, and
+`shutdown_codesys`, and verify that the encrypted project hash did not change.
+It must call no edit/save tool, require the validated strict no-save compile
+patch (dirty state fails closed), adopt no existing session, use no direct
+watcher IPC, call no online PLC capability, and verify the project hash.
+
+Use its report only as advisory evidence for the next AI session; do not feed
+it directly into the Stage 2 evidence contract. Apply the following routing:
+
+- Build errors take priority over Symbol post-processing; do not recommend
+  Export #2 while errors remain.
+- A `bus_* ... no component of BinIo` error routes to Link I/O only when Link
+  I/O has not been confirmed. If it remains afterward, stop and wait for AI to
+  inspect mapping application and mixed/AI-owned references.
+- With Build at 0 errors, proven Export #1 OPC UA/PersistentVars/Symbol
+  post-processing failure can justify Export #2.
+- Clean CpStudio Output plus Build at 0 errors does not require a routine
+  second export.
+- `This object is already in use` is a serialization retry of the current
+  export, not evidence for incrementing the export pass.
+- Accept Export #2 only when a prior `NEEDS_EXPORT_2` report and a newer
+  CpStudio request prove the transition. Do not trust a manually incremented
+  pass number by itself.
+- Require a timestamped request before creating the Export #2 anchor. If the
+  request is absent or uncorrelatable, ask for another Export #1 after checking
+  the signal-only Post-export script; do not create an unusable anchor.
+- Preserve that Export #2 anchor across object-busy, pass-selection,
+  Output-confirmation, and pre-Build Link-I/O interruptions. Consume it as soon
+  as Export #2 enters Build; terminal or Build-attempted reports must not revive
+  an older anchor.
+- Fresh stale-signature warnings require review/cleanup; they are not by
+  themselves proof that another Export will fix the problem.
+- Repeated Symbol failure after Export #2 stops the loop and waits for AI.
+- `DONE_OFFLINE` means only that the Export/Symbol synchronization loop does
+  not need another Export. Warning signatures and the project quality gate
+  remain for the normal AI acceptance workflow.
+- Hold one global checker lock from anchor selection through immutable report
+  writes. Any contention, permission, lock-file, or lock-directory failure must
+  stop before Build and write no report, so an unlocked run cannot alter anchor
+  lineage.
+
 ## Stage 2 PlanOnly operation ledger
 
 When the project provides `scripts/cpstudio/Invoke-PostExportEngineering.ps1`,

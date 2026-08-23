@@ -69,6 +69,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$utf8WithBom = New-Object System.Text.UTF8Encoding($true)
 
 function Assert-SingleLineValue {
     param(
@@ -343,11 +344,17 @@ try {
         $destinationPath = Join-Path $stagingPath $relativePath
         [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($destinationPath)) | Out-Null
 
+        $sourceBytes = [System.IO.File]::ReadAllBytes($templateFile.FullName)
+        $sourceHasUtf8Bom = ($sourceBytes.Length -ge 3) -and
+            ($sourceBytes[0] -eq 0xEF) -and
+            ($sourceBytes[1] -eq 0xBB) -and
+            ($sourceBytes[2] -eq 0xBF)
         $content = [System.IO.File]::ReadAllText($templateFile.FullName)
         foreach ($token in $tokens.Keys) {
             $content = $content.Replace($token, [string]$tokens[$token])
         }
-        [System.IO.File]::WriteAllText($destinationPath, $content, $utf8NoBom)
+        $destinationEncoding = if ($sourceHasUtf8Bom) { $utf8WithBom } else { $utf8NoBom }
+        [System.IO.File]::WriteAllText($destinationPath, $content, $destinationEncoding)
     }
 
     foreach ($relativeDirectory in @(

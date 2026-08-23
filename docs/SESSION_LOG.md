@@ -103,6 +103,13 @@
 - 新增 `New-PostExportRunnerEvidence.ps1`：只验证/封装当前 runner 的显式 observation，重验 action、Stage 1、ownership、所需关键 Station 指纹、Build/PLC SHA，并生成确定性的 warning signature multiset；不会启动或调用工程工具，也不会默认把验收项设为 true。
 - 新项目模板、初始化器自测、质量门禁和 `ctrlx-opcon-engineering` Skill 已同步；live engineering runner 仍由唯一 persistent Codex 会话承担，真正的跨进程 MCP 租约仍未实现。
 
+### 2026-08-23 · 用户本地离线 Post-export checker
+
+- 新增双击入口、PowerShell 生命周期控制器和 MCP stdio helper；仅在没有既有 PLE/MCP/工程锁时启动一组 owned 会话，执行 open + strict no-save fresh Build + messages + shutdown，不调用编辑/保存或任何在线工具。
+- MCP 兼容补丁新增 strict no-save v2：dirty 状态不可确认或工程为 dirty 时拒绝 Build；checker 同时验证工程 SHA256、owned PID/父子关系、退出和锁释放，fresh evidence 与缓存诊断分离。
+- Export #2 使用可验证 anchor：只由 Export #1 的 fresh verified 0-error Build 和带时间戳 request 建立，可跨对象占用、次数纠正、Output 确认及 Build 前 Link I/O 继续；进入 Build 即消费，旧终态不能复活；无 request 时不生成不可关联 anchor。
+- 全局锁覆盖 anchor 选择到报告原子写入；竞争、权限、锁文件或锁目录异常均失败关闭且不落报告。根模板各 458 项离线断言、初始化器 65 项断言通过。真实生命周期 smoke test 因机器仍有既有 PLE/MCP owner 与 `.project.~u` 而按门禁延期，未强杀或手删锁。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |

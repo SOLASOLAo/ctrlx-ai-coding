@@ -25,10 +25,14 @@ $requiredFiles = @(
     'scripts/cpstudio/Invoke-PostExportAudit.ps1',
     'scripts/cpstudio/Invoke-PostExportEngineering.ps1',
     'scripts/cpstudio/New-PostExportRunnerEvidence.ps1',
+    'scripts/cpstudio/Invoke-OfflinePostExportCheck.ps1',
+    'scripts/cpstudio/offline_mcp_build.cjs',
+    'scripts/cpstudio/Run-OfflinePostExportCheck.cmd',
     'scripts/git/Get-ReadOnlyGitAudit.ps1',
     'tests/cpstudio/Test-PostExportQueue.ps1',
     'tests/cpstudio/Test-PostExportEngineering.ps1',
-    'tests/cpstudio/Test-PostExportRunnerEvidence.ps1'
+    'tests/cpstudio/Test-PostExportRunnerEvidence.ps1',
+    'tests/cpstudio/Test-OfflinePostExportCheck.ps1'
 )
 
 $requiredDirectories = @(
@@ -142,17 +146,37 @@ if ([System.IO.Directory]::Exists($stSourceRoot)) {
     }
 }
 
-$postExportRoot = Join-Path $repositoryRoot 'scripts\cpstudio'
-if ([System.IO.Directory]::Exists($postExportRoot)) {
-    foreach ($file in Get-ChildItem -LiteralPath $postExportRoot -Recurse -File |
-        Where-Object { $_.Extension.ToLowerInvariant() -in @('.ps1', '.bat', '.cmd', '.py') }) {
-        $text = [System.IO.File]::ReadAllText($file.FullName)
-        foreach ($forbiddenText in @('ctrlX-PLC-Engineering.exe', 'codesys-mcp-persistent', 'download_to_device')) {
-            if ($text.Contains($forbiddenText)) {
-                $relativePath = $file.FullName.Substring($repositoryRoot.Length).TrimStart('\', '/').Replace('\', '/')
-                $failures.Add("Post-export hook contains forbidden launcher/online text '$forbiddenText': $relativePath")
-            }
+$postExportHookFiles = @(
+    'scripts/cpstudio/post_export_signal.bat',
+    'scripts/cpstudio/write_export_request.ps1',
+    'scripts/cpstudio/Invoke-PostExportAudit.ps1',
+    'scripts/cpstudio/Invoke-PostExportEngineering.ps1',
+    'scripts/cpstudio/New-PostExportRunnerEvidence.ps1'
+)
+foreach ($relativePath in $postExportHookFiles) {
+    $text = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot $relativePath))
+    foreach ($forbiddenText in @('ctrlX-PLC-Engineering.exe', 'codesys-mcp-persistent', 'download_to_device')) {
+        if ($text.Contains($forbiddenText)) {
+            $failures.Add("Post-export hook contains forbidden launcher/online text '$forbiddenText': $relativePath")
         }
+    }
+}
+
+$postExportHookText = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot 'scripts/cpstudio/post_export_signal.bat'))
+if ($postExportHookText.Contains('OfflinePostExportCheck')) {
+    $failures.Add('CpStudio Post-export hook must not start the user-triggered offline Build checker.')
+}
+
+$offlineHelperText = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot 'scripts/cpstudio/offline_mcp_build.cjs'))
+foreach ($forbiddenText in @('connect_to_device', 'download_to_device', 'start_stop_application', 'write_variable', 'save_project')) {
+    if ($offlineHelperText.Contains($forbiddenText)) {
+        $failures.Add("Offline Build helper contains forbidden operation '$forbiddenText'.")
+    }
+}
+$offlineCheckerText = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot 'scripts/cpstudio/Invoke-OfflinePostExportCheck.ps1'))
+foreach ($forbiddenText in @('Stop-Process', 'taskkill')) {
+    if ($offlineCheckerText.Contains($forbiddenText)) {
+        $failures.Add("Offline Build checker contains destructive process operation '$forbiddenText'.")
     }
 }
 

@@ -262,6 +262,8 @@ args = ["--codesys-path", "C:\\ctrlXWORKS\\ctrlXPLCEngineering\\PLE_V_0206\\Stud
 - **症状**：PLE 的 Application Build 已完成，MCP `compile_project` 仍运行到 300 s 超时；只读的 `get_compile_messages` 也可能继续阻塞。
 - **根因**：原脚本先执行 `clean()`/`clean_all()`/`build()`/`generate_code()`，再动态遍历全部消息类别，并对每类逐个读取 Fatal/Error/Warning/Information/Text。ctrlX PLE 2.6.8 的 `get_message_objects(category, severity)` 在该组合扫描中会卡住数分钟；PLC 编译本身不是瓶颈。
 - **兼容路径**：应用工程只调用一次官方 `ScriptApplication.build()`；编译后只读 Build 与 Additional code checks 两个类别，每类调用一次 `System.get_messages(category)`。error/warning 总数以 IDE 自身的 Build summary 为准；拿不到 summary 时按错误失败关闭，禁止把未知结果当作 0 errors。
+- **只读 Build 门禁（2026-08-23）**：兼容补丁移除了 `compile_project.py` 的 dirty-project 自动 `save()`；若 freshly opened 工程为 dirty、无法读取 dirty 状态，或补丁/包版本门禁不通过，离线检查器在 Build 前失败关闭。检查器只以隔离 TEMP 中本次生成的 summary/messages 作为决策证据，缓存消息仅作附录。
+- **Export #2 anchor（2026-08-23）**：离线检查器只接受“fresh、verified、0-error 的 Export #1 Build”与当前带时间戳 request 产生的 anchor，并要求其后出现更新的 CpStudio request。无可关联 request 时回到 Export #1、不创建 anchor。对象占用、次数纠正、Output 确认和 Build 前 Link I/O 可继承同一 anchor；Export #2 一旦进入 Build 即消费，终态或已尝试 Build 的报告不能复活旧 anchor。全局锁覆盖 anchor 读取到报告写入，任何锁获取失败均不落报告。
 - **覆盖范围**：同一补丁同步修改 npm 包 `dist/scripts` 与 `src/scripts` 中的 `_message_utils.py`、`compile_project.py`、`get_compile_messages.py`；`test-fast-compile-message.py` 离线覆盖干净、失败、Application current 与未知摘要四类情况。
 - **实测**：Station010 离线 Build 从 MCP 超过 300 s 降到约 **7.6 s**（0 errors / 7 warnings），缓存消息读取约 **0.8 s**；未连接、下载或运行实体 PLC。
 

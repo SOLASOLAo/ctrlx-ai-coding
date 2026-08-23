@@ -133,10 +133,14 @@ try {
             'scripts\cpstudio\Invoke-PostExportAudit.ps1',
             'scripts\cpstudio\Invoke-PostExportEngineering.ps1',
             'scripts\cpstudio\New-PostExportRunnerEvidence.ps1',
+            'scripts\cpstudio\Invoke-OfflinePostExportCheck.ps1',
+            'scripts\cpstudio\offline_mcp_build.cjs',
+            'scripts\cpstudio\Run-OfflinePostExportCheck.cmd',
             'scripts\git\Get-ReadOnlyGitAudit.ps1',
             'tests\cpstudio\Test-PostExportQueue.ps1',
             'tests\cpstudio\Test-PostExportEngineering.ps1',
             'tests\cpstudio\Test-PostExportRunnerEvidence.ps1',
+            'tests\cpstudio\Test-OfflinePostExportCheck.ps1',
             'tests\static\Test-ProjectFramework.ps1',
             'data\requests\.gitkeep',
             'docs\project_structure.md'
@@ -155,6 +159,13 @@ try {
     $mcpExample = [System.IO.File]::ReadAllText((Join-Path $outputPath 'config\codex-mcp.toml.example'))
     Assert-True -Condition $mcpExample.Contains('ctrlX PLC 2.6.8') -Message 'MCP example did not render the configured profile.'
     Assert-True -Condition (-not $mcpExample.Contains('PLE_V_0206')) -Message 'MCP example hardcoded a workstation-specific PLE version path.'
+
+    $generatedCheckerBytes = [System.IO.File]::ReadAllBytes((Join-Path $outputPath 'scripts\cpstudio\Invoke-OfflinePostExportCheck.ps1'))
+    $generatedCheckerHasBom = ($generatedCheckerBytes.Length -ge 3) -and
+        ($generatedCheckerBytes[0] -eq 0xEF) -and
+        ($generatedCheckerBytes[1] -eq 0xBB) -and
+        ($generatedCheckerBytes[2] -eq 0xBF)
+    Assert-True -Condition $generatedCheckerHasBom -Message 'Initializer stripped the UTF-8 BOM required by Windows PowerShell 5.1 for the localized offline checker.'
 
     $gitIgnore = [System.IO.File]::ReadAllText((Join-Path $outputPath '.gitignore'))
     Assert-True -Condition $gitIgnore.Contains('data/requests/*') -Message 'Runtime export requests are not ignored by the generated repository.'
@@ -190,6 +201,11 @@ try {
     $runnerEvidenceOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runnerEvidenceTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated runner evidence test failed: " + ($runnerEvidenceOutput -join ' '))
     Assert-True -Condition (($runnerEvidenceOutput -join ' ') -match 'Post-export runner evidence self-test OK') -Message 'Generated runner evidence test did not report success.'
+
+    $offlineCheckerTest = Join-Path $outputPath 'tests\cpstudio\Test-OfflinePostExportCheck.ps1'
+    $offlineCheckerOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $offlineCheckerTest 2>&1
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated offline checker test failed: " + ($offlineCheckerOutput -join ' '))
+    Assert-True -Condition (($offlineCheckerOutput -join ' ') -match 'Offline post-export checker self-test OK') -Message 'Generated offline checker test did not report success.'
 
     & $initializer `
         -ProjectId 'minimal-cell' `

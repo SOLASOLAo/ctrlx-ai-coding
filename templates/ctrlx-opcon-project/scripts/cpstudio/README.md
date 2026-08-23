@@ -7,7 +7,7 @@ this directory are project-owned automation.
 Configure the Post-export script from the Station Engineering directory as:
 
 ```text
-..\..\McpCoding\scripts\cpstudio\post_export_signal.bat
+..\McpCoding\scripts\cpstudio\post_export_signal.bat
 ```
 
 ## Queue writer
@@ -182,3 +182,66 @@ For EtherCAT BMK work, the coordinated order remains:
 During any CpStudio export, the runner must release Symbol Configuration and
 perform no concurrent Symbol read/write. `This object is already in use` is a
 serialization failure, not a reason to launch another PLE.
+
+## User-triggered offline Build checker
+
+When the workstation has no network and Codex is unavailable, run the local
+checker by double-clicking:
+
+```text
+scripts\cpstudio\Run-OfflinePostExportCheck.cmd
+```
+
+This file is **not** a CpStudio hook. Before running it, save and close every
+ctrlX PLC Engineering window and close any Codex/VS Code window that owns a
+`codesys-persistent` session. The checker refuses to adopt or close an existing
+session. When the process gate is clear it owns this complete lifecycle:
+
+`start one local MCP/PLE -> open configured PLC project -> fresh Build -> read messages -> shut down its MCP/PLE`
+
+The prompt asks only:
+
+1. whether this is Export #1 or #2;
+2. whether CpStudio Output was clean, had Symbol/OPC/PersistentVars post-processing
+   errors, or reported `This object is already in use`;
+3. for EtherCAT BMK changes, whether Link I/O is already complete.
+
+The result and exact next action are printed in the console and saved under
+`data/reports/offline-post-export/`. A second invocation that finds the checker
+global lock already held prints `OFFLINE_CHECK_LOCKED`; any other lock-acquisition
+failure prints `OFFLINE_CHECK_LOCK_ACQUIRE_FAILED`. Both deliberately write no
+report, so they cannot overwrite or revive an Export #2 anchor. The main states are:
+
+- `DONE_OFFLINE`: fresh Build has 0 errors and CpStudio Output is clean; no
+  additional Export is needed. This does not accept warning signatures or pass
+  the project quality gate;
+- `NEEDS_EXPORT_2`: fresh Build has 0 errors and Export #1 has proven Symbol
+  post-processing failure;
+- `NEEDS_LINK_IO`: an EtherCAT BMK still needs Link I/O, or Build reports an
+  old `BinIo` mapping before Link I/O. A `BinIo` error after confirmed Link I/O
+  stops and waits for AI instead of asking the user to repeat Link I/O;
+- `RETRY_CPSTUDIO_EXPORT`: Symbol Configuration was concurrently in use; close
+  the competing session and retry the same export rather than counting it as a
+  new Export #2;
+- `WAITING_FOR_AI` / `BLOCKED`: do not loop Export or Build; retain the report
+  for the next AI session.
+
+Export #2 is accepted only when the previous report requested it and a newer
+CpStudio request proves that another Export occurred. Object-busy,
+pass-selection, Output-confirmation, and pre-Build Link-I/O interruptions carry
+the same Export #2 anchor. Entering Build consumes that anchor; an older cycle
+cannot be revived. Fresh decision evidence and cached diagnostics are separated;
+cached text cannot choose the next action.
+
+If Export #1 has Symbol post-processing errors but no timestamped Post-export
+request is available, the checker does not create an unusable Export #2 anchor.
+It asks the user to confirm the signal-only Post-export script and repeat Export
+#1 first.
+
+The checker calls only `get_codesys_status`, `open_project`, `compile_project`,
+`get_compile_messages`, and `shutdown_codesys`. It calls no edit/save tool. The
+validated MCP patch rejects Build when the freshly opened project is dirty, and
+the checker verifies the project hash before and after. It never connects,
+downloads, starts/stops, writes, or forces a physical PLC. Its report is
+advisory and does not impersonate the Stage 2 runner-evidence contract. The
+Post-export hook remains signal-only.
