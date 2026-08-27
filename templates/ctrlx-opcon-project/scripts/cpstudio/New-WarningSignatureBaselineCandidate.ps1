@@ -169,22 +169,14 @@ function Read-JsonDocumentExact {
         $utf8 = New-Object System.Text.UTF8Encoding $false, $true
         $text = $utf8.GetString($bytes)
         if (($text.Length -gt 0) -and ($text[0] -eq [char]0xFEFF)) { $text = $text.Substring(1) }
-        $desktop = (-not $PSVersionTable.ContainsKey('PSEdition')) -or ($PSVersionTable.PSEdition -eq 'Desktop')
-        if ($desktop) {
-            Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
-            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-            $serializer.MaxJsonLength = $MaximumBytes
-            $serializer.RecursionLimit = 256
-            $payload = $serializer.DeserializeObject($text)
+        $command = Get-Command ConvertFrom-Json -ErrorAction Stop
+        if (-not $command.Parameters.ContainsKey('DateKind')) {
+            throw 'PowerShell 7.5 or newer with ConvertFrom-Json -DateKind is required.'
         }
-        else {
-            $arguments = @{ InputObject = $text }
-            $command = Get-Command ConvertFrom-Json -ErrorAction Stop
-            if ($command.Parameters.ContainsKey('AsHashtable')) { $arguments['AsHashtable'] = $true }
-            if ($command.Parameters.ContainsKey('Depth')) { $arguments['Depth'] = 256 }
-            if ($command.Parameters.ContainsKey('DateKind')) { $arguments['DateKind'] = 'String' }
-            $payload = ConvertFrom-Json @arguments
-        }
+        $arguments = @{ InputObject = $text; DateKind = 'String' }
+        if ($command.Parameters.ContainsKey('AsHashtable')) { $arguments['AsHashtable'] = $true }
+        if ($command.Parameters.ContainsKey('Depth')) { $arguments['Depth'] = 256 }
+        $payload = ConvertFrom-Json @arguments
     }
     catch {
         throw "$Context is not valid UTF-8 JSON. $($_.Exception.Message)"
@@ -421,11 +413,11 @@ function Get-ValidatedWarningReview {
     if (-not [System.IO.File]::Exists($plcProject)) { throw 'Runner evidence PLC project no longer exists.' }
 
     $capabilities = Get-RequiredArray -Object $Evidence -Name 'capabilitiesInvoked' -Context 'Runner evidence'
-    $allowedCapabilities = @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
+    $allowedCapabilities = @('get_codesys_status', 'clean_compile_project', 'get_ctrlx_semantic_snapshot')
     if (($capabilities.Count -lt 2) -or ($capabilities.Count -gt 3) -or
         (@($capabilities | Where-Object { $_ -isnot [string] -or $allowedCapabilities -notcontains [string]$_ }).Count -ne 0) -or
         (@($capabilities | Where-Object { [string]$_ -eq 'get_codesys_status' }).Count -ne 1) -or
-        (@($capabilities | Where-Object { [string]$_ -eq 'compile_project' }).Count -ne 1) -or
+        (@($capabilities | Where-Object { [string]$_ -eq 'clean_compile_project' }).Count -ne 1) -or
         (@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot' }).Count -gt 1)) {
         throw 'Runner evidence does not prove one approved offline fresh Build.'
     }
@@ -502,7 +494,7 @@ function Get-ValidatedWarningReview {
         (-not (Get-RequiredBoolean -Object $build -Name 'typedRecordsVerified' -Context 'Runner evidence blocked Build')) -or
         (-not (Get-RequiredBoolean -Object $build -Name 'diagnosticRowsComplete' -Context 'Runner evidence blocked Build')) -or
         (-not (Get-RequiredBoolean -Object $build -Name 'warningRecordsSafeForReview' -Context 'Runner evidence blocked Build')) -or
-        (Get-RequiredString -Object $build -Name 'summarySource' -Context 'Runner evidence blocked Build') -ne 'codesys-persistent.compile_project') {
+        (Get-RequiredString -Object $build -Name 'summarySource' -Context 'Runner evidence blocked Build') -ne 'codesys-persistent.clean_compile_project') {
         throw 'Runner evidence does not bind a typed, review-safe, zero-error fresh Build of the current project/profile.'
     }
     $warningCount = Get-RequiredInt32 -Object $build -Name 'warnings' -Context 'Runner evidence blocked Build'

@@ -9,7 +9,7 @@ public sealed class PowerShellEvidenceSealer : IEvidenceSealer
     // SHA-256 of the trusted producer after CRLF/CR are normalized to LF.
     // Updating the producer requires an explicit Runner release and constant update.
     public const string TrustedEvidenceProducerNormalizedSha256 =
-        "4796DDCC30945129743953EDEF00E881D80A5884E2CAFB1CE9FD6406B74E5493";
+        "F14CC7434D898789F5C8FAB8A7FACBC9360B63ECB22E858DCC7173F2851034A4";
 
     private readonly TimeSpan timeout;
 
@@ -64,28 +64,27 @@ public sealed class PowerShellEvidenceSealer : IEvidenceSealer
             "Runner evidence");
         var existedBefore = File.Exists(outputPath);
 
-        var windowsPowerShell = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.System),
-            "WindowsPowerShell",
-            "v1.0",
-            "powershell.exe");
-        if (!File.Exists(windowsPowerShell))
+        var powerShell7 = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "PowerShell",
+            "7",
+            "pwsh.exe");
+        if (!File.Exists(powerShell7))
         {
-            throw new RunnerGateException("EVIDENCE_SEAL_FAILED", "Trusted Windows PowerShell executable was not found.");
+            throw new RunnerGateException("EVIDENCE_SEAL_FAILED", "Trusted PowerShell 7 executable was not found.");
         }
 
         var startInfo = new ProcessStartInfo
         {
-            FileName = windowsPowerShell,
+            FileName = powerShell7,
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             WorkingDirectory = action.EngineeringRoot
         };
-        // The Runner may itself be launched from PowerShell 7.  Windows PowerShell 5.1
-        // must rebuild its own module path instead of inheriting PS7-only modules;
-        // otherwise built-in commands such as Get-FileHash can fail to load.
+        // Use only the controlled PowerShell 7 installation and its built-in modules.
+        // Do not inherit a caller-specific module path.
         startInfo.Environment.Remove("PSModulePath");
         foreach (var argument in new[]
         {

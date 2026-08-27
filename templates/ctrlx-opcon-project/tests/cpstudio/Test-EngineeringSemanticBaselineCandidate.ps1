@@ -201,7 +201,7 @@ try {
             plcProject = $plcProject
             profile = 'ctrlX PLC 2.6.8'
         }
-        capabilitiesInvoked = @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
+        capabilitiesInvoked = @('get_codesys_status', 'clean_compile_project', 'get_ctrlx_semantic_snapshot')
         guardrails = [ordered]@{
             onlineOperationsUsed = $false
             secondPleStarted = $false
@@ -269,7 +269,7 @@ try {
                 warningRecordsSafeForReview = $false
                 warningRecords = @()
                 diagnosticRows = @('warning 1', 'warning 2', 'warning 3', 'warning 4', 'warning 5', 'warning 6', 'warning 7')
-                summarySource = 'codesys-persistent.compile_project'
+                summarySource = 'codesys-persistent.clean_compile_project'
             }
             failureStage = 'semantic-acceptance'
             reasonCode = 'SEMANTIC_BASELINE_BOOTSTRAP_REQUIRED'
@@ -300,6 +300,13 @@ try {
     $preview = & $producer -EvidencePath $evidencePath -EngineeringRoot $engineeringRoot -OutputPath $whatIfPath -WhatIf
     Assert-True ($preview.status -eq 'WHATIF') 'Candidate -WhatIf did not return a preview.'
     Assert-True (-not [System.IO.File]::Exists($whatIfPath)) 'Candidate -WhatIf wrote an artifact.'
+
+    $ordinaryBuildEvidence = $evidence | ConvertTo-Json -Depth 64 | ConvertFrom-Json
+    $ordinaryBuildEvidence.capabilitiesInvoked = @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
+    $ordinaryBuildEvidence.result.build.summarySource = 'codesys-persistent.compile_project'
+    $ordinaryBuildPath = Join-Path $evidenceRoot 'ordinary-build.json'
+    Write-Utf8Json -Path $ordinaryBuildPath -Value $ordinaryBuildEvidence
+    Assert-Throws { & $producer -EvidencePath $ordinaryBuildPath -EngineeringRoot $engineeringRoot -OutputPath (Join-Path $engineeringRoot 'docs\reviews\ordinary-build.json') } 'one offline Build plus one semantic snapshot' 'Ordinary Build evidence was accepted as a Clean Build semantic baseline source.'
 
     $tamperedHashEvidence = $evidence | ConvertTo-Json -Depth 64 | ConvertFrom-Json
     $tamperedHashEvidence.result.semanticProofs.mapping.actualMappingSha256 = ('c' * 64)

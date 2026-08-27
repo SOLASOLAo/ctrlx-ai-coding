@@ -24,7 +24,7 @@ public sealed record BrokerHostOptions
 
     public TimeSpan StatusTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
-    public TimeSpan BuildTimeout { get; init; } = TimeSpan.FromMinutes(12);
+    public TimeSpan BuildTimeout { get; init; } = TimeSpan.FromMinutes(20);
 
     public void Validate()
     {
@@ -54,7 +54,7 @@ public sealed record BrokerHostOptions
 
         ValidateRange(SessionStartupTimeout, TimeSpan.FromSeconds(10), TimeSpan.FromMinutes(15), nameof(SessionStartupTimeout));
         ValidateRange(StatusTimeout, TimeSpan.FromSeconds(1), TimeSpan.FromMinutes(2), nameof(StatusTimeout));
-        ValidateRange(BuildTimeout, TimeSpan.FromMinutes(1), TimeSpan.FromHours(1), nameof(BuildTimeout));
+        ValidateRange(BuildTimeout, TimeSpan.FromMinutes(17), TimeSpan.FromHours(1), nameof(BuildTimeout));
     }
 
     private static void RequireDirectory(string path, string name)

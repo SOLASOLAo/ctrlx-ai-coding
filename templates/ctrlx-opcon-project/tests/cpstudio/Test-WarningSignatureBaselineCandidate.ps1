@@ -128,7 +128,7 @@ try {
             plcProject = $plcProject
             profile = 'ctrlX PLC 2.6.8'
         }
-        capabilitiesInvoked = @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
+        capabilitiesInvoked = @('get_codesys_status', 'clean_compile_project', 'get_ctrlx_semantic_snapshot')
         guardrails = [ordered]@{
             onlineOperationsUsed = $false
             secondPleStarted = $false
@@ -190,7 +190,7 @@ try {
                 warningRecordsSafeForReview = $true
                 warningRecords = @('Warning  alpha', 'Warning alpha ', 'Warning beta')
                 diagnosticRows = @('Warning  alpha', 'Warning alpha ', 'Warning beta')
-                summarySource = 'codesys-persistent.compile_project'
+                summarySource = 'codesys-persistent.clean_compile_project'
             }
             failureStage = 'semantic-acceptance'
             reasonCode = 'SEMANTIC_BASELINE_BOOTSTRAP_REQUIRED'
@@ -224,6 +224,13 @@ try {
     $preview = & $producer -EvidencePath $evidencePath -EngineeringRoot $engineeringRoot -OutputPath $whatIfPath -WhatIf
     Assert-True ($preview.status -eq 'WHATIF') 'Candidate -WhatIf did not return a preview.'
     Assert-True (-not [System.IO.File]::Exists($whatIfPath)) 'Candidate -WhatIf wrote an artifact.'
+
+    $ordinaryBuildEvidence = Copy-JsonValue -Value $evidence
+    $ordinaryBuildEvidence.capabilitiesInvoked = @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
+    $ordinaryBuildEvidence.result.build.summarySource = 'codesys-persistent.compile_project'
+    $ordinaryBuildPath = Join-Path $evidenceRoot 'ordinary-build.json'
+    Write-Utf8Json -Path $ordinaryBuildPath -Value $ordinaryBuildEvidence
+    Assert-Throws { & $producer -EvidencePath $ordinaryBuildPath -EngineeringRoot $engineeringRoot -OutputPath (Join-Path $engineeringRoot 'docs\reviews\ordinary-build.json') } 'one approved offline fresh Build' 'Ordinary Build evidence was accepted as a Clean Build baseline source.'
 
     $tamperedSignature = Copy-JsonValue -Value $evidence
     $tamperedSignature.result.semanticProofs.warnings.currentSignatures[0].sha256 = ('c' * 64)

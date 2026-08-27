@@ -35,7 +35,7 @@ public sealed record McpProcessOptions
         "shutdown_codesys",
         "get_codesys_status",
         "open_project",
-        "compile_project",
+        "clean_compile_project",
         "get_ctrlx_semantic_snapshot"
     ];
 

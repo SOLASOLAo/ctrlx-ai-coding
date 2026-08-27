@@ -27,7 +27,7 @@ internal static class RunnerSelfTest
 
         try
         {
-            Check(OperatingSystem.IsWindows(), "P1.2 Runner self-test requires Windows Named Pipes and Windows PowerShell.");
+            Check(OperatingSystem.IsWindows(), "P1.2 Runner self-test requires Windows Named Pipes and PowerShell 7.");
             using var fixture = new RunnerFixture(repositoryRoot, temporaryRoot);
 
             RunnerExecutionResult noSessionResult = null!;
@@ -1103,7 +1103,7 @@ internal static class RunnerSelfTest
             ["completedAtUtc"] = completed.ToString("O"),
             ["capabilitiesInvoked"] = new JsonArray(
                 "get_codesys_status",
-                "compile_project",
+                "clean_compile_project",
                 "get_ctrlx_semantic_snapshot"),
             ["session"] = observedSession,
             ["guardrails"] = new JsonObject
@@ -1137,7 +1137,7 @@ internal static class RunnerSelfTest
                     ["verified"] = true,
                     ["errors"] = 0,
                     ["warnings"] = 0,
-                    ["summarySource"] = "codesys-persistent.compile_project",
+                    ["summarySource"] = "codesys-persistent.clean_compile_project",
                     ["warningRecords"] = new JsonArray()
                 },
                 ["acceptance"] = new JsonObject
@@ -1288,10 +1288,12 @@ internal static class RunnerSelfTest
         Check(processStartCount == 1, "Runner must have exactly one allowlisted child-process boundary.");
         var sealerSource = sources.Single(item => Path.GetFileName(item.Key) == "PowerShellEvidenceSealer.cs").Value;
         Check(
-            sealerSource.Contains("Environment.SpecialFolder.System", StringComparison.Ordinal) &&
-            sealerSource.Contains("WindowsPowerShell", StringComparison.Ordinal) &&
-            sealerSource.Contains("FileName = windowsPowerShell", StringComparison.Ordinal),
-            "Runner child-process target is not the absolute Windows evidence producer host.");
+            sealerSource.Contains("Environment.SpecialFolder.ProgramFiles", StringComparison.Ordinal) &&
+            sealerSource.Contains("\"PowerShell\"", StringComparison.Ordinal) &&
+            sealerSource.Contains("\"7\"", StringComparison.Ordinal) &&
+            sealerSource.Contains("\"pwsh.exe\"", StringComparison.Ordinal) &&
+            sealerSource.Contains("FileName = powerShell7", StringComparison.Ordinal),
+            "Runner child-process target is not the absolute PowerShell 7 evidence producer host.");
 
         var pipeSourcePath = Path.Combine(
             sourceRoot,
@@ -1300,6 +1302,30 @@ internal static class RunnerSelfTest
         var pipeSource = File.ReadAllText(pipeSourcePath);
         Check(!pipeSource.Contains("ProcessStartInfo", StringComparison.Ordinal), "Named Pipe client gained process-start capability.");
         Check(!pipeSource.Contains("Process.Start", StringComparison.Ordinal), "Named Pipe client gained process-start capability.");
+        Check(
+            pipeSource.Contains("TimeSpan.FromMinutes(30)", StringComparison.Ordinal) &&
+            pipeSource.Contains("TimeSpan.FromMinutes(60)", StringComparison.Ordinal),
+            "Named Pipe client default response timeout is shorter than the controlled Clean Build action window.");
+        var cliSource = File.ReadAllText(Path.Combine(
+            sourceRoot,
+            "CtrlX.OpCon.Runner.Cli",
+            "Program.cs"));
+        Check(
+            cliSource.Contains(
+                "\"broker-action-timeout-ms\", 1_800_000, minimum: 1_000, maximum: 3_600_000",
+                StringComparison.Ordinal),
+            "Runner CLI must expose the controlled 30-minute default and 60-minute maximum action timeout.");
+        var wrapperSource = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "templates",
+            "ctrlx-opcon-project",
+            "scripts",
+            "runner",
+            "Invoke-CtrlXOpconRunner.ps1"));
+        Check(
+            wrapperSource.Contains("[ValidateRange(1000, 3600000)]", StringComparison.Ordinal) &&
+            wrapperSource.Contains("$BrokerActionTimeoutMilliseconds = 1800000", StringComparison.Ordinal),
+            "Runner PowerShell wrapper must preserve the controlled 30-minute default and 60-minute maximum action timeout.");
 
         var brokerSourceRoot = Path.Combine(sourceRoot, "CtrlX.OpCon.Runner.Broker");
         var brokerDispatchSources = Directory.EnumerateFiles(brokerSourceRoot, "*.cs", SearchOption.AllDirectories)
@@ -1308,6 +1334,11 @@ internal static class RunnerSelfTest
             .ToArray();
         Check(brokerDispatchSources.Length >= 8, "Broker infrastructure/dispatcher source scan was unexpectedly empty.");
         var brokerDispatchCombined = string.Join("\n", brokerDispatchSources);
+        Check(
+            brokerDispatchCombined.Contains("\"--timeout\", \"1020000\"", StringComparison.Ordinal) &&
+            brokerDispatchCombined.Contains("TimeSpan.FromMinutes(20)", StringComparison.Ordinal) &&
+            brokerDispatchCombined.Contains("TimeSpan.FromMinutes(17)", StringComparison.Ordinal),
+            "Broker/MCP timeout chain can expire before the controlled Clean Build completes.");
         foreach (var obsoleteLifecycleField in new[]
         {
             "projectLeaseScope",

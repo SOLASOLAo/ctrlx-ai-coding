@@ -31,8 +31,8 @@ param(
 
     [Parameter(Mandatory = $false)]
     [Alias('BrokerTimeoutMilliseconds')]
-    [ValidateRange(1000, 1800000)]
-    [int]$BrokerActionTimeoutMilliseconds = 600000
+    [ValidateRange(1000, 3600000)]
+    [int]$BrokerActionTimeoutMilliseconds = 1800000
 )
 
 $ErrorActionPreference = 'Stop'

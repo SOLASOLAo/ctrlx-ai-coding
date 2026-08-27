@@ -62,7 +62,7 @@ function Invoke-TestRunner {
     if ($WhatIf) {
         $arguments += '-WhatIf'
     }
-    $output = @(& powershell.exe @arguments 2>&1)
+    $output = @(& pwsh @arguments 2>&1)
     return [pscustomobject]@{
         ExitCode = $LASTEXITCODE
         Output = @($output | ForEach-Object { [string]$_ })

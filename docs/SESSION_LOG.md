@@ -239,8 +239,25 @@
 - 新项目模板同步写入显式 Clean Build 门禁，并以 ASCII
   `RUNNER_ACCEPTANCE_CONTRACT` 固定该合同；初始化器在 Windows PowerShell 5.1 下完整通过
   106 项验收，避免无 BOM 测试脚本中的中文 literal 被系统代码页误解。
-- 剩余门禁：重启 MCP 扩展，在可丢弃隔离副本持久化 `<no limit>`，关闭重开并执行两次
-  一致且无截断 sentinel 的显式 Clean Build，之后才允许进入人工 baseline 审阅。
+- 当时剩余门禁为重启 MCP 扩展后执行隔离副本持久化与双 Clean Build；该历史待办已由
+  下一节验收结果关闭。
+
+### 2026-08-28 · Persisted unlimited limit and repeated Clean Build acceptance
+
+- Codex 扩展重启后已加载 `clean_compile_project`。`maxCompilerWarnings=<no limit>` 仅保存到
+  manifest 绑定的可丢弃隔离副本；正常关闭并重开后精确读回仍为 `<no limit>`，Station010
+  源工程没有保存该设置。
+- 隔离副本连续两次显式 Clean Build 均为 **0 errors / 4 warnings**。两次 warning 多重集
+  完全一致，四条 typed record 都是 `The attribute OPC.UA.DA is unknown and will be ignored by
+  the compiler.`；records、diagnostic rows、warning details、summary、category coverage、
+  identity 与 dirty 证据均完整，没有截断 sentinel。
+- Station010 PLC 源工程 SHA-256 始终为
+  `0F9557B3F5100E4FF44EBF1BE30C5833EFE11F1E02D8A8AB3991DD24640734CA`。没有连接、下载、
+  启停、变量读写、FORCE 或其他在线操作，也没有修改 CpStudio、IO 或 `Std`。
+- Broker/evidence 已接入 `clean_compile_project`，相关 Runner/Broker/Engineering/Stage/
+  evidence/candidate/initializer 离线测试全部在 PowerShell 7 下通过。这只完成技术合同和
+  告警完整性门禁；本轮新的正式 immutable action/candidate 尚未生成，人工 warning/
+  semantic baseline 尚未审阅或建立，bootstrap 状态继续保持 `BLOCKED`。
 
 ## 关键决策清单
 
@@ -272,12 +289,13 @@
 | D27 | **截断的 PLE warning population 永不允许成为正式 baseline**；Broker、Stage 1、Stage 2 与 evidence sealer 均以 `PLE_WARNING_OUTPUT_TRUNCATED` 失败关闭 | 08-28 |
 | D28 | **所有可批准证据必须同字节校验并有界读取**；AI candidate/triage 不能充当独立人审，semantic snapshot 必须在最终 REST 读取后再次证明工程 clean/stable | 08-28 |
 | D29 | **普通 `application.build()` 不是语义重建证明**；正式 baseline 必须使用独立 `clean_compile_project`（恰好一次 clean + 一次 build），warning-limit REST PUT 后必须关闭不保存并重开 | 08-28 |
+| D30 | **Runner 的正式编译证据必须来自 Broker 受控的 `clean_compile_project`**；手工隔离 Clean Build 只关闭技术完整性门禁，不能替代新的 immutable action/candidate 或独立人工 baseline 审阅 | 08-28 |
 
 ## 待办 / 下一步
 
 1. 新项目使用统一初始化器创建 AI 旁车；用户继续在 CpStudio 维护模型/标准对象/HMI，AI 维护 ownership 声明的 PLC 增量；
-2. warning-limit REST 隔离事务和显式 Clean Build 工具已完成；重启扩展后，只在可丢弃隔离副本保存 `<no limit>`，关闭重开并连续执行两次 Clean Build，要求结果一致且无截断 sentinel；
-3. 告警完整性门禁通过后，审阅 warning/semantic candidates，创建绑定独立审阅证据的正式 baseline，再生成新的 immutable action 复验；完成前不得批准正式 baseline，也不扩展写工程 action；
+2. warning-limit REST、隔离副本 `<no limit>` 保存—重开—双 Clean Build，以及 Broker/evidence 的 `clean_compile_project` 集成均已通过；下一步由一次真实 CpStudio Export 生成本轮新的 request、immutable action 与 warning/semantic candidates，禁止伪造 Export 或复用旧 action；
+3. 新 candidates 生成后由人工审阅，创建绑定独立审阅证据的正式 baseline，再生成新的 immutable action 复验；完成前不得批准正式 baseline，也不扩展写工程 action；
 4. 继续用已配置的真实 CpStudio Post-export hook 验证 Stage 1/Stage 2/Runner 闭环，任何 baseline 或 scope 漂移都必须新建 action；
 5. 按 `docs/mcp_productization_roadmap.md` 继续通用健康检查、结构化编译和 change set；`apply_change_set_and_build` 在 payload/readback/恢复门禁完成前保持关闭；
 6. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；

@@ -27,7 +27,7 @@ public sealed class NamedPipeSessionBrokerClient : ISessionBrokerClient
     private readonly TimeSpan pollInterval;
 
     public NamedPipeSessionBrokerClient(string engineeringRoot)
-        : this(engineeringRoot, null, TimeSpan.FromSeconds(2), TimeSpan.FromMinutes(10), TimeSpan.FromMilliseconds(250))
+        : this(engineeringRoot, null, TimeSpan.FromSeconds(2), TimeSpan.FromMinutes(30), TimeSpan.FromMilliseconds(250))
     {
     }
 
@@ -41,7 +41,7 @@ public sealed class NamedPipeSessionBrokerClient : ISessionBrokerClient
         this.engineeringRoot = RunnerValidation.FullPath(engineeringRoot);
         this.registrationPath = registrationPath;
         this.connectTimeout = RequireTimeout(connectTimeout, nameof(connectTimeout), TimeSpan.FromMinutes(2));
-        this.responseTimeout = RequireTimeout(responseTimeout, nameof(responseTimeout), TimeSpan.FromMinutes(30));
+        this.responseTimeout = RequireTimeout(responseTimeout, nameof(responseTimeout), TimeSpan.FromMinutes(60));
         this.pollInterval = RequireTimeout(
             pollInterval ?? TimeSpan.FromMilliseconds(250),
             nameof(pollInterval),
@@ -459,7 +459,7 @@ public sealed class NamedPipeSessionBrokerClient : ISessionBrokerClient
         var allowed = new HashSet<string>(new[]
         {
             "get_codesys_status",
-            "compile_project",
+            "clean_compile_project",
             "get_ctrlx_semantic_snapshot"
         }, StringComparer.Ordinal);
         foreach (var node in capabilities)

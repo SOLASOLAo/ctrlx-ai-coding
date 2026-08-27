@@ -6,6 +6,11 @@ $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $initializer = Join-Path $repositoryRoot 'scripts\New-CtrlXOpconProject.ps1'
 $failures = New-Object System.Collections.Generic.List[string]
 $assertionCount = 0
+$powerShell7 = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+
+if (-not [System.IO.File]::Exists($powerShell7)) {
+    throw "PowerShell 7 is required for initializer regression tests: $powerShell7"
+}
 
 function Assert-True {
     param(
@@ -205,7 +210,27 @@ try {
         ($generatedCheckerBytes[0] -eq 0xEF) -and
         ($generatedCheckerBytes[1] -eq 0xBB) -and
         ($generatedCheckerBytes[2] -eq 0xBF)
-    Assert-True -Condition $generatedCheckerHasBom -Message 'Initializer stripped the UTF-8 BOM required by Windows PowerShell 5.1 for the localized offline checker.'
+    Assert-True -Condition $generatedCheckerHasBom -Message 'Initializer changed the localized offline checker UTF-8 signature.'
+
+    $generatedHook = [System.IO.File]::ReadAllText((Join-Path $outputPath 'scripts\cpstudio\post_export_signal.bat'))
+    $generatedOfflineLauncher = [System.IO.File]::ReadAllText((Join-Path $outputPath 'scripts\cpstudio\Run-OfflinePostExportCheck.cmd'))
+    $generatedOfflineHelper = [System.IO.File]::ReadAllText((Join-Path $outputPath 'scripts\cpstudio\offline_mcp_build.cjs'))
+    Assert-True -Condition $generatedHook.Contains('%ProgramFiles%\PowerShell\7\pwsh.exe') -Message 'Generated CpStudio hook is not bound to Program Files PowerShell 7.'
+    Assert-True -Condition $generatedOfflineLauncher.Contains('%ProgramFiles%\PowerShell\7\pwsh.exe') -Message 'Generated offline-check launcher is not bound to Program Files PowerShell 7.'
+    Assert-True -Condition $generatedOfflineHelper.Contains("path.join(programFiles, 'PowerShell', '7', 'pwsh.exe')") -Message 'Generated offline MCP helper is not bound to Program Files PowerShell 7.'
+    Assert-True -Condition (-not (($generatedHook + $generatedOfflineLauncher + $generatedOfflineHelper).Contains('powershell.exe'))) -Message 'Generated runtime entry points still invoke Windows PowerShell.'
+
+    foreach ($jsonConsumerRelativePath in @(
+            'scripts\cpstudio\Invoke-PostExportEngineering.ps1',
+            'scripts\cpstudio\New-EngineeringSemanticBaselineCandidate.ps1',
+            'scripts\cpstudio\New-PostExportRunnerEvidence.ps1',
+            'scripts\cpstudio\New-WarningSignatureBaselineCandidate.ps1'
+        )) {
+        $jsonConsumerText = [System.IO.File]::ReadAllText((Join-Path $outputPath $jsonConsumerRelativePath))
+        Assert-True -Condition $jsonConsumerText.Contains('PowerShell 7.5 or newer with ConvertFrom-Json -DateKind is required.') -Message "Generated JSON consumer does not fail closed without ConvertFrom-Json -DateKind: $jsonConsumerRelativePath"
+        Assert-True -Condition $jsonConsumerText.Contains('DateKind') -Message "Generated JSON consumer does not preserve JSON dates as strings: $jsonConsumerRelativePath"
+        Assert-True -Condition (-not (($jsonConsumerText.Contains('JavaScriptSerializer')) -or ($jsonConsumerText.Contains('System.Web.Extensions')) -or ($jsonConsumerText.Contains("PSEdition -eq 'Desktop'")))) -Message "Generated JSON consumer retained a Windows PowerShell fallback: $jsonConsumerRelativePath"
+    }
 
     $gitIgnore = [System.IO.File]::ReadAllText((Join-Path $outputPath '.gitignore'))
     Assert-True -Condition $gitIgnore.Contains('data/requests/*') -Message 'Runtime export requests are not ignored by the generated repository.'
@@ -224,39 +249,39 @@ try {
     }
     Assert-True -Condition ($unresolved.Count -eq 0) -Message 'Generated output contains unresolved template tokens.'
 
-    Write-Host '[initializer] generated framework test'
+    Write-Host '[initializer] generated framework test (PowerShell 7)'
     $staticTest = Join-Path $outputPath 'tests\static\Test-ProjectFramework.ps1'
-    $staticOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $staticTest 2>&1
+    $staticOutput = & $powerShell7 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $staticTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated framework test failed: " + ($staticOutput -join ' '))
     Assert-True -Condition (($staticOutput -join ' ') -match 'Project framework OK') -Message 'Generated framework test did not report success.'
 
-    Write-Host '[initializer] generated post-export queue test'
+    Write-Host '[initializer] generated post-export queue test (PowerShell 7)'
     $queueTest = Join-Path $outputPath 'tests\cpstudio\Test-PostExportQueue.ps1'
-    $queueOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $queueTest 2>&1
+    $queueOutput = & $powerShell7 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $queueTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated post-export queue test failed: " + ($queueOutput -join ' '))
     Assert-True -Condition (($queueOutput -join ' ') -match 'Post-export queue self-test OK') -Message 'Generated queue test did not report success.'
 
-    Write-Host '[initializer] generated Stage2 test'
+    Write-Host '[initializer] generated Stage2 test (PowerShell 7)'
     $engineeringTest = Join-Path $outputPath 'tests\cpstudio\Test-PostExportEngineering.ps1'
-    $engineeringOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $engineeringTest 2>&1
+    $engineeringOutput = & $powerShell7 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $engineeringTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated post-export Stage2 test failed: " + ($engineeringOutput -join ' '))
     Assert-True -Condition (($engineeringOutput -join ' ') -match 'Post-export Stage2 self-test OK') -Message 'Generated Stage2 test did not report success.'
 
-    Write-Host '[initializer] generated runner evidence test'
+    Write-Host '[initializer] generated runner evidence test (PowerShell 7)'
     $runnerEvidenceTest = Join-Path $outputPath 'tests\cpstudio\Test-PostExportRunnerEvidence.ps1'
-    $runnerEvidenceOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runnerEvidenceTest 2>&1
+    $runnerEvidenceOutput = & $powerShell7 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $runnerEvidenceTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated runner evidence test failed: " + ($runnerEvidenceOutput -join ' '))
     Assert-True -Condition (($runnerEvidenceOutput -join ' ') -match 'Post-export runner evidence self-test OK') -Message 'Generated runner evidence test did not report success.'
 
-    Write-Host '[initializer] generated offline checker test'
+    Write-Host '[initializer] generated offline checker test (PowerShell 7)'
     $offlineCheckerTest = Join-Path $outputPath 'tests\cpstudio\Test-OfflinePostExportCheck.ps1'
-    $offlineCheckerOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $offlineCheckerTest 2>&1
+    $offlineCheckerOutput = & $powerShell7 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $offlineCheckerTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated offline checker test failed: " + ($offlineCheckerOutput -join ' '))
     Assert-True -Condition (($offlineCheckerOutput -join ' ') -match 'Offline post-export checker self-test OK') -Message 'Generated offline checker test did not report success.'
 
-    Write-Host '[initializer] generated controlled Runner test'
+    Write-Host '[initializer] generated controlled Runner test (PowerShell 7)'
     $controlledRunnerTest = Join-Path $outputPath 'tests\runner\Test-CtrlXOpconRunner.ps1'
-    $controlledRunnerOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $controlledRunnerTest 2>&1
+    $controlledRunnerOutput = & $powerShell7 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controlledRunnerTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated controlled Runner test failed: " + ($controlledRunnerOutput -join ' '))
     Assert-True -Condition (($controlledRunnerOutput -join ' ') -match 'Controlled Runner P1.1 self-test OK') -Message 'Generated controlled Runner test did not report success.'
 
@@ -270,8 +295,8 @@ try {
     $generatedBrokerBuild = & dotnet build $generatedBrokerProject --configuration Release /p:RestoreIgnoreFailedSources=true 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated .NET Broker build failed: " + ($generatedBrokerBuild -join ' '))
     Assert-True -Condition (($generatedBrokerBuild -join ' ') -match '0 Error\(s\)') -Message 'Generated .NET Broker build did not report zero errors.'
-    Write-Host '[initializer] generated Runner doctor'
-    $generatedRunnerDoctor = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $outputPath 'scripts\runner\Invoke-CtrlXOpconRunner.ps1') -Command Doctor 2>&1
+    Write-Host '[initializer] generated Runner doctor (PowerShell 7)'
+    $generatedRunnerDoctor = & $powerShell7 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $outputPath 'scripts\runner\Invoke-CtrlXOpconRunner.ps1') -Command Doctor 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated .NET Runner doctor failed: " + ($generatedRunnerDoctor -join ' '))
     Assert-True -Condition (($generatedRunnerDoctor -join ' ') -match '"readyForActionClient"\s*:\s*true') -Message 'Generated .NET Runner doctor did not report ready.'
 

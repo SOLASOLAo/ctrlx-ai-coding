@@ -139,7 +139,7 @@ internal static class RunnerCli
         var brokerConnectTimeout = TimeSpan.FromMilliseconds(
             options.GetInt32("broker-connect-timeout-ms", 2_000, minimum: 100, maximum: 120_000));
         var brokerActionTimeout = TimeSpan.FromMilliseconds(
-            options.GetInt32("broker-action-timeout-ms", 600_000, minimum: 1_000, maximum: 1_800_000));
+            options.GetInt32("broker-action-timeout-ms", 1_800_000, minimum: 1_000, maximum: 3_600_000));
 
         ISessionBrokerClient broker = new NamedPipeSessionBrokerClient(
             engineeringRoot,

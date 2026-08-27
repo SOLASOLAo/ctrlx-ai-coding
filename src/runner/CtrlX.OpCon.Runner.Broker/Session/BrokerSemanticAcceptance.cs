@@ -231,7 +231,7 @@ internal static class BrokerSemanticAcceptance
                 ? "WARNING_RECORDS_UNTYPED"
                 : "WARNING_RECORDS_INCOMPLETE";
             diagnostics.Add($"warnings:{reason}");
-            warnings = UnverifiedProof("codesys-persistent.compile_project", reason);
+            warnings = UnverifiedProof("codesys-persistent.clean_compile_project", reason);
             warnings["typedRecordsVerified"] = false;
             warnings["diagnosticRowsComplete"] = build.DiagnosticRowsComplete;
             warnings["diagnosticRowCount"] = diagnosticRows.Count;

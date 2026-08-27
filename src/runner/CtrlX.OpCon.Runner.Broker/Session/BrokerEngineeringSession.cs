@@ -52,10 +52,10 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
         "^\\s*-\\s*(?<name>Project Open|Project Path):\\s*(?<value>.+)$",
         RegexOptions.Multiline | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
-    private const string CompileSummaryStart = "### COMPILE_SUMMARY_START ###";
-    private const string CompileSummaryEnd = "### COMPILE_SUMMARY_END ###";
-    private const string FreshCompileProducer = "codesys-persistent.compile_project";
-    private const string FreshCompilePatchId = "ctrlx-fresh-compile-v2";
+    private const string CompileSummaryStart = "### CLEAN_COMPILE_SUMMARY_START ###";
+    private const string CompileSummaryEnd = "### CLEAN_COMPILE_SUMMARY_END ###";
+    private const string FreshCompileContractId = "ctrlx-clean-compile-v1";
+    private const string FreshCompileProducer = "codesys-persistent.clean_compile_project";
     private const string PleOwnershipContract = "ctrlx-ple-ownership-v1";
 
     private readonly IMcpRpcClient mcp;
@@ -214,7 +214,7 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
         var before = await CaptureProjectSnapshotAsync(action.PlcProject, cancellationToken).ConfigureAwait(false);
         var compileRequestedAtUtc = DateTimeOffset.UtcNow;
         var compile = await mcp.CallToolAsync(
-            "compile_project",
+            "clean_compile_project",
             new JsonObject { ["projectFilePath"] = action.PlcProject },
             options.BuildTimeout,
             cancellationToken).ConfigureAwait(false);
@@ -237,14 +237,14 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
 
         BrokerSemanticSnapshotPlan? semanticPlan = null;
         McpToolCallResult? semanticSnapshot = null;
-        var capabilities = new List<string> { "get_codesys_status", "compile_project" };
+        var capabilities = new List<string> { "get_codesys_status", "clean_compile_project" };
         if (freshBuild is not null)
         {
             if (compile.IsError != (freshBuild.Errors > 0))
             {
                 throw new BrokerEngineeringUncertainException(
                     "BUILD_TOOL_STATUS_MISMATCH",
-                    "compile_project isError does not match its same-call fresh summary.");
+                    "clean_compile_project isError does not match its same-call clean summary.");
             }
 
             if (freshBuild.Errors == 0)
@@ -665,7 +665,7 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
         {
             throw new BrokerEngineeringException(
                 "BUILD_FRESH_SUMMARY_UNAVAILABLE",
-                "compile_project did not return exactly one same-call structured summary.");
+                "clean_compile_project did not return exactly one same-call structured summary.");
         }
 
         JsonObject summary;
@@ -679,17 +679,28 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
         {
             throw new BrokerEngineeringException(
                 "BUILD_FRESH_SUMMARY_INVALID",
-                "compile_project returned malformed structured summary JSON.",
+                "clean_compile_project returned malformed structured summary JSON.",
                 exception);
         }
 
         if (RequiredJson<int>(summary, "contractVersion") != 1 ||
+            RequiredJson<string>(summary, "contractId") != FreshCompileContractId ||
             RequiredJson<string>(summary, "producer") != FreshCompileProducer ||
-            RequiredJson<string>(summary, "adapterPatchId") != FreshCompilePatchId ||
+            RequiredJson<string>(summary, "adapterPatchId") != FreshCompileContractId ||
+            RequiredJson<string>(summary, "cleanInvocation") != "application.clean" ||
             RequiredJson<string>(summary, "buildInvocation") != "application.build" ||
+            RequiredJson<int>(summary, "cleanInvocationCount") != 1 ||
+            RequiredJson<int>(summary, "buildInvocationCount") != 1 ||
+            !RequiredJson<bool>(summary, "cleanSucceeded") ||
+            !RequiredJson<bool>(summary, "buildSucceeded") ||
+            !RequiredJson<bool>(summary, "semanticRebuildVerified") ||
+            !RequiredJson<bool>(summary, "messageEvidenceComplete") ||
             !RequiredJson<bool>(summary, "fresh") ||
             !RequiredJson<bool>(summary, "verified") ||
             !RequiredJson<bool>(summary, "dirtyPreflightVerified") ||
+            !RequiredJson<bool>(summary, "dirtyPostflightVerified") ||
+            !RequiredJson<bool>(summary, "identityPreflightVerified") ||
+            !RequiredJson<bool>(summary, "identityPostflightVerified") ||
             !RequiredJson<bool>(summary, "expectedCategoryCoverageVerified") ||
             !RequiredJson<bool>(summary, "allExpectedCategoriesCleared") ||
             !RequiredJson<bool>(summary, "allExpectedCategoriesRead") ||
@@ -699,8 +710,10 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
         {
             throw new BrokerEngineeringException(
                 "BUILD_FRESH_CAPABILITY_UNVERIFIED",
-                "compile_project fresh-build contract or preflight proof is unavailable.");
+                "clean_compile_project semantic-rebuild contract or preflight proof is unavailable.");
         }
+
+        ValidateCleanCategoryResults(summary);
 
         var project = RequiredJson<string>(summary, "projectFilePath");
         var token = RequiredJson<string>(summary, "buildToken");
@@ -708,6 +721,7 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
         var warnings = RequiredJson<int>(summary, "warningCount");
         var messageCount = RequiredJson<int>(summary, "messageCount");
         var typedRecordsVerified = RequiredJson<bool>(summary, "typedRecordsVerified");
+        var warningDetailsComplete = RequiredJson<bool>(summary, "warningDetailsComplete");
         var diagnosticRowsComplete = RequiredJson<bool>(summary, "diagnosticRowsComplete");
         if (!SamePath(project, expectedProject) || !IsSafeIdentifier(token) || token.Length < 16 ||
             errors < 0 || warnings < 0 || messageCount < 0 ||
@@ -715,7 +729,7 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
         {
             throw new BrokerEngineeringException(
                 "BUILD_FRESH_SUMMARY_INVALID",
-                "compile_project fresh-build identity or counts are invalid.");
+                "clean_compile_project semantic-rebuild identity or counts are invalid.");
         }
 
         if (!DateTimeOffset.TryParse(
@@ -734,13 +748,13 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
         {
             throw new BrokerEngineeringException(
                 "BUILD_FRESH_CORRELATION_INVALID",
-                "compile_project summary timestamps do not correlate with this tool call.");
+                "clean_compile_project summary timestamps do not correlate with this tool call.");
         }
 
         var recordNodes = summary["records"] as JsonArray
             ?? throw new BrokerEngineeringException(
                 "BUILD_FRESH_RECORDS_INVALID",
-                "compile_project summary records are missing.");
+                "clean_compile_project summary records are missing.");
         var records = new List<CompileRecord>(recordNodes.Count);
         foreach (var node in recordNodes)
         {
@@ -748,42 +762,50 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
             {
                 throw new BrokerEngineeringException(
                     "BUILD_FRESH_RECORDS_INVALID",
-                    "compile_project summary contains a non-object record.");
+                    "clean_compile_project summary contains a non-object record.");
             }
 
             var severity = RequiredJson<string>(record, "severity").ToLowerInvariant();
             var recordText = RequiredJson<string>(record, "text").Trim();
-            if (severity is not ("error" or "warning") || string.IsNullOrWhiteSpace(recordText))
+            if (severity != "warning" || string.IsNullOrWhiteSpace(recordText))
             {
                 throw new BrokerEngineeringException(
                     "BUILD_FRESH_RECORDS_INVALID",
-                    "compile_project summary contains an invalid severity or empty record.");
+                    "clean_compile_project summary contains a non-warning or empty record.");
             }
 
             records.Add(new CompileRecord(severity, recordText));
         }
 
-        if ((typedRecordsVerified &&
-                (records.Count != messageCount ||
-                 records.Count(record => record.Severity == "error") != errors ||
-                 records.Count(record => record.Severity == "warning") != warnings)) ||
-            (!typedRecordsVerified && records.Count != 0))
+        var successfulEvidenceComplete = errors == 0 &&
+            typedRecordsVerified &&
+            warningDetailsComplete &&
+            records.Count == warnings &&
+            messageCount == warnings;
+        var failedBuildEvidenceValid = errors > 0 &&
+            !typedRecordsVerified &&
+            !warningDetailsComplete &&
+            records.Count == 0 &&
+            messageCount == errors + warnings;
+        if (!successfulEvidenceComplete && !failedBuildEvidenceValid)
         {
             throw new BrokerEngineeringException(
                 "BUILD_FRESH_RECORDS_INVALID",
-                "compile_project summary counts do not match its same-call records.");
+                "clean_compile_project summary counts do not match its complete same-call warning records.");
         }
 
         var diagnosticNodes = summary["diagnosticRows"] as JsonArray
             ?? throw new BrokerEngineeringException(
                 "BUILD_FRESH_RECORDS_INVALID",
-                "compile_project summary diagnostic rows are missing.");
+                "clean_compile_project summary diagnostic rows are missing.");
         if (diagnosticNodes.Count > messageCount ||
-            (diagnosticRowsComplete && diagnosticNodes.Count != messageCount))
+            (diagnosticRowsComplete &&
+             diagnosticNodes.Count != messageCount &&
+             !(successfulEvidenceComplete && diagnosticNodes.Count == 0)))
         {
             throw new BrokerEngineeringException(
                 "BUILD_FRESH_RECORDS_INVALID",
-                "compile_project diagnostic row completeness does not match its same-call message count.");
+                "clean_compile_project diagnostic row completeness does not match its same-call message count.");
         }
 
         var diagnosticRows = new List<string>(diagnosticNodes.Count);
@@ -795,10 +817,15 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
             {
                 throw new BrokerEngineeringException(
                     "BUILD_FRESH_RECORDS_INVALID",
-                    "compile_project summary contains an invalid diagnostic row.");
+                    "clean_compile_project summary contains an invalid diagnostic row.");
             }
 
             diagnosticRows.Add(row.Trim());
+        }
+
+        if (successfulEvidenceComplete && diagnosticRowsComplete && diagnosticRows.Count == 0)
+        {
+            diagnosticRows.AddRange(records.Select(record => record.Text));
         }
 
         return new FreshCompileSummary(
@@ -814,13 +841,47 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
             diagnosticRows);
     }
 
+    private static void ValidateCleanCategoryResults(JsonObject summary)
+    {
+        var categoryNodes = summary["categoryClearResults"] as JsonArray
+            ?? throw new BrokerEngineeringException(
+                "BUILD_FRESH_CAPABILITY_UNVERIFIED",
+                "clean_compile_project category-clear proof is missing.");
+        if (categoryNodes.Count != 2)
+        {
+            throw new BrokerEngineeringException(
+                "BUILD_FRESH_CAPABILITY_UNVERIFIED",
+                "clean_compile_project must prove exactly two cleared compiler categories.");
+        }
+
+        var expected = new HashSet<string>(["Build", "Additional code checks"], StringComparer.Ordinal);
+        foreach (var node in categoryNodes)
+        {
+            if (node is not JsonObject category ||
+                !expected.Remove(RequiredJson<string>(category, "category")) ||
+                !RequiredJson<bool>(category, "clearedAndVerified"))
+            {
+                throw new BrokerEngineeringException(
+                    "BUILD_FRESH_CAPABILITY_UNVERIFIED",
+                    "clean_compile_project category-clear proof is invalid or duplicated.");
+            }
+        }
+
+        if (expected.Count != 0)
+        {
+            throw new BrokerEngineeringException(
+                "BUILD_FRESH_CAPABILITY_UNVERIFIED",
+                "clean_compile_project category-clear proof is incomplete.");
+        }
+    }
+
     private static T RequiredJson<T>(JsonObject value, string name)
     {
         if (value[name] is not JsonValue node || !node.TryGetValue<T>(out var result) || result is null)
         {
             throw new BrokerEngineeringException(
                 "BUILD_FRESH_SUMMARY_INVALID",
-                $"compile_project structured summary is missing '{name}'.");
+                $"clean_compile_project structured summary is missing '{name}'.");
         }
 
         return result;

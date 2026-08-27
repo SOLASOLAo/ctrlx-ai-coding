@@ -29,9 +29,11 @@ interactive Broker for Runner P1.2.
 
 The fixed offline engineering sequence is: verify the persistent session and
 exact open project; capture project file/structure fingerprints; call
-`compile_project` once; require its same-call structured summary (including a
-correlation token, timestamps, dirty/patch preflight proof and complete 0/0
-records); verify the same session/project again; and confirm the project
+`clean_compile_project` once; require its same-call structured summary (including a
+correlation token, timestamps, exactly one Clean plus one Build, exact
+contract/producer/adapter identity, project identity and dirty-state proofs
+before and after the rebuild, and complete typed warning records); verify the
+same session/project again; and confirm the project
 fingerprints stayed stable. Cached `get_compile_messages` output is never used
 to decide fresh Build success. The controlled adapter now provides recursive
 I/O mapping and Symbol Configuration semantic facts, a final clean/stability
@@ -42,12 +44,13 @@ including PLE warning truncation, terminates as a stable `BLOCKED` reason rather
 than a fabricated success. The sequence contains no connect, download, runtime
 start/stop, variable write or FORCE operation.
 
-As of 2026-08-28 the globally installed adapter matches the controlled patch
-and a real Station010 offline action has exercised the technical channel. It
-returned 0 errors, 101 visible warnings and 456 mapping facts without changing
-the project. Because the warning stream contains PLE's `>100 warnings`
-truncation sentinel and no formal human-reviewed semantic baseline exists, the
-action correctly remains bootstrap `BLOCKED`; this is not production acceptance.
+As of 2026-08-28 the globally installed adapter matches the controlled patch.
+A disposable same-byte copy survived save/reopen with an unlimited warning
+limit and then produced the same complete 0-error/4-warning result in two
+explicit Clean Builds. The Broker/evidence path now consumes that strict Clean
+Build contract. A new formal Station010 action/candidate and independent human
+warning/semantic baseline review are still required, so production acceptance
+remains bootstrap `BLOCKED`.
 
 ## Build and offline tests
 
@@ -61,12 +64,15 @@ dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Broker.SelfTest\CtrlX.OpC
 
 The SelfTests use local fixtures, fake engineering sessions and local named
 pipes. They do not start PLE, MCP or any other engineering tool. Verified run
-on 2026-08-28: Runner 24 cases / 196 assertions, Engineering 37/37 and Broker
+on 2026-08-28: Runner 24 cases / 200 assertions, Engineering 40/40 and Broker
 13/13; Broker Release build was 0 warnings / 0 errors. The Runner stress cases use a deterministic submit/query
 handshake rather than a 250 ms scheduling assumption. Atomic Broker JSON
 renames retry only the bounded Windows access/sharing/lock violations and still
 fail closed after about 230 ms; immutable create races retain the stable
 `BROKER_IMMUTABLE_STATE_EXISTS` reason and temporary files are cleaned.
+The evidence sealer invokes only the absolute PowerShell 7 executable under
+`%ProgramFiles%\PowerShell\7\pwsh.exe`; Windows PowerShell 5.1 is not used.
+The semantic Clean Build timeout is never configured below 17 minutes.
 
 ## Explicit interactive acceptance commands
 
@@ -107,7 +113,7 @@ dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
   --engineering-root $engineeringRoot `
   --action-path 'C:\absolute\path\to\action.json' `
   --expected-sha256 '<64-hex-action-sha256>' `
-  --broker-action-timeout-ms 600000 `
+  --broker-action-timeout-ms 1800000 `
   --json
 
 dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `

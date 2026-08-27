@@ -129,7 +129,7 @@ function Invoke-Producer {
     if ($WhatIf) {
         $arguments += '-WhatIf'
     }
-    $output = & powershell.exe @arguments 2>&1
+    $output = & pwsh @arguments 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Producer failed unexpectedly. $($output -join [Environment]::NewLine)"
     }
@@ -150,7 +150,7 @@ function Assert-ProducerRejected {
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $output = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Producer `
+        $output = & pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Producer `
             -ActionPath $ActionPath `
             -ExpectedActionSha256 $ActionSha `
             -ObservationPath $ObservationPath `
@@ -170,7 +170,7 @@ function Assert-ProducerRejected {
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $producer = Join-Path $repositoryRoot 'scripts\cpstudio\New-PostExportRunnerEvidence.ps1'
 Assert-True -Condition ([System.IO.File]::Exists($producer)) -Message 'Runner evidence producer is missing.'
-foreach ($name in @('Assert-JsonArrayProperty', 'Test-ClearlyRedactedSensitiveValue', 'Test-StringContainsSecretLikeValue', 'Assert-NoSensitiveFields')) {
+foreach ($name in @('ConvertFrom-JsonPreservingStrings', 'Assert-JsonArrayProperty', 'Test-ClearlyRedactedSensitiveValue', 'Test-StringContainsSecretLikeValue', 'Assert-NoSensitiveFields')) {
     Import-FunctionFromScript -Path $producer -Name $name
 }
 foreach ($json in @('{"outer":{"probe":[]}}', '{"outer":{"probe":[1]}}', '{"outer":{"probe":[1,2]}}')) {
@@ -300,8 +300,8 @@ try {
     $buildStarted = $createdAt.AddSeconds(10)
     $buildCompleted = $buildStarted.AddSeconds(2)
     $completedAt = $buildCompleted.AddSeconds(1)
-    # Keep this PS5.1 fixture source ASCII-only; construct Unicode/astral text
-    # explicitly so Windows PowerShell does not depend on a source-file BOM.
+    # Construct Unicode/astral text explicitly so the canonical vector is
+    # independent of source-file BOM handling.
     $unicodeWarningSource = -join ([char[]]@(0x7F16, 0x8BD1, 0x5668))
     $unicodeWarningObject = 'Application/' + (-join ([char[]]@(0x5DE5, 0x4F4D, 0xD83D, 0xDE00)))
     $unicodeWarningPosition = (-join ([char[]]@(0x884C))) + ' 22'
@@ -314,7 +314,7 @@ try {
         actionRequestSha256 = $actionSha
         status              = 'succeeded'
         completedAtUtc      = $completedAt.ToString('o')
-        capabilitiesInvoked = @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
+        capabilitiesInvoked = @('get_codesys_status', 'clean_compile_project', 'get_ctrlx_semantic_snapshot')
         session             = [ordered]@{
             state             = 'ready'
             mode              = 'persistent'
@@ -353,7 +353,7 @@ try {
                 verified        = $true
                 errors          = 0
                 warnings        = 5
-                summarySource   = 'codesys-persistent.compile_project'
+                summarySource   = 'codesys-persistent.clean_compile_project'
                 warningRecords  = @(
                     [ordered]@{ code = 'C0543'; objectPath = 'Fixture'; position = 'Line 10'; message = 'reserved keyword' },
                     [ordered]@{ code = 'C0543'; objectPath = 'Fixture'; position = 'Line 10'; message = 'reserved   keyword' },
@@ -544,7 +544,7 @@ try {
         warningRecordsSafeForReview = $false
         warningRecords              = @()
         diagnosticRows              = @('C0543: fixture warning', 'Generate code complete')
-        summarySource               = 'codesys-persistent.compile_project'
+        summarySource               = 'codesys-persistent.clean_compile_project'
     }
     $blockedAfterBuildObservationPath = Join-Path $engineeringRoot 'data\observations\blocked-after-build.json'
     $blockedAfterBuildEvidencePath = Join-Path $outputRoot 'blocked-after-build.json'
@@ -969,7 +969,7 @@ try {
     $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $observationPath -OutputPath (Join-Path $outputRoot 'manifest-drift.json') -Description 'Manifest drift'
 
     Assert-True -Condition (@(Get-ChildItem -LiteralPath $outputRoot -Filter '*.tmp' -Force -ErrorAction SilentlyContinue).Count -eq 0) -Message 'Atomic evidence writer left temporary files.'
-    Write-Output 'Post-export runner evidence self-test OK: PS5.1, immutable action/preconditions, warning multiset, blocked path, offline gates, WhatIf/idempotence and read-only Station.'
+    Write-Output 'Post-export runner evidence self-test OK: PowerShell 7, immutable action/preconditions, warning multiset, blocked path, offline gates, WhatIf/idempotence and read-only Station.'
 }
 finally {
     if ([System.IO.Directory]::Exists($testRoot)) {

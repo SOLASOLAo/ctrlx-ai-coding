@@ -91,6 +91,18 @@ function Test-JsonInt32 {
         ([long]$Value -le [int]::MaxValue)
 }
 
+function ConvertFrom-JsonPreservingStrings {
+    param([Parameter(Mandatory = $true)][string]$Json)
+
+    $arguments = @{ InputObject = $Json }
+    $command = Get-Command ConvertFrom-Json -ErrorAction Stop
+    if (-not $command.Parameters.ContainsKey('DateKind')) {
+        throw 'PowerShell 7.5 or newer with ConvertFrom-Json -DateKind is required.'
+    }
+    $arguments['DateKind'] = 'String'
+    return ConvertFrom-Json @arguments
+}
+
 function Read-JsonDocument {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -108,7 +120,7 @@ function Read-JsonDocument {
         if (($text.Length -gt 0) -and ($text[0] -eq [char]0xFEFF)) {
             $text = $text.Substring(1)
         }
-        $payload = $text | ConvertFrom-Json
+        $payload = ConvertFrom-JsonPreservingStrings -Json $text
     }
     catch {
         throw "$Description is not valid UTF-8 JSON: $resolvedPath. $($_.Exception.Message)"
@@ -129,39 +141,21 @@ function Assert-JsonArrayProperty {
     )
 
     try {
-        $desktopEdition = (-not $PSVersionTable.ContainsKey('PSEdition')) -or ($PSVersionTable.PSEdition -eq 'Desktop')
-        if ($desktopEdition) {
-            Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
-            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-            $serializer.MaxJsonLength = [int]::MaxValue
-            $serializer.RecursionLimit = 256
-            $rawRoot = $serializer.DeserializeObject($RawJson)
-        }
-        else {
-            $rawRoot = $RawJson | ConvertFrom-Json
-        }
+        $rawRoot = ConvertFrom-JsonPreservingStrings -Json $RawJson
     }
     catch {
         throw "$Context JSON shape could not be validated. $($_.Exception.Message)"
     }
     $rawValue = $rawRoot
     foreach ($propertyName in $PropertyPath) {
-        if ($desktopEdition) {
-            if (($rawValue -isnot [System.Collections.IDictionary]) -or (-not ($rawValue.Keys -contains $propertyName))) {
-                throw "$Context is missing $($PropertyPath -join '.')."
-            }
-            $rawValue = $rawValue[$propertyName]
+        if ($null -eq $rawValue) {
+            throw "$Context is missing $($PropertyPath -join '.')."
         }
-        else {
-            if ($null -eq $rawValue) {
-                throw "$Context is missing $($PropertyPath -join '.')."
-            }
-            $property = $rawValue.PSObject.Properties[$propertyName]
-            if ($null -eq $property) {
-                throw "$Context is missing $($PropertyPath -join '.')."
-            }
-            $rawValue = $property.Value
+        $property = $rawValue.PSObject.Properties[$propertyName]
+        if ($null -eq $property) {
+            throw "$Context is missing $($PropertyPath -join '.')."
         }
+        $rawValue = $property.Value
     }
     $displayPath = $PropertyPath -join '.'
     if ($null -eq $rawValue) {
@@ -670,7 +664,7 @@ function ConvertTo-BlockedBuildEvidence {
     if ($warningRecordsSafeForReview -and (-not $typedRecordsVerified)) {
         throw 'Blocked fresh Build cannot mark untyped warning records safe for review.'
     }
-    if ((Get-RequiredString -Object $Build -Name 'summarySource' -Context 'Blocked fresh Build') -ne 'codesys-persistent.compile_project') {
+    if ((Get-RequiredString -Object $Build -Name 'summarySource' -Context 'Blocked fresh Build') -ne 'codesys-persistent.clean_compile_project') {
         throw 'Blocked fresh Build summarySource is unsupported.'
     }
     $buildId = Get-RequiredString -Object $Build -Name 'buildId' -Context 'Blocked fresh Build'
@@ -746,7 +740,7 @@ function ConvertTo-BlockedBuildEvidence {
         warningRecordsSafeForReview = $warningRecordsSafeForReview
         warningRecords              = @($validatedWarningRecords)
         diagnosticRows              = @($validatedDiagnosticRows)
-        summarySource               = 'codesys-persistent.compile_project'
+        summarySource               = 'codesys-persistent.clean_compile_project'
     }
 }
 
@@ -937,7 +931,7 @@ $capabilities = @($capabilityProperty.Value)
 $prohibitedCapability = '(?i)(connect[_-]?to[_-]?device|download[_-]?to[_-]?device|start[_-]?stop|write[_-]?variable|read[_-]?variable|monitor[_-]?variables|force|set[_-]?simulation|online|launch[_-]?(codesys|ple|mcp)|watcher[_-]?ipc)'
 $approvedOfflineCapabilities = @(
     'get_codesys_status',
-    'compile_project',
+    'clean_compile_project',
     'get_ctrlx_semantic_snapshot'
 )
 foreach ($capability in $capabilities) {
@@ -953,7 +947,7 @@ if ($status -eq 'succeeded') {
     if ($identity.actionKind -eq 'apply_change_set_and_build') {
         throw 'apply_change_set_and_build is not supported by the typed Broker and cannot produce successful evidence.'
     }
-    foreach ($requiredCapability in @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')) {
+    foreach ($requiredCapability in @('get_codesys_status', 'clean_compile_project', 'get_ctrlx_semantic_snapshot')) {
         if (@($capabilities | Where-Object { [string]$_ -eq $requiredCapability }).Count -ne 1) {
             throw "Successful runner observation must report capability '$requiredCapability' exactly once."
         }
@@ -1155,7 +1149,7 @@ if ($null -ne $blockedBuildObservation) {
         (-not $hasUnverifiedSemanticProof)) {
         throw 'Only a semantic-acceptance BLOCKED observation after an acquired action gate may retain fresh Build evidence.'
     }
-    foreach ($requiredCapability in @('get_codesys_status', 'compile_project')) {
+    foreach ($requiredCapability in @('get_codesys_status', 'clean_compile_project')) {
         if (@($capabilities | Where-Object { [string]$_ -eq $requiredCapability }).Count -ne 1) {
             throw "Blocked fresh Build observation must report capability '$requiredCapability' exactly once."
         }
@@ -1235,7 +1229,7 @@ if ($status -eq 'succeeded') {
     $buildId = Get-RequiredString -Object $build -Name 'buildId' -Context 'Observed Build'
     $summarySource = Get-RequiredString -Object $build -Name 'summarySource' -Context 'Observed Build'
     if (($buildId -notmatch '^[A-Za-z0-9_.:-]{1,128}$') -or
-        ($summarySource -ne 'codesys-persistent.compile_project')) {
+        ($summarySource -ne 'codesys-persistent.clean_compile_project')) {
         throw 'Observed Build has an unsafe buildId or unsupported summarySource.'
     }
     $warningRecords = @(Get-PropertyValue -Object $build -Name 'warningRecords' -DefaultValue @())

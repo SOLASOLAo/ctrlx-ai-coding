@@ -81,7 +81,7 @@ internal static class BrokerProgram
                 "--workspace", Path.GetFullPath(stationRoot),
                 "--mode", "persistent",
                 "--no-auto-launch",
-                "--timeout", "600000"
+                "--timeout", "1020000"
             ]
         };
         var options = new BrokerHostOptions

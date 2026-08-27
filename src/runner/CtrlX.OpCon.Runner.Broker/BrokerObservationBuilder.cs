@@ -72,7 +72,7 @@ internal static class BrokerObservationBuilder
                     ["warningRecordsSafeForReview"] = warningRecordsSafeForReview.Value,
                     ["warningRecords"] = warningRecords.DeepClone(),
                     ["diagnosticRows"] = diagnosticRows.DeepClone(),
-                    ["summarySource"] = "codesys-persistent.compile_project"
+                    ["summarySource"] = "codesys-persistent.clean_compile_project"
                 };
             }
         }
@@ -162,7 +162,7 @@ internal static class BrokerObservationBuilder
                     ["diagnosticRowsComplete"] = build.DiagnosticRowsComplete,
                     ["warningRecordsSafeForReview"] = semantic.WarningRecordsSafeForReview,
                     ["warningRecords"] = semantic.WarningRecords.DeepClone(),
-                    ["summarySource"] = "codesys-persistent.compile_project"
+                    ["summarySource"] = "codesys-persistent.clean_compile_project"
                 },
                 ["acceptance"] = new JsonObject
                 {

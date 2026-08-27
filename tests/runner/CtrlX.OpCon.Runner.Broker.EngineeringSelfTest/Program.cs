@@ -35,8 +35,8 @@ internal static class Program
             ("oversized warning baseline is rejected before JSON parsing", OversizedWarningBaselineBlocksAsync),
             ("oversized semantic scope is rejected before JSON parsing", OversizedSemanticScopeBlocksAsync),
             ("oversized semantic baseline is rejected before JSON parsing", OversizedSemanticBaselineBlocksAsync),
-            ("untyped warning rows remain reviewable but cannot be accepted", UntypedWarningRowsBlockAsync),
-            ("incomplete diagnostic rows remain blocked", IncompleteDiagnosticRowsBlockAsync),
+            ("untyped warning evidence is rejected by the clean-build contract", UntypedWarningRowsBlockAsync),
+            ("incomplete diagnostic evidence is rejected by the clean-build contract", IncompleteDiagnosticRowsBlockAsync),
             ("blocked warning review redacts sensitive values", SensitiveWarningReviewIsRedactedAsync),
             ("untyped diagnostic rows redact credential syntax", SensitiveUntypedDiagnosticRowsAreRedactedAsync),
             ("blocked warning review bounds oversized rows", OversizedWarningReviewIsBoundedAsync),
@@ -52,7 +52,10 @@ internal static class Program
             ("ownership manifest drift cannot be accepted", OwnershipDriftBlocksAsync),
             ("PLC bytes outside exact Git HEAD cannot be accepted", RecoverableBaselineDriftBlocksAsync),
             ("fresh 0/0 Build without adapter evidence stays blocked", FreshZeroBuildStaysBlockedAsync),
+            ("clean Build errors produce a failed terminal result", BuildErrorsProduceFailedOutcomeAsync),
+            ("clean Build isError must match its error count", BuildToolStatusMustMatchErrorCountAsync),
             ("legacy fresh contract is rejected even when it reports 0/0", LegacyFreshContractStaysBlockedAsync),
+            ("tampered clean-build contract proofs fail closed", TamperedCleanContractStaysBlockedAsync),
             ("missing fresh summary fails closed without cached messages", MissingFreshSummaryStaysBlockedAsync)
         };
 
@@ -341,12 +344,15 @@ internal static class Program
             build["projectSha256"]?.GetValue<string>().Equals(
                 RunnerHash.Sha256File(fixture.ProjectPath),
                 StringComparison.OrdinalIgnoreCase) == true &&
-            build["summarySource"]?.GetValue<string>() == "codesys-persistent.compile_project" &&
+            build["summarySource"]?.GetValue<string>() == "codesys-persistent.clean_compile_project" &&
             DateTimeOffset.TryParse(build["startedAtUtc"]?.GetValue<string>(), out _) &&
             DateTimeOffset.TryParse(build["completedAtUtc"]?.GetValue<string>(), out _) &&
             build["warningRecords"] is JsonArray records &&
             records.Count == 1 &&
-            records[0]?.GetValue<string>() == "C0543: fixture warning",
+            records[0]?.GetValue<string>() == "C0543: fixture warning" &&
+            build["diagnosticRows"] is JsonArray diagnosticRows &&
+            diagnosticRows.Count == 1 &&
+            diagnosticRows[0]?.GetValue<string>() == "C0543: fixture warning",
             "Blocked bootstrap must retain bounded raw warning rows and same-call Build metadata for human review.");
     }
 
@@ -532,17 +538,11 @@ internal static class Program
             runtime,
             CancellationToken.None).ConfigureAwait(false);
 
-        Require(outcome.TerminalState == "BLOCKED" && outcome.ReasonCode == "WARNING_RECORDS_UNTYPED" &&
-            rpc.Count("get_ctrlx_semantic_snapshot") == 1,
-            "Untyped warning rows must allow actual semantic collection but can never produce acceptance.");
-        var build = outcome.Observation["result"]?["build"] as JsonObject
-            ?? throw new InvalidOperationException("Untyped Build review evidence is missing.");
-        Require(build["typedRecordsVerified"]?.GetValue<bool>() == false &&
-            build["diagnosticRowsComplete"]?.GetValue<bool>() == true &&
-            build["warningRecords"] is JsonArray warningRecords && warningRecords.Count == 0 &&
-            build["diagnosticRows"] is JsonArray diagnosticRows &&
-            diagnosticRows.Count == 1 && diagnosticRows[0]?.GetValue<string>() == diagnostic,
-            "Untyped Build evidence must retain bounded diagnostic rows without inventing warning signatures.");
+        Require(outcome.TerminalState == "BLOCKED" &&
+            outcome.ReasonCode == "BLOCKED_CAPABILITY_NOT_IMPLEMENTED" &&
+            rpc.Count("get_ctrlx_semantic_snapshot") == 0 &&
+            outcome.Observation["result"]?["build"] is null,
+            "Untyped warning rows must fail the strict clean-build capability contract before semantic acceptance.");
     }
 
     private static async Task IncompleteDiagnosticRowsBlockAsync()
@@ -561,9 +561,11 @@ internal static class Program
             runtime,
             CancellationToken.None).ConfigureAwait(false);
 
-        Require(outcome.TerminalState == "BLOCKED" && outcome.ReasonCode == "WARNING_RECORDS_INCOMPLETE" &&
-            outcome.Observation["result"]?["semanticProofs"]?["warnings"]?["verified"]?.GetValue<bool>() == false,
-            "Incomplete diagnostic rows must remain blocked and cannot produce reviewed warning proof.");
+        Require(outcome.TerminalState == "BLOCKED" &&
+            outcome.ReasonCode == "BLOCKED_CAPABILITY_NOT_IMPLEMENTED" &&
+            rpc.Count("get_ctrlx_semantic_snapshot") == 0 &&
+            outcome.Observation["result"]?["build"] is null,
+            "Incomplete diagnostic evidence must fail the strict clean-build capability contract.");
     }
 
     private static async Task OversizedWarningReviewIsBoundedAsync()
@@ -847,6 +849,67 @@ internal static class Program
         Require(result["acceptance"] is null, "verify_after_export_2 must not fabricate Symbol verification.");
     }
 
+    private static async Task BuildErrorsProduceFailedOutcomeAsync()
+    {
+        const string diagnostic = "C0001: fixture compile error";
+        using var fixture = new Fixture();
+        var rpc = ExecutionRpc(fixture, "clean-build-errors");
+        rpc.CompileResponseFactory = () => FailedFreshCompile(fixture.ProjectPath, diagnostic);
+        rpc.CompileIsError = true;
+        await using var session = new BrokerEngineeringSession(rpc, fixture.Options);
+        var runtime = await session.StartAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var outcome = await session.ExecuteAsync(
+            fixture.CreateAction("inspect_and_build"),
+            runtime,
+            CancellationToken.None).ConfigureAwait(false);
+
+        var result = outcome.Observation["result"] as JsonObject
+            ?? throw new InvalidOperationException("Failed Build result missing.");
+        Require(outcome.TerminalState == "FAILED" &&
+            outcome.ReasonCode == "BUILD_ERRORS_PRESENT" &&
+            result["failureStage"]?.GetValue<string>() == "fresh-build" &&
+            result["reasonCode"]?.GetValue<string>() == "BUILD_ERRORS_PRESENT" &&
+            result["diagnostics"] is JsonArray diagnostics &&
+            diagnostics.Count == 1 &&
+            diagnostics[0]?.GetValue<string>() == diagnostic &&
+            rpc.Count("clean_compile_project") == 1 &&
+            rpc.Count("get_ctrlx_semantic_snapshot") == 0,
+            "A contract-valid clean Build with errors must fail deterministically without semantic acceptance.");
+    }
+
+    private static async Task BuildToolStatusMustMatchErrorCountAsync()
+    {
+        var cases = new (string Name, bool IsError, bool HasBuildErrors)[]
+        {
+            ("error-status-with-zero-errors", true, false),
+            ("success-status-with-build-errors", false, true)
+        };
+
+        foreach (var testCase in cases)
+        {
+            using var fixture = new Fixture();
+            var rpc = ExecutionRpc(fixture, $"clean-status-{testCase.Name}");
+            rpc.CompileResponseFactory = () => testCase.HasBuildErrors
+                ? FailedFreshCompile(fixture.ProjectPath, "C0001: fixture compile error")
+                : FreshCompile(fixture.ProjectPath);
+            rpc.CompileIsError = testCase.IsError;
+            await using var session = new BrokerEngineeringSession(rpc, fixture.Options);
+            var runtime = await session.StartAsync(CancellationToken.None).ConfigureAwait(false);
+
+            var failure = await CaptureAsync(() => session.ExecuteAsync(
+                fixture.CreateAction("inspect_and_build"),
+                runtime,
+                CancellationToken.None)).ConfigureAwait(false);
+
+            Require(failure is BrokerEngineeringUncertainException &&
+                failure.ReasonCode == "BUILD_TOOL_STATUS_MISMATCH" &&
+                rpc.Count("clean_compile_project") == 1 &&
+                rpc.Count("get_ctrlx_semantic_snapshot") == 0,
+                $"Clean Build status/count mismatch '{testCase.Name}' did not fail closed as uncertain.");
+        }
+    }
+
     private static async Task LegacyFreshContractStaysBlockedAsync()
     {
         using var fixture = new Fixture();
@@ -856,7 +919,7 @@ internal static class Program
             Status("ready", "persistent", "47501", "fresh-legacy", "broker"),
             Status("ready", "persistent", "47501", "fresh-legacy", "broker"));
         rpc.CompileResponseFactory = () => FreshCompile(fixture.ProjectPath)
-            .Replace("ctrlx-fresh-compile-v2", "ctrlx-fresh-compile-v1", StringComparison.Ordinal);
+            .Replace("ctrlx-clean-compile-v1", "ctrlx-clean-compile-v0", StringComparison.Ordinal);
         await using var session = new BrokerEngineeringSession(rpc, fixture.Options);
         var runtime = await session.StartAsync(CancellationToken.None).ConfigureAwait(false);
 
@@ -867,9 +930,71 @@ internal static class Program
 
         Require(outcome.TerminalState == "BLOCKED" && outcome.ReasonCode == "BLOCKED_CAPABILITY_NOT_IMPLEMENTED",
             "Legacy fresh evidence must fail closed even when its counts are 0/0.");
-        Require(rpc.Count("compile_project") == 1, "The requested Build must run exactly once.");
+        Require(rpc.Count("clean_compile_project") == 1, "The requested Clean Build must run exactly once.");
         Require(rpc.Count("get_compile_messages") == 0, "Cached messages must not rescue a legacy summary.");
     }
+
+    private static async Task TamperedCleanContractStaysBlockedAsync()
+    {
+        var cases = new (string Name, Func<string, string> Mutate)[]
+        {
+            ("producer", text => text.Replace(
+                "codesys-persistent.clean_compile_project",
+                "untrusted.clean_compile_project",
+                StringComparison.Ordinal)),
+            ("adapter", text => text.Replace(
+                "\"adapterPatchId\":\"ctrlx-clean-compile-v1\"",
+                "\"adapterPatchId\":\"ctrlx-clean-compile-v0\"",
+                StringComparison.Ordinal)),
+            ("clean-invocation", text => text.Replace(
+                "\"cleanInvocation\":\"application.clean\"",
+                "\"cleanInvocation\":\"application.build\"",
+                StringComparison.Ordinal)),
+            ("clean-count", text => text.Replace(
+                "\"cleanInvocationCount\":1",
+                "\"cleanInvocationCount\":0",
+                StringComparison.Ordinal)),
+            ("build-count", text => text.Replace(
+                "\"buildInvocationCount\":1",
+                "\"buildInvocationCount\":2",
+                StringComparison.Ordinal)),
+            ("semantic-rebuild", text => ReplaceBoolean(text, "semanticRebuildVerified", false)),
+            ("message-evidence", text => ReplaceBoolean(text, "messageEvidenceComplete", false)),
+            ("warning-details", text => ReplaceBoolean(text, "warningDetailsComplete", false)),
+            ("identity-pre", text => ReplaceBoolean(text, "identityPreflightVerified", false)),
+            ("identity-post", text => ReplaceBoolean(text, "identityPostflightVerified", false)),
+            ("dirty-pre", text => ReplaceBoolean(text, "dirtyPreflightVerified", false)),
+            ("dirty-post", text => ReplaceBoolean(text, "dirtyPostflightVerified", false)),
+            ("records-complete", text => ReplaceBoolean(text, "recordsComplete", false)),
+            ("duplicate-marker", text => "### CLEAN_COMPILE_SUMMARY_START ###\n" + text)
+        };
+
+        foreach (var testCase in cases)
+        {
+            using var fixture = new Fixture();
+            var rpc = ExecutionRpc(fixture, $"clean-contract-{testCase.Name}");
+            rpc.CompileResponseFactory = () => testCase.Mutate(FreshCompile(fixture.ProjectPath));
+            rpc.SemanticResponseFactory = () => fixture.CreateSemanticSnapshot();
+            await using var session = new BrokerEngineeringSession(rpc, fixture.Options);
+            var runtime = await session.StartAsync(CancellationToken.None).ConfigureAwait(false);
+
+            var outcome = await session.ExecuteAsync(
+                fixture.CreateAction("inspect_and_build"),
+                runtime,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Require(outcome.TerminalState == "BLOCKED" &&
+                outcome.ReasonCode == "BLOCKED_CAPABILITY_NOT_IMPLEMENTED" &&
+                rpc.Count("clean_compile_project") == 1 &&
+                rpc.Count("get_ctrlx_semantic_snapshot") == 0,
+                $"Tampered clean-build proof '{testCase.Name}' did not fail closed.");
+        }
+    }
+
+    private static string ReplaceBoolean(string text, string name, bool value) => text.Replace(
+        $"\"{name}\":{(!value).ToString().ToLowerInvariant()}",
+        $"\"{name}\":{value.ToString().ToLowerInvariant()}",
+        StringComparison.Ordinal);
 
     private static (string Name, string Text, string Secret)[] SensitiveDiagnosticCases() =>
     [
@@ -891,9 +1016,18 @@ internal static class Program
         var summary = new JsonObject
         {
             ["contractVersion"] = 1,
-            ["producer"] = "codesys-persistent.compile_project",
-            ["adapterPatchId"] = "ctrlx-fresh-compile-v2",
+            ["contractId"] = "ctrlx-clean-compile-v1",
+            ["producer"] = "codesys-persistent.clean_compile_project",
+            ["adapterPatchId"] = "ctrlx-clean-compile-v1",
+            ["cleanInvocation"] = "application.clean",
             ["buildInvocation"] = "application.build",
+            ["cleanInvocationCount"] = 1,
+            ["buildInvocationCount"] = 1,
+            ["cleanSucceeded"] = true,
+            ["buildSucceeded"] = true,
+            ["semanticRebuildVerified"] = true,
+            ["messageEvidenceComplete"] = true,
+            ["warningDetailsComplete"] = true,
             ["fresh"] = true,
             ["verified"] = true,
             ["projectFilePath"] = projectPath,
@@ -901,7 +1035,11 @@ internal static class Program
             ["startedAtUtc"] = started.ToString("O"),
             ["completedAtUtc"] = completed.ToString("O"),
             ["dirtyPreflightVerified"] = true,
+            ["dirtyPostflightVerified"] = true,
+            ["identityPreflightVerified"] = true,
+            ["identityPostflightVerified"] = true,
             ["expectedCategoryCoverageVerified"] = true,
+            ["categoryClearResults"] = CleanCategoryResults(),
             ["allExpectedCategoriesCleared"] = true,
             ["allExpectedCategoriesRead"] = true,
             ["explicitBuildSummaryVerified"] = true,
@@ -912,7 +1050,7 @@ internal static class Program
             ["recordsComplete"] = true,
             ["typedRecordsVerified"] = true,
             ["diagnosticRowsComplete"] = true,
-            ["diagnosticRows"] = new JsonArray(warnings.Select(value => (JsonNode)value).ToArray()),
+            ["diagnosticRows"] = new JsonArray(),
             ["records"] = new JsonArray(warnings.Select(value =>
                 (JsonNode)new JsonObject
                 {
@@ -920,7 +1058,54 @@ internal static class Program
                     ["text"] = value
                 }).ToArray())
         };
-        return $"### COMPILE_SUMMARY_START ###\n{summary.ToJsonString()}\n### COMPILE_SUMMARY_END ###";
+        return $"### CLEAN_COMPILE_SUMMARY_START ###\n{summary.ToJsonString()}\n### CLEAN_COMPILE_SUMMARY_END ###";
+    }
+
+    private static string FailedFreshCompile(string projectPath, params string[] diagnosticRows)
+    {
+        var started = DateTimeOffset.UtcNow;
+        var completed = started.AddMilliseconds(1);
+        var summary = new JsonObject
+        {
+            ["contractVersion"] = 1,
+            ["contractId"] = "ctrlx-clean-compile-v1",
+            ["producer"] = "codesys-persistent.clean_compile_project",
+            ["adapterPatchId"] = "ctrlx-clean-compile-v1",
+            ["cleanInvocation"] = "application.clean",
+            ["buildInvocation"] = "application.build",
+            ["cleanInvocationCount"] = 1,
+            ["buildInvocationCount"] = 1,
+            ["cleanSucceeded"] = true,
+            ["buildSucceeded"] = true,
+            ["semanticRebuildVerified"] = true,
+            ["messageEvidenceComplete"] = true,
+            ["warningDetailsComplete"] = false,
+            ["fresh"] = true,
+            ["verified"] = true,
+            ["projectFilePath"] = projectPath,
+            ["buildToken"] = Guid.NewGuid().ToString("N"),
+            ["startedAtUtc"] = started.ToString("O"),
+            ["completedAtUtc"] = completed.ToString("O"),
+            ["dirtyPreflightVerified"] = true,
+            ["dirtyPostflightVerified"] = true,
+            ["identityPreflightVerified"] = true,
+            ["identityPostflightVerified"] = true,
+            ["expectedCategoryCoverageVerified"] = true,
+            ["categoryClearResults"] = CleanCategoryResults(),
+            ["allExpectedCategoriesCleared"] = true,
+            ["allExpectedCategoriesRead"] = true,
+            ["explicitBuildSummaryVerified"] = true,
+            ["patchPreflightVerified"] = true,
+            ["errorCount"] = diagnosticRows.Length,
+            ["warningCount"] = 0,
+            ["messageCount"] = diagnosticRows.Length,
+            ["recordsComplete"] = true,
+            ["typedRecordsVerified"] = false,
+            ["diagnosticRowsComplete"] = true,
+            ["diagnosticRows"] = new JsonArray(diagnosticRows.Select(value => (JsonNode)value).ToArray()),
+            ["records"] = new JsonArray()
+        };
+        return $"### CLEAN_COMPILE_SUMMARY_START ###\n{summary.ToJsonString()}\n### CLEAN_COMPILE_SUMMARY_END ###";
     }
 
     private static string FreshCompileUntyped(
@@ -933,9 +1118,18 @@ internal static class Program
         var summary = new JsonObject
         {
             ["contractVersion"] = 1,
-            ["producer"] = "codesys-persistent.compile_project",
-            ["adapterPatchId"] = "ctrlx-fresh-compile-v2",
+            ["contractId"] = "ctrlx-clean-compile-v1",
+            ["producer"] = "codesys-persistent.clean_compile_project",
+            ["adapterPatchId"] = "ctrlx-clean-compile-v1",
+            ["cleanInvocation"] = "application.clean",
             ["buildInvocation"] = "application.build",
+            ["cleanInvocationCount"] = 1,
+            ["buildInvocationCount"] = 1,
+            ["cleanSucceeded"] = true,
+            ["buildSucceeded"] = true,
+            ["semanticRebuildVerified"] = true,
+            ["messageEvidenceComplete"] = true,
+            ["warningDetailsComplete"] = false,
             ["fresh"] = true,
             ["verified"] = true,
             ["projectFilePath"] = projectPath,
@@ -943,7 +1137,11 @@ internal static class Program
             ["startedAtUtc"] = started.ToString("O"),
             ["completedAtUtc"] = completed.ToString("O"),
             ["dirtyPreflightVerified"] = true,
+            ["dirtyPostflightVerified"] = true,
+            ["identityPreflightVerified"] = true,
+            ["identityPostflightVerified"] = true,
             ["expectedCategoryCoverageVerified"] = true,
+            ["categoryClearResults"] = CleanCategoryResults(),
             ["allExpectedCategoriesCleared"] = true,
             ["allExpectedCategoriesRead"] = true,
             ["explicitBuildSummaryVerified"] = true,
@@ -957,8 +1155,22 @@ internal static class Program
             ["diagnosticRows"] = new JsonArray(diagnosticRows.Select(value => (JsonNode)value).ToArray()),
             ["records"] = new JsonArray()
         };
-        return $"### COMPILE_SUMMARY_START ###\n{summary.ToJsonString()}\n### COMPILE_SUMMARY_END ###";
+        return $"### CLEAN_COMPILE_SUMMARY_START ###\n{summary.ToJsonString()}\n### CLEAN_COMPILE_SUMMARY_END ###";
     }
+
+    private static JsonArray CleanCategoryResults() =>
+    [
+        new JsonObject
+        {
+            ["category"] = "Build",
+            ["clearedAndVerified"] = true
+        },
+        new JsonObject
+        {
+            ["category"] = "Additional code checks",
+            ["clearedAndVerified"] = true
+        }
+    ];
 
     private static string Status(string state, string mode, string pid, string session, string? ownership) =>
         string.Join(
@@ -1096,7 +1308,7 @@ internal sealed class Fixture : IDisposable
             },
             SessionStartupTimeout = TimeSpan.FromSeconds(10),
             StatusTimeout = TimeSpan.FromSeconds(1),
-            BuildTimeout = TimeSpan.FromMinutes(1)
+            BuildTimeout = TimeSpan.FromMinutes(17)
         };
     }
 
@@ -1627,6 +1839,8 @@ internal sealed class FakeRpc : IMcpRpcClient
 
     public Func<string>? CompileResponseFactory { get; set; }
 
+    public bool CompileIsError { get; set; }
+
     public Func<string>? SemanticResponseFactory { get; set; }
 
     public int StopCalls { get; private set; }
@@ -1651,14 +1865,15 @@ internal sealed class FakeRpc : IMcpRpcClient
         CancellationToken cancellationToken = default)
     {
         calls.Add(toolName);
-        var isError = (toolName == "shutdown_codesys" && ShutdownFails) ||
+        var isError = (toolName == "clean_compile_project" && CompileIsError) ||
+            (toolName == "shutdown_codesys" && ShutdownFails) ||
             (toolName == "get_ctrlx_semantic_snapshot" && SemanticResponseFactory is null);
         var text = toolName switch
         {
             "get_codesys_status" when statuses.Count > 0 => statuses.Dequeue(),
             "get_codesys_status" => throw new InvalidOperationException("No fake status response remains."),
             "open_project" => OpenProject(arguments),
-            "compile_project" => CompileResponseFactory?.Invoke()
+            "clean_compile_project" => CompileResponseFactory?.Invoke()
                 ?? throw new InvalidOperationException("No fake compile response configured."),
             "get_ctrlx_semantic_snapshot" => SemanticResponseFactory?.Invoke()
                 ?? JsonSerializer.Serialize(new

@@ -8,6 +8,11 @@ $launcher = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\script
 $failures = New-Object System.Collections.Generic.List[string]
 $assertions = 0
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$powerShell7 = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+
+if (-not [System.IO.File]::Exists($powerShell7)) {
+    throw "PowerShell 7 is required for this test: $powerShell7"
+}
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -105,7 +110,7 @@ function Invoke-TestCase {
     }
     $reportsBefore = @(Get-ChildItem -LiteralPath $reportRoot -File -Filter '*.json' -ErrorAction SilentlyContinue |
         ForEach-Object { $_.FullName })
-    $output = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
+    $output = @(& $powerShell7 -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
         -EngineeringRoot $script:sidecar `
         -ReportRoot $reportRoot `
         -FixtureResultPath $FixturePath `
@@ -290,7 +295,7 @@ tools:
     $savedErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $rejectedOutput = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
+        $rejectedOutput = @(& $powerShell7 -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
             -EngineeringRoot $sidecar `
             -ReportRoot $rejectedReportRoot `
             -FixtureResultPath $zeroFixture `
@@ -307,7 +312,7 @@ tools:
     $savedErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $outsideOutput = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
+        $outsideOutput = @(& $powerShell7 -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
             -EngineeringRoot $sidecar `
             -ReportRoot $outsideReportRoot `
             -FixtureResultPath $zeroFixture `
@@ -391,7 +396,7 @@ tools:
     Assert-True (-not $bmkReport.build.attempted) 'BMK-before-Link-I/O case attempted a Build.'
 
     $whatIfRoot = Join-Path $testRoot 'whatif-reports'
-    $whatIfOutput = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
+    $whatIfOutput = @(& $powerShell7 -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
         -EngineeringRoot $sidecar `
         -ReportRoot $whatIfRoot `
         -FixtureResultPath $zeroFixture `
@@ -411,7 +416,7 @@ tools:
     )
     $lockConflictRoot = Join-Path $testRoot 'reports-lock-conflict'
     try {
-        $lockConflictOutput = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
+        $lockConflictOutput = @(& $powerShell7 -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
             -EngineeringRoot $sidecar `
             -ReportRoot $lockConflictRoot `
             -FixtureResultPath $zeroFixture `
@@ -430,7 +435,7 @@ tools:
     [System.IO.Directory]::CreateDirectory($fixtureLockPath) | Out-Null
     $lockAcquireFailureRoot = Join-Path $testRoot 'reports-lock-acquire-failure'
     try {
-        $lockAcquireFailureOutput = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
+        $lockAcquireFailureOutput = @(& $powerShell7 -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
             -EngineeringRoot $sidecar `
             -ReportRoot $lockAcquireFailureRoot `
             -FixtureResultPath $zeroFixture `
@@ -449,7 +454,7 @@ tools:
     [System.IO.File]::WriteAllText($fixtureLockDirectory, 'fixture-lock-directory-blocker', $utf8NoBom)
     $lockDirectoryFailureRoot = Join-Path $testRoot 'reports-lock-directory-failure'
     try {
-        $lockDirectoryFailureOutput = @(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
+        $lockDirectoryFailureOutput = @(& $powerShell7 -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checker `
             -EngineeringRoot $sidecar `
             -ReportRoot $lockDirectoryFailureRoot `
             -FixtureResultPath $zeroFixture `
@@ -475,6 +480,9 @@ tools:
     Assert-True ($helperText.Contains('Compilation complete for')) 'Offline helper does not require explicit Build completion evidence.'
     Assert-True ($helperText.Contains('ctrlX strict no-save compile guard v2 (2026-08-23)')) 'Offline helper does not gate the strict no-save MCP patch.'
     Assert-True ($helperText.Contains("const requiredVersion = '0.6.3'")) 'Offline helper does not gate the validated MCP package version.'
+    Assert-True ($helperText.Contains('process.env.ProgramW6432 || process.env.ProgramFiles')) 'Offline helper does not handle a 32-bit caller on 64-bit Windows.'
+    Assert-True ($helperText.Contains("path.join(programFiles, 'PowerShell', '7', 'pwsh.exe')")) 'Offline helper is not bound to the Program Files PowerShell 7 host.'
+    Assert-True (-not $helperText.Contains("'powershell.exe'")) 'Offline helper still invokes Windows PowerShell.'
     foreach ($sensitiveName in @('GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', '...process.env')) {
         Assert-True (-not $helperText.Contains($sensitiveName)) "Offline helper leaks or inherits a sensitive environment surface: $sensitiveName"
     }
@@ -496,9 +504,15 @@ tools:
     $launcherText = [System.IO.File]::ReadAllText($launcher)
     Assert-True ($launcherText.Contains('-Interactive')) 'Double-click launcher is not interactive.'
     Assert-True ($launcherText.Contains('CHECK_RC')) 'Double-click launcher does not preserve the checker exit code.'
+    Assert-True ($launcherText.Contains('%ProgramFiles%\PowerShell\7\pwsh.exe')) 'Double-click launcher is not bound to Program Files PowerShell 7.'
+    Assert-True ($launcherText.Contains('if defined ProgramW6432')) 'Double-click launcher does not resolve native Program Files for a 32-bit caller.'
+    Assert-True (-not $launcherText.Contains('powershell.exe')) 'Double-click launcher still invokes Windows PowerShell.'
 
     $hookText = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\..\scripts\cpstudio\post_export_signal.bat'))
     Assert-True (-not $hookText.Contains('OfflinePostExportCheck')) 'CpStudio hook starts the offline checker.'
+    Assert-True ($hookText.Contains('%ProgramFiles%\PowerShell\7\pwsh.exe')) 'CpStudio hook is not bound to Program Files PowerShell 7.'
+    Assert-True ($hookText.Contains('if defined ProgramW6432')) 'CpStudio hook does not resolve native Program Files for a 32-bit caller.'
+    Assert-True (-not $hookText.Contains('powershell.exe')) 'CpStudio hook still invokes Windows PowerShell.'
 }
 finally {
     if ($null -eq $originalFixtureMode) {

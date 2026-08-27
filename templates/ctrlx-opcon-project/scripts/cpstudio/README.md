@@ -241,7 +241,7 @@ that cannot reuse the existing session writes `status: blocked`, omits Build,
 and records a safe reason code instead of fabricating acceptance.
 The current typed Broker executes only `inspect_and_build` and
 `verify_after_export_2`. Their successful capability ledger is exactly
-`get_codesys_status`, `compile_project`, and
+`get_codesys_status`, `clean_compile_project`, and
 `get_ctrlx_semantic_snapshot`; legacy `get_compile_messages`,
 project-open/read/write tools, and any extra capability are rejected at the
 producer and consumer boundaries. `apply_change_set_and_build` is not yet

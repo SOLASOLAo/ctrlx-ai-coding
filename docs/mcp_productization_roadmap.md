@@ -9,7 +9,7 @@
 3. HMI 产品化；
 4. 商业交付。
 
-本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client、P1.2b Broker、受控 adapter、普通 Build 与 semantic snapshot 的真实 PLE 技术通道已跑通。隔离 warning-limit REST 事务和显式 `clean_compile_project` 已实现并安装；生产闭环仍需扩展重启后的 `<no limit>` 保存—重开—连续两次 Clean Build、完整 warning population、warning/semantic baseline 人工审阅、正式绑定和新 immutable action 复验。
+本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client、P1.2b Broker、受控 adapter、typed warning 与 semantic snapshot 的真实 PLE 技术通道已跑通。隔离 warning-limit REST 事务和显式 `clean_compile_project` 已实现并安装；可丢弃隔离副本的 `<no limit>` 保存—重开—连续两次 Clean Build 已取得一致且完整的 0 errors / 4 warnings，Broker/evidence 集成和全部 PowerShell 7 离线回归也已通过。生产闭环仍需生成新的正式 warning/semantic candidates、完成人工 baseline 审阅与正式绑定，并用新的 immutable action 复验。
 
 `codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2b 由交互用户会话中的唯一 Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次 action 都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
 
@@ -36,7 +36,7 @@
   继续完成，但当前公开 Pipe contract 仅开放 submit/query；进程中断则进入
   `UNKNOWN_REVIEW_REQUIRED`，不自动重放 Build。
 - 当前 typed allowlist 仅有 `inspect_and_build` 与 `verify_after_export_2`；固定序列为
-  persistent session + exact project 核验 → 前指纹 → 单次 `compile_project` 的同次结构化
+  persistent session + exact project 核验 → 前指纹 → 单次 `clean_compile_project` 的同次结构化
   summary（含 correlation token、时间与 preflight）→ session/project 再核验 → 后指纹
   稳定性检查 → terminal observation。缓存型 `get_compile_messages` 不参与 fresh 成功
   判定。缺少经人工审阅的 warning/semantic baseline 时返回对应 bootstrap `BLOCKED`；
@@ -48,11 +48,14 @@
   最终 clean/stability probe，并以 30 s 全程 timeout + 8 MiB streaming cap 读取 body。
   畸形请求和 evidence/candidate 敏感扫描不会持久化或回显凭据；patcher 语法失败会回滚。
 - `apply_change_set_and_build` 继续返回 `BLOCKED_UNSUPPORTED_ACTION`。2026-08-28
-  Runner 24 cases / 196 assertions、Broker 13/13、Engineering 37/37 均通过。另有一次
+  Broker/evidence 的显式 Clean Build 集成以及 Runner/Broker/Engineering/Stage/evidence/
+  candidate/initializer 离线回归均已在 PowerShell 7 下通过。另有一次
   真实 Station010 PLE 离线 action 完成 0 errors / 101 条可见 warnings 与 456 条 mapping
   facts 采集，PLC/结构哈希前后不变；它因缺少人工 baseline 正确停在 `BLOCKED`。
-  warning candidate 含 `PLE_WARNING_OUTPUT_TRUNCATED`，必须先取得完整告警全集，不能
-  直接批准为正式 baseline。这不表示仿真、下载或真机已验收。
+  该历史 warning candidate 含 `PLE_WARNING_OUTPUT_TRUNCATED`，不能直接批准为正式
+  baseline。隔离副本连续两次显式 Clean Build 已取得相同的完整 0 errors / 4 条
+  `OPC.UA.DA` warning，但本轮新的正式 immutable action/candidate 尚未生成，人工 baseline
+  也尚未建立。这不表示仿真、下载或真机已验收。
 - Runner 的 protocol v2 timeout fixture 通过 submit/query 明确握手并由客户端 3 秒
   deadline 决定 pending，不再依赖 250 ms 调度窗口。Broker atomic JSON 仅对 Windows
   access/sharing/lock violation 做 6 次、总计约 230 ms 的有界短重试；耗尽后仍抛出，
@@ -73,7 +76,7 @@ dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
 
 dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
   execute-action --engineering-root '<ai-root>' --action-path '<action.json>' `
-  --expected-sha256 '<64-hex-sha256>' --broker-action-timeout-ms 600000 --json
+  --expected-sha256 '<64-hex-sha256>' --broker-action-timeout-ms 1800000 --json
 ```
 
 这些 `start` 命令只用于受控交互式 acceptance；Broker 是唯一可显式持有 MCP/PLE 的
@@ -215,14 +218,15 @@ diagnostics = summary | errors | all
 producer/handler 严格一次 `application.clean()` + 一次 `application.build()`，不保存工程，
 并复用 fixed-category 清空、数字摘要、typed warning、工程 identity 与前后 dirty 门禁。
 `semanticRebuildVerified` 表示重建调用及数字证据可信，不与 `errorCount=0` 混为一谈；
-warning 文本全集另由 `warningDetailsComplete` 表示。隔离 npm fixture 已通过；全局安装和
-真实 PLE Clean Build 仍需后续受控验收，因此尚不等于完整 `compile_project_v2` 产品接口。
+warning 文本全集另由 `warningDetailsComplete` 表示。隔离 npm fixture、全局安装、真实
+PLE 隔离副本双 Clean Build 与 Broker/evidence 离线合同均已通过；这仍不等于完成下述
+多模式 `compile_project_v2` 产品接口。
 
-P1.2b Broker 已固定使用一次 `compile_project`，只接受该次调用直接返回的结构化
-summary，并校验 correlation、preflight、session/project 与前后指纹；缓存型
-`get_compile_messages` 只可作人工补充显示，不能证明 fresh Build。这里定义的通用
-`compile_project_v2` 多模式产品接口仍未完成；当前固定 Build 合同已通过一次真实
-Station010 PLE 离线 action 验证，独立 clean 工具目前仅完成共享源与离线 fixture。
+P1.2b Broker 已固定使用一次 `clean_compile_project`，只接受该次调用直接返回的结构化
+summary，并校验 Clean/Build 各一次、correlation、preflight/postflight、session/project、
+完整 typed warning 与前后指纹；缓存型 `get_compile_messages` 只可作人工补充显示，不能
+证明 fresh Build。这里定义的通用 `compile_project_v2` 多模式产品接口仍未完成；当前
+Clean Build 合同尚待新的正式 immutable Station010 action/candidate 和人工 baseline 复验。
 
 验收标准：
 

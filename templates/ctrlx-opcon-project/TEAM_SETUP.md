@@ -22,6 +22,7 @@
 
 | 组件 | 项目基线 |
 |---|---|
+| PowerShell | 7.5+；`%ProgramFiles%\PowerShell\7\pwsh.exe`，必须支持 `ConvertFrom-Json -DateKind` |
 | CpStudio | 由项目负责人确认精确版本 |
 | ctrlX PLC Engineering | `config/project.yaml` 中的 profile/version |
 | ctrlX IO Engineering | `config/project.yaml` 中的 version |

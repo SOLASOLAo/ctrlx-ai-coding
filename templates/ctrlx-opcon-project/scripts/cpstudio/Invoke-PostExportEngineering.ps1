@@ -118,11 +118,11 @@ function ConvertFrom-JsonPreservingStrings {
 
     # PowerShell 7.5+ otherwise converts ISO-8601 JSON strings to DateTime and
     # a later string cast loses the UTC designator and fractional precision.
-    # Windows PowerShell has no DateKind parameter and preserves these strings.
-    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
-        return ConvertFrom-Json -InputObject $Json -DateKind String
+    $command = Get-Command ConvertFrom-Json -ErrorAction Stop
+    if (-not $command.Parameters.ContainsKey('DateKind')) {
+        throw 'PowerShell 7.5 or newer with ConvertFrom-Json -DateKind is required.'
     }
-    return ConvertFrom-Json -InputObject $Json
+    return ConvertFrom-Json -InputObject $Json -DateKind String
 }
 
 function Read-JsonDocument {
@@ -171,32 +171,16 @@ function Assert-JsonArrayProperty {
 
     $displayPath = $PropertyPath -join '.'
     try {
-        $desktopEdition = (-not $PSVersionTable.ContainsKey('PSEdition')) -or ($PSVersionTable.PSEdition -eq 'Desktop')
-        if ($desktopEdition) {
-            Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
-            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-            $serializer.MaxJsonLength = [int]::MaxValue
-            $serializer.RecursionLimit = 256
-            $rawValue = $serializer.DeserializeObject($RawJson)
-            foreach ($propertyName in $PropertyPath) {
-                if (($rawValue -isnot [System.Collections.IDictionary]) -or (-not ($rawValue.Keys -contains $propertyName))) {
-                    throw "$Context is missing $displayPath."
-                }
-                $rawValue = $rawValue[$propertyName]
+        $rawValue = ConvertFrom-JsonPreservingStrings -Json $RawJson
+        foreach ($propertyName in $PropertyPath) {
+            if ($null -eq $rawValue) {
+                throw "$Context is missing $displayPath."
             }
-        }
-        else {
-            $rawValue = ConvertFrom-JsonPreservingStrings -Json $RawJson
-            foreach ($propertyName in $PropertyPath) {
-                if ($null -eq $rawValue) {
-                    throw "$Context is missing $displayPath."
-                }
-                $property = $rawValue.PSObject.Properties[$propertyName]
-                if ($null -eq $property) {
-                    throw "$Context is missing $displayPath."
-                }
-                $rawValue = $property.Value
+            $property = $rawValue.PSObject.Properties[$propertyName]
+            if ($null -eq $property) {
+                throw "$Context is missing $displayPath."
             }
+            $rawValue = $property.Value
         }
         if ($rawValue -isnot [System.Array]) {
             throw "$Context $displayPath must be a JSON array, not null or an object."
@@ -713,7 +697,7 @@ function Assert-NoOnlineCapabilities {
     $prohibitedPattern = '(?i)(connect[_-]?to[_-]?device|download[_-]?to[_-]?device|start[_-]?stop|write[_-]?variable|read[_-]?variable|monitor[_-]?variables|force|set[_-]?simulation|online|launch[_-]?(codesys|ple|mcp)|watcher[_-]?ipc)'
     $approvedOfflineCapabilities = @(
         'get_codesys_status',
-        'compile_project',
+        'clean_compile_project',
         'get_ctrlx_semantic_snapshot'
     )
     foreach ($capability in @($capabilityProperty.Value)) {
@@ -2496,7 +2480,7 @@ function Read-AndValidateEvidence {
             if (-not $hasUnverifiedProof) {
                 throw 'A BLOCKED fresh Build must retain at least one unverified semantic proof.'
             }
-            foreach ($requiredCapability in @('get_codesys_status', 'compile_project')) {
+            foreach ($requiredCapability in @('get_codesys_status', 'clean_compile_project')) {
                 if (@($capabilities | Where-Object { [string]$_ -eq $requiredCapability }).Count -ne 1) {
                     throw "Blocked fresh Build evidence must report capability '$requiredCapability' exactly once."
                 }
@@ -2525,7 +2509,7 @@ function Read-AndValidateEvidence {
             throw 'apply_change_set_and_build is not supported by the typed Broker and cannot produce successful evidence.'
         }
 
-        $requiredCapabilities = @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
+        $requiredCapabilities = @('get_codesys_status', 'clean_compile_project', 'get_ctrlx_semantic_snapshot')
         foreach ($requiredCapability in $requiredCapabilities) {
             if (@($capabilities | Where-Object { [string]$_ -eq $requiredCapability }).Count -ne 1) {
                 throw "Successful runner evidence must report capability '$requiredCapability' exactly once."
@@ -2605,7 +2589,7 @@ function Read-AndValidateEvidence {
     if ((-not [DateTime]::TryParse([string]$Operation.currentAction.createdAtUtc, [ref]$actionCreatedAt)) -or
         ($completedAt.ToUniversalTime() -lt $actionCreatedAt.ToUniversalTime()) -or
         ($completedAt.ToUniversalTime() -gt [DateTime]::UtcNow.AddMinutes(5))) {
-        throw 'Runner evidence completedAtUtc is inconsistent with the immutable action request or is unreasonably far in the future.'
+        throw ("Runner evidence completedAtUtc is inconsistent with the immutable action request or is unreasonably far in the future: evidence={0:o}; action={1:o}; now={2:o}." -f $completedAt.ToUniversalTime(), $actionCreatedAt.ToUniversalTime(), [DateTime]::UtcNow)
     }
 
     return [pscustomobject]@{
@@ -2662,7 +2646,7 @@ function Assert-BlockedBuildEvidence {
         (-not ((Get-FileHash -LiteralPath ([string]$Operation.identity.plcProject) -Algorithm SHA256).Hash.Equals($reportedProjectSha, [System.StringComparison]::OrdinalIgnoreCase)))) {
         throw 'Blocked fresh Build PLC project SHA-256 does not match the current project.'
     }
-    if ((Get-RequiredString -Object $build -Name 'summarySource' -Context 'Blocked fresh Build evidence') -ne 'codesys-persistent.compile_project') {
+    if ((Get-RequiredString -Object $build -Name 'summarySource' -Context 'Blocked fresh Build evidence') -ne 'codesys-persistent.clean_compile_project') {
         throw 'Blocked fresh Build summarySource is unsupported.'
     }
 
@@ -2734,8 +2718,8 @@ function Assert-BuildEvidence {
     if ($buildId -notmatch '^[A-Za-z0-9_.:-]{1,128}$') {
         throw 'Build evidence buildId is invalid.'
     }
-    if ((Get-RequiredString -Object $build -Name 'summarySource' -Context 'Build evidence') -ne 'codesys-persistent.compile_project') {
-        throw 'Build evidence summarySource must be codesys-persistent.compile_project.'
+    if ((Get-RequiredString -Object $build -Name 'summarySource' -Context 'Build evidence') -ne 'codesys-persistent.clean_compile_project') {
+        throw 'Build evidence summarySource must be codesys-persistent.clean_compile_project.'
     }
     Assert-SamePath -Expected ([string]$Operation.identity.plcProject) -Actual (Get-RequiredString -Object $build -Name 'projectPath' -Context 'Build evidence') -Description 'Build PLC project'
     if ((Get-RequiredString -Object $build -Name 'profile' -Context 'Build evidence') -ne [string]$Operation.identity.profile) {

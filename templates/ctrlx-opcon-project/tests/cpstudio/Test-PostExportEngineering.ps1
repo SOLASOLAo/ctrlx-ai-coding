@@ -494,7 +494,7 @@ function New-RunnerEvidence {
     }
     if (-not $PSBoundParameters.ContainsKey('CapabilitiesInvoked')) {
         if ($ResultStatus -eq 'succeeded') {
-            $CapabilitiesInvoked = [object[]]@('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
+            $CapabilitiesInvoked = [object[]]@('get_codesys_status', 'clean_compile_project', 'get_ctrlx_semantic_snapshot')
         }
         else {
             $CapabilitiesInvoked = [object[]]::new(0)
@@ -572,7 +572,7 @@ function New-RunnerEvidence {
                 warnings         = 9
                 signatureComplete = $true
                 signatureAlgorithm = 'sha256:v1:normalized-warning-record'
-                summarySource    = 'codesys-persistent.compile_project'
+                summarySource    = 'codesys-persistent.clean_compile_project'
                 warningSignatures = @(Get-FixtureWarningSignatures)
             }
             verificationOk       = $VerificationOk
@@ -655,7 +655,7 @@ function New-ProducerBackedEvidence {
         actionRequestSha256 = $Action.sha256
         status              = 'succeeded'
         completedAtUtc      = $completedAt.ToString('o')
-        capabilitiesInvoked = @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
+        capabilitiesInvoked = @('get_codesys_status', 'clean_compile_project', 'get_ctrlx_semantic_snapshot')
         session             = [ordered]@{
             state             = 'ready'
             mode              = 'persistent'
@@ -694,7 +694,7 @@ function New-ProducerBackedEvidence {
                 verified       = $true
                 errors         = 0
                 warnings       = 9
-                summarySource  = 'codesys-persistent.compile_project'
+                summarySource  = 'codesys-persistent.clean_compile_project'
                 warningRecords = @($warningRecords)
             }
             acceptance             = [ordered]@{
@@ -712,7 +712,7 @@ function New-ProducerBackedEvidence {
         }
     }
     Write-JsonFile -Path $ObservationPath -Value $observation
-    $producerOutput = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProducerPath `
+    $producerOutput = & pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProducerPath `
         -ActionPath $Action.path `
         -ExpectedActionSha256 $Action.sha256 `
         -ObservationPath $ObservationPath `
@@ -1090,7 +1090,7 @@ tools:
         -Path $extraCapabilityPath `
         -OperationId $idempotentStart.operationId `
         -Action $idempotentAction `
-        -CapabilitiesInvoked @('get_codesys_status', 'compile_project', 'compile_project')
+        -CapabilitiesInvoked @('get_codesys_status', 'clean_compile_project', 'clean_compile_project')
     $extraCapabilityResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
         OperationId = $idempotentStart.operationId
         EvidencePath = $extraCapabilityPath

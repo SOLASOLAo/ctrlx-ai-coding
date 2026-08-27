@@ -110,6 +110,19 @@ function verifyCtrlxPackagePatch(packageRoot, packageJson) {
   };
 }
 
+function getPowerShell7Executable() {
+  const programFiles = process.env.ProgramW6432 || process.env.ProgramFiles;
+  if (typeof programFiles !== 'string' || programFiles.trim() === '') {
+    throw new Error('PowerShell 7 discovery failed: ProgramW6432/ProgramFiles is not set.');
+  }
+
+  const executable = path.join(programFiles, 'PowerShell', '7', 'pwsh.exe');
+  if (!fs.existsSync(executable)) {
+    throw new Error(`PowerShell 7 is required but was not found: ${executable}`);
+  }
+  return executable;
+}
+
 function getWindowsOwnership(expectedMcpPid, expectedPlePid) {
   const script = [
     "$ErrorActionPreference = 'Stop'",
@@ -120,7 +133,7 @@ function getWindowsOwnership(expectedMcpPid, expectedPlePid) {
   ].join('; ');
 
   const output = execFileSync(
-    'powershell.exe',
+    getPowerShell7Executable(),
     ['-NoProfile', '-NonInteractive', '-Command', script],
     { encoding: 'utf8', windowsHide: true, timeout: 30000 }
   );

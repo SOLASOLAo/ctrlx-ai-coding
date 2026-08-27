@@ -214,27 +214,17 @@ function Read-JsonDocumentExact {
         $utf8 = New-Object System.Text.UTF8Encoding $false, $true
         $text = $utf8.GetString($bytes)
         if (($text.Length -gt 0) -and ($text[0] -eq [char]0xFEFF)) { $text = $text.Substring(1) }
-        $desktop = (-not $PSVersionTable.ContainsKey('PSEdition')) -or ($PSVersionTable.PSEdition -eq 'Desktop')
-        if ($desktop) {
-            Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
-            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-            $serializer.MaxJsonLength = $MaximumBytes
-            $serializer.RecursionLimit = 256
-            $payload = $serializer.DeserializeObject($text)
+        $convertCommand = Get-Command ConvertFrom-Json -ErrorAction Stop
+        if (-not $convertCommand.Parameters.ContainsKey('DateKind')) {
+            throw 'PowerShell 7.5 or newer with ConvertFrom-Json -DateKind is required.'
         }
-        else {
-            $convertCommand = Get-Command ConvertFrom-Json -ErrorAction Stop
-            if (-not $convertCommand.Parameters.ContainsKey('DateKind')) {
-                throw 'This pwsh version cannot preserve JSON date strings; use Windows PowerShell 5.1 or pwsh with ConvertFrom-Json -DateKind.'
-            }
-            $convertArguments = @{
-                InputObject = $text
-                DateKind = 'String'
-            }
-            if ($convertCommand.Parameters.ContainsKey('AsHashtable')) { $convertArguments['AsHashtable'] = $true }
-            if ($convertCommand.Parameters.ContainsKey('Depth')) { $convertArguments['Depth'] = 256 }
-            $payload = ConvertFrom-Json @convertArguments
+        $convertArguments = @{
+            InputObject = $text
+            DateKind = 'String'
         }
+        if ($convertCommand.Parameters.ContainsKey('AsHashtable')) { $convertArguments['AsHashtable'] = $true }
+        if ($convertCommand.Parameters.ContainsKey('Depth')) { $convertArguments['Depth'] = 256 }
+        $payload = ConvertFrom-Json @convertArguments
     }
     catch {
         throw "$Context is not valid UTF-8 JSON. $($_.Exception.Message)"
@@ -465,7 +455,7 @@ function Assert-BlockedEvidence {
     $capabilities = Get-RequiredArray -Object $Evidence -Name 'capabilitiesInvoked' -Context 'Runner evidence'
     if (($capabilities.Count -ne 3) -or
         (@($capabilities | Where-Object { [string]$_ -eq 'get_codesys_status' }).Count -ne 1) -or
-        (@($capabilities | Where-Object { [string]$_ -eq 'compile_project' }).Count -ne 1) -or
+        (@($capabilities | Where-Object { [string]$_ -eq 'clean_compile_project' }).Count -ne 1) -or
         (@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot' }).Count -ne 1) -or
         (@($capabilities | Where-Object { [string]$_ -match '(?i)(connect|download|start_stop|write_variable|force|online)' }).Count -ne 0)) {
         throw 'Runner evidence does not prove one offline Build plus one semantic snapshot.'
@@ -541,7 +531,7 @@ function Assert-BlockedEvidence {
         (-not $buildSha.Equals($currentProjectSha, [System.StringComparison]::OrdinalIgnoreCase)) -or
         (-not (Get-RequiredBoolean -Object $build -Name 'verified' -Context 'Runner evidence blocked Build')) -or
         (Get-RequiredInt32 -Object $build -Name 'errors' -Context 'Runner evidence blocked Build') -ne 0 -or
-        (Get-RequiredString -Object $build -Name 'summarySource' -Context 'Runner evidence blocked Build') -ne 'codesys-persistent.compile_project') {
+        (Get-RequiredString -Object $build -Name 'summarySource' -Context 'Runner evidence blocked Build') -ne 'codesys-persistent.clean_compile_project') {
         throw 'Runner evidence blocked Build does not bind the current zero-error project/profile.'
     }
     $warningCount = Get-RequiredInt32 -Object $build -Name 'warnings' -Context 'Runner evidence blocked Build'
