@@ -1,11 +1,11 @@
 # 项目自动化脚本
 
 - `cpstudio/`：hook 只发布 Stage 1 请求；另有必须由用户双击、且只在 0 个既有 PLE/MCP 时运行的离线 Build 检查器；
-- `runner/`：受控 Runner 单一入口；P1.1 只做项目预检、OS 排他租约、Stage 1/Stage 2 编排和结构化留痕；
+- `runner/`：受控 Runner 单一入口；P1.1 做项目预检和 Stage 1/Stage 2 编排，P1.2a 连接既有 Broker 并封口 action 证据；
 - `plc/`：MCP/REST 的 dry-run、change-set、回读和快照辅助；
 - `ioe/`：只通过匹配版本 IO Engineering 操作 IO 工程；
 - `git/`：差异、审计、证据和提交辅助；
 - `setup/`：不会启动 IDE、不会写工程的只读环境体检。
 
 通用能力优先留在方法论仓库或 MCP；项目脚本只保留 {{STATION_ID}} 的薄配置/适配，避免跨项目复制漂移。
-Runner P1.1 不启动 PLE/MCP，也不执行 immutable action。P1.2 live executor 与唯一 persistent session broker 尚未实现，action 仍由既有唯一 persistent Codex 会话执行。离线检查器只生成 advisory report，不冒充 Stage 2 evidence，也不会被 hook 自动调用。
+Runner P1.1/P1.2a 都不启动 PLE/MCP。P1.2a 已能严格消费 immutable action，但唯一 persistent session Agent/Broker（P1.2b）尚未实现，因此当前没有 Broker 时只会生成真实阻塞证据。离线检查器只生成 advisory report，不冒充 Stage 2 evidence，也不会被 hook 自动调用。

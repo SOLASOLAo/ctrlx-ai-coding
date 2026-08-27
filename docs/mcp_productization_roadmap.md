@@ -13,6 +13,20 @@
 
 `codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2 必须由交互用户会话中的唯一 Agent/Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次运行都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
 
+### P1.2 当前切片（2026-08-27）
+
+- **P1.2a 已实现**：.NET 8 Runner Core/CLI、immutable action 与权威 operation
+  ledger 绑定、hash/fingerprint 门禁、profile-project/action-run 双租约、不可变
+  claim/result 与重放完整性复核、Named Pipe v1 实际 server PID/Windows session
+  核验、NoSession 失败关闭和 release-bound evidence producer SHA；初始化器会把
+  相同 Runner 源码放入新项目的 `tools/runner/`。
+- **P1.2b 未实现**：交互会话中的唯一 Agent/Broker 尚未接管 persistent MCP stdio，
+  也尚未实现 Broker 端 Pipe ACL/可信注册、typed action 白名单及长 Build 的取消或
+  完成确认。当前客户端不会自行 Build，也不会启动 PLE/MCP；无 Broker 时只允许
+  生成 `BLOCKED_SESSION_UNAVAILABLE`，不得伪造 session、Build 或 acceptance。
+- `apply_change_set_and_build` 暂时返回 `BLOCKED_UNSUPPORTED_ACTION`。先完成只读
+  inspect/verify Broker，再开放带可执行 payload 和精确 readback 的写工程 action。
+
 ## 1. 目标
 
 把当前已验证的 `codesys-mcp-persistent` ctrlX 兼容能力，从“单机补丁 + 项目脚本”升级为可版本化、可测试、可在多个 OpCon/ctrlX 项目复用的工程工具链。

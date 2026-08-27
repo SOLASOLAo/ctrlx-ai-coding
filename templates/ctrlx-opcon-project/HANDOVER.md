@@ -15,7 +15,7 @@
 - 第一次完整离线编译的 warning 签名基线；
 - 初始 BMK、Event、Unit、Peripheral、AddOn 和 Chain 规格；
 - CpStudio Post-export hook 的安装位置；Stage 1 队列/离线审计与 Stage 2 PlanOnly ledger 已随骨架生成，尚待真实导出验证；
-- Stage 2 不含 live runner 或跨进程 MCP 租约，action 仍须由既有唯一 persistent Codex 会话执行。
+- Stage 2 已包含 P1.2a .NET action client、双层租约和 Named Pipe v1 客户端；P1.2b 唯一 session Agent/Broker 尚未实现（含 Broker-side ACL/可信注册、typed action 与长 Build 完成语义），因此当前无 Broker 时会生成真实阻塞结果，不会伪造 Build 成功。
 
 ## 下次第一步
 

@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet('Status', 'ProcessOne')]
+    [ValidateSet('Status', 'ProcessOne', 'Doctor', 'ExecuteAction', 'ActionStatus', 'ActionVerify')]
     [string]$Command = 'Status',
 
     [Parameter(Mandatory = $false)]
@@ -13,7 +13,33 @@ param(
     [int]$LockWaitMilliseconds = 0,
 
     [Parameter(Mandatory = $false)]
-    [string]$RunRoot
+    [string]$RunRoot,
+
+    [Parameter(Mandatory = $false)]
+    [string]$ActionPath,
+
+    [Parameter(Mandatory = $false)]
+    [ValidatePattern('^[A-Fa-f0-9]{64}$')]
+    [string]$ExpectedActionSha256,
+
+    [Parameter(Mandatory = $false)]
+    [string]$ActionRunId,
+
+    [Parameter(Mandatory = $false)]
+    [string]$BrokerPipe,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(0, 2147483647)]
+    [int]$BrokerPid = 0,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(100, 120000)]
+    [int]$BrokerConnectTimeoutMilliseconds = 2000,
+
+    [Parameter(Mandatory = $false)]
+    [Alias('BrokerTimeoutMilliseconds')]
+    [ValidateRange(1000, 1800000)]
+    [int]$BrokerActionTimeoutMilliseconds = 600000
 )
 
 $ErrorActionPreference = 'Stop'
@@ -308,6 +334,41 @@ function Get-ResultObject {
     return $candidate[0]
 }
 
+function Get-RunnerCliAssembly {
+    param([Parameter(Mandatory = $true)][string]$Root)
+
+    $candidates = @(
+        (Join-Path $Root 'tools\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll'),
+        (Join-Path $Root 'ctrlx-ai-coding\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll')
+    )
+    foreach ($candidate in $candidates) {
+        $resolved = [System.IO.Path]::GetFullPath($candidate)
+        if ([System.IO.File]::Exists($resolved)) {
+            return $resolved
+        }
+    }
+
+    throw 'Prebuilt Runner assembly is missing. Build/publish the trusted Runner explicitly before invoking this wrapper; action execution never uses dotnet run/MSBuild.'
+}
+
+function Invoke-RunnerCli {
+    param(
+        [Parameter(Mandatory = $true)][string]$Assembly,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    if ($null -eq (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+        throw '.NET 8 runtime is required for the prebuilt P1.2 Runner action client.'
+    }
+
+    $output = @(& dotnet $Assembly @Arguments 2>&1)
+    $exitCode = $LASTEXITCODE
+    foreach ($line in $output) {
+        [Console]::Out.WriteLine([string]$line)
+    }
+    return [int]$exitCode
+}
+
 $scriptDirectory = Split-Path -Parent $PSCommandPath
 if (-not $EngineeringRoot) {
     $EngineeringRoot = Join-Path $scriptDirectory '..\..'
@@ -315,6 +376,61 @@ if (-not $EngineeringRoot) {
 $engineeringRootResolved = [System.IO.Path]::GetFullPath($EngineeringRoot)
 if (-not [System.IO.Directory]::Exists($engineeringRootResolved)) {
     throw "Engineering root does not exist: $engineeringRootResolved"
+}
+
+if ($Command -in @('Doctor', 'ExecuteAction', 'ActionStatus', 'ActionVerify')) {
+    $runnerAssembly = Get-RunnerCliAssembly -Root $engineeringRootResolved
+    $runnerArguments = switch ($Command) {
+        'Doctor' {
+            @('doctor', '--engineering-root', $engineeringRootResolved, '--json')
+        }
+        'ExecuteAction' {
+            if ([string]::IsNullOrWhiteSpace($ActionPath) -or
+                [string]::IsNullOrWhiteSpace($ExpectedActionSha256)) {
+                throw 'ExecuteAction requires -ActionPath and -ExpectedActionSha256 from the Stage 2 ledger.'
+            }
+            $resolvedActionPath = if ([System.IO.Path]::IsPathRooted($ActionPath)) {
+                [System.IO.Path]::GetFullPath($ActionPath)
+            }
+            else {
+                [System.IO.Path]::GetFullPath((Join-Path $engineeringRootResolved $ActionPath))
+            }
+            @(
+                'execute-action',
+                '--engineering-root', $engineeringRootResolved,
+                '--action-path', $resolvedActionPath,
+                '--expected-sha256', $ExpectedActionSha256,
+                '--lease-timeout-ms', [string]$LockWaitMilliseconds,
+                '--broker-connect-timeout-ms', [string]$BrokerConnectTimeoutMilliseconds,
+                '--broker-action-timeout-ms', [string]$BrokerActionTimeoutMilliseconds,
+                '--json'
+            )
+        }
+        'ActionStatus' {
+            if ([string]::IsNullOrWhiteSpace($ActionRunId)) {
+                throw 'ActionStatus requires -ActionRunId.'
+            }
+            @('status', '--engineering-root', $engineeringRootResolved, '--run-id', $ActionRunId, '--json')
+        }
+        'ActionVerify' {
+            if ([string]::IsNullOrWhiteSpace($ActionRunId)) {
+                throw 'ActionVerify requires -ActionRunId.'
+            }
+            @('verify', '--engineering-root', $engineeringRootResolved, '--run-id', $ActionRunId, '--json')
+        }
+    }
+    if (($Command -in @('Doctor', 'ExecuteAction')) -and
+        (-not [string]::IsNullOrWhiteSpace($BrokerPipe))) {
+        $runnerArguments += @('--broker-pipe', $BrokerPipe)
+        if ($Command -eq 'ExecuteAction') {
+            if ($BrokerPid -le 0) {
+                throw 'ExecuteAction with -BrokerPipe also requires the trusted -BrokerPid published by the registered Broker.'
+            }
+            $runnerArguments += @('--broker-pid', [string]$BrokerPid)
+        }
+    }
+    $runnerExitCode = Invoke-RunnerCli -Assembly $runnerAssembly -Arguments $runnerArguments
+    exit $runnerExitCode
 }
 
 $dataRoot = Join-Path $engineeringRootResolved 'data'

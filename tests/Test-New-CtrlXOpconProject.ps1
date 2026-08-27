@@ -138,6 +138,11 @@ try {
             'scripts\cpstudio\Run-OfflinePostExportCheck.cmd',
             'scripts\runner\Invoke-CtrlXOpconRunner.ps1',
             'scripts\runner\README.md',
+            'tools\runner\CtrlX.OpCon.Runner.Core\CtrlX.OpCon.Runner.Core.csproj',
+            'tools\runner\CtrlX.OpCon.Runner.Core\RunnerExecutor.cs',
+            'tools\runner\CtrlX.OpCon.Runner.Core\NamedPipeSessionBrokerClient.cs',
+            'tools\runner\CtrlX.OpCon.Runner.Cli\CtrlX.OpCon.Runner.Cli.csproj',
+            'tools\runner\CtrlX.OpCon.Runner.Cli\Program.cs',
             'scripts\git\Get-ReadOnlyGitAudit.ps1',
             'tests\cpstudio\Test-PostExportQueue.ps1',
             'tests\cpstudio\Test-PostExportEngineering.ps1',
@@ -158,6 +163,10 @@ try {
     Assert-True -Condition (-not $projectConfig.Contains($testRoot)) -Message 'Generated project.yaml leaked an absolute workstation path.'
     Assert-True -Condition (-not $projectConfig.Contains('\')) -Message 'Generated project.yaml contains a backslash path.'
     Assert-True -Condition $projectConfig.Contains("export_request: 'data/requests'") -Message 'Generated project does not use the schema-v2 request queue root.'
+
+    $generatedRunnerWrapper = [System.IO.File]::ReadAllText((Join-Path $outputPath 'scripts\runner\Invoke-CtrlXOpconRunner.ps1'))
+    Assert-True -Condition (-not [regex]::IsMatch($generatedRunnerWrapper, '(?im)^\s*&\s*dotnet\s+run\b')) -Message 'Generated action wrapper invokes dotnet run/MSBuild while consuming an action.'
+    Assert-True -Condition $generatedRunnerWrapper.Contains('Get-RunnerCliAssembly') -Message 'Generated action wrapper is not bound to a prebuilt Runner assembly.'
 
     $mcpExample = [System.IO.File]::ReadAllText((Join-Path $outputPath 'config\codex-mcp.toml.example'))
     Assert-True -Condition $mcpExample.Contains('ctrlX PLC 2.6.8') -Message 'MCP example did not render the configured profile.'
@@ -214,6 +223,14 @@ try {
     $controlledRunnerOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $controlledRunnerTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated controlled Runner test failed: " + ($controlledRunnerOutput -join ' '))
     Assert-True -Condition (($controlledRunnerOutput -join ' ') -match 'Controlled Runner P1.1 self-test OK') -Message 'Generated controlled Runner test did not report success.'
+
+    $generatedRunnerProject = Join-Path $outputPath 'tools\runner\CtrlX.OpCon.Runner.Cli\CtrlX.OpCon.Runner.Cli.csproj'
+    $generatedRunnerBuild = & dotnet build $generatedRunnerProject --configuration Release 2>&1
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated .NET Runner build failed: " + ($generatedRunnerBuild -join ' '))
+    Assert-True -Condition (($generatedRunnerBuild -join ' ') -match '0 Error\(s\)') -Message 'Generated .NET Runner build did not report zero errors.'
+    $generatedRunnerDoctor = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $outputPath 'scripts\runner\Invoke-CtrlXOpconRunner.ps1') -Command Doctor 2>&1
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated .NET Runner doctor failed: " + ($generatedRunnerDoctor -join ' '))
+    Assert-True -Condition (($generatedRunnerDoctor -join ' ') -match '"readyForActionClient"\s*:\s*true') -Message 'Generated .NET Runner doctor did not report ready.'
 
     & $initializer `
         -ProjectId 'minimal-cell' `

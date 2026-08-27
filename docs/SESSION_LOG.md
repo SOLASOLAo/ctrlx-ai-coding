@@ -117,6 +117,24 @@
 - P1.1 不启动 PLE/MCP、不执行 immutable action，也没有任何在线或部署能力；当前项目和模板自测各 30 项断言，新项目初始化器 70 项回归通过。
 - stdio MCP 不能由独立 CLI 复用。P1.2 必须由交互用户会话中的唯一 Agent/Broker 独占 stdio 与 PLE；未来 Windows Service 只做队列、策略和证据，不从 Session 0 启动可见 PLE。
 
+### 2026-08-27 · Controlled Runner P1.2a Action Client
+
+- 新增 .NET 8 Runner Core/CLI：严格校验 Stage 2 action/hash、工程/profile、
+  ownership/fingerprint、guardrail 与 evidence contract。
+- 新增 OS 级 client/action 双租约、不可变 claim/result、终态重放和本地验证；
+  相同 action 不会重复送往 Broker，残缺 claim 进入 `UNKNOWN` 等待人工复核。
+- action 额外绑定 `operation.json.currentAction`；每次终态重放都会重新核对 result、
+  observation、evidence、guardrails 与 SHA，篡改或 ledger 漂移均在 Broker 前拒绝。
+- 新增本地 Named Pipe v1 client，只连接已存在的 Broker并核对实际 server PID 与
+  当前 Windows session；没有 Broker 时封口为 `BLOCKED_SESSION_UNAVAILABLE`，
+  不包含虚假的 session/Build/acceptance。evidence producer 由发布 SHA 固定。
+- P1.2a 不启动 PLE/MCP/Broker，不含在线工具；P1.2b 唯一 session Agent/Broker
+  仍待实现，且必须补齐 Broker-side ACL/可信注册、typed action 白名单与长 Build
+  取消或完成确认；写工程 action 继续 fail-closed。
+- Release Build 为 0 errors / 0 warnings；SelfTest 14/14、176 assertions；新项目
+  初始化器 81 assertions，并同时编译生成后的 Runner、执行 Doctor 与 wrapper
+  不触发 `dotnet run` 的防回退检查。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |

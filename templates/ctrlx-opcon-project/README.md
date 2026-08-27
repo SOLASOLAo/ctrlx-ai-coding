@@ -30,17 +30,19 @@
 
 7. 首次操作 PLC 工程前，确认只有一个 persistent MCP 会话使用该 PLE profile。
 
-8. 检查受控 Runner P1.1（不会启动 PLE/MCP）：
+8. 检查受控 Runner（不会启动 PLE/MCP）：
 
    ```powershell
    .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Status
+   .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Doctor
    ```
 
 CpStudio Export #1 的离线报告可交给
 `scripts/cpstudio/Invoke-PostExportEngineering.ps1`。该工具只生成带哈希的
-operation/action 并接收 runner 证据，不启动 PLE/MCP/REST。P1.1 Runner 可统一执行
-Stage 1/Stage 2 控制面并生成 run manifest；action 仍必须由唯一 persistent Codex
-会话执行。只有 Symbol/后处理证据明确要求时才安排 Export #2。
+operation/action 并接收 runner 证据，不启动 PLE/MCP/REST。P1.1 Runner 统一执行
+Stage 1/Stage 2 控制面；P1.2a .NET 客户端校验并消费 immutable action，但只连接
+已存在的本地 Broker。P1.2b 唯一 persistent session Agent/Broker 完成前，不会自行
+Build，也不会伪造成功证据。只有 Symbol/后处理证据明确要求时才安排 Export #2。
 
 ## 目录
 

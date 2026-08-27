@@ -20,3 +20,9 @@ codesys-mcp-persistent-session*/
 Thumbs.db
 Desktop.ini
 .vscode/
+
+# .NET Runner build output
+src/runner/**/bin/
+src/runner/**/obj/
+tests/runner/**/bin/
+tests/runner/**/obj/

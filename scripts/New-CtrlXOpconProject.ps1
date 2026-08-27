@@ -272,6 +272,10 @@ $templateRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\templ
 if (-not [System.IO.Directory]::Exists($templateRoot)) {
     throw "Project template is missing: $templateRoot"
 }
+$runnerSourceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\src\runner'))
+if (-not [System.IO.Directory]::Exists($runnerSourceRoot)) {
+    throw "Runner product source is missing: $runnerSourceRoot"
+}
 
 $tokens = [ordered]@{
     '{{PROJECT_ID}}' = $ProjectId
@@ -355,6 +359,30 @@ try {
         }
         $destinationEncoding = if ($sourceHasUtf8Bom) { $utf8WithBom } else { $utf8NoBom }
         [System.IO.File]::WriteAllText($destinationPath, $content, $destinationEncoding)
+    }
+
+    $runnerSourceFiles = Get-ChildItem -LiteralPath $runnerSourceRoot -Recurse -File |
+        Where-Object {
+            $relative = $_.FullName.Substring($runnerSourceRoot.Length).TrimStart('\', '/')
+            $segments = $relative -split '[\\/]'
+            ($segments -notcontains 'bin') -and
+            ($segments -notcontains 'obj') -and
+            ($_.Extension.ToLowerInvariant() -in @('.cs', '.csproj', '.md'))
+        }
+    foreach ($runnerSourceFile in $runnerSourceFiles) {
+        $relativePath = $runnerSourceFile.FullName.Substring($runnerSourceRoot.Length).TrimStart('\', '/')
+        $destinationPath = Join-Path $stagingPath (Join-Path 'tools\runner' $relativePath)
+        [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($destinationPath)) | Out-Null
+        $sourceBytes = [System.IO.File]::ReadAllBytes($runnerSourceFile.FullName)
+        $sourceHasUtf8Bom = ($sourceBytes.Length -ge 3) -and
+            ($sourceBytes[0] -eq 0xEF) -and
+            ($sourceBytes[1] -eq 0xBB) -and
+            ($sourceBytes[2] -eq 0xBF)
+        $destinationEncoding = if ($sourceHasUtf8Bom) { $utf8WithBom } else { $utf8NoBom }
+        [System.IO.File]::WriteAllText(
+            $destinationPath,
+            [System.IO.File]::ReadAllText($runnerSourceFile.FullName),
+            $destinationEncoding)
     }
 
     foreach ($relativeDirectory in @(

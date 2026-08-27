@@ -45,3 +45,7 @@ Thumbs.db
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Local .NET Runner build output
+tools/runner/**/bin/
+tools/runner/**/obj/
