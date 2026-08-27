@@ -25,7 +25,9 @@
    11. Returns a correlated same-call compile summary even for a clean 0/0 Build
    12. Reads typed warnings only from two fixed compile categories and Warning severity
    13. Adds a read-only ctrlX I/O Mapping + Symbol Configuration snapshot tool
-   14. Verifies Python/JavaScript syntax before committing any changed file;
+   14. Adds an opt-in clean_compile_project semantic rebuild tool which invokes
+       application.clean() once and application.build() once
+   15. Verifies Python/JavaScript syntax before committing any changed file;
        missing validators fail closed unless -SkipRuntimeSyntaxCheck is explicit
 
   WARNING: `npm install/update codesys-mcp-persistent` OVERWRITES the patch.
@@ -68,7 +70,9 @@ $freshCompileContractLegacyMarker = "ctrlX fresh compile contract v1 (2026-08-27
 $freshCompileContractMarker = "ctrlX fresh compile contract v2 (2026-08-27)"
 $strictBuildSummaryMarker = "ctrlX explicit Build summary only (2026-08-27)"
 $typedWarningProducerMarker = "ctrlX fixed-category typed warning producer v1 (2026-08-28)"
+$typedWarningWireMarker = "ctrlX typed warning wire alignment v1 (2026-08-28)"
 $semanticSnapshotMarker = "ctrlX semantic snapshot contract v1 (2026-08-27)"
+$cleanCompileMarker = "ctrlX clean compile tool contract v1 (2026-08-28)"
 $utf8nobom = New-Object System.Text.UTF8Encoding($false)
 
 function ReadText([string]$p) {
@@ -1109,6 +1113,121 @@ function PatchSemanticSnapshotServer([string]$serverFile, [bool]$isTypeScript) {
   Write-Host "patched read-only recursive I/O + Symbol semantic snapshot tool -> $serverFile"
 }
 
+function PatchCleanCompileScript([string]$cleanCompileFile) {
+  $asset = Join-Path $PSScriptRoot "clean_compile_project.py"
+  if (-not (Test-Path -LiteralPath $asset)) {
+    Write-Error "Canonical clean compile asset is missing: $asset"
+  }
+  $expected = ReadText $asset
+  $exists = Test-Path -LiteralPath $cleanCompileFile -PathType Leaf
+  $current = if ($exists) { ReadText $cleanCompileFile } else { "" }
+  $hasMarker = $current.Contains($cleanCompileMarker)
+  $isPatched =
+    $current -eq $expected -and
+    (CountLiteral $current $cleanCompileMarker) -eq 1 -and
+    (CountLiteral $current "target_app.clean()") -eq 1 -and
+    (CountLiteral $current "target_app.build()") -eq 1 -and
+    $current.Contains("'cleanInvocation'] = (") -and
+    $current.Contains("'application.clean' if clean_succeeded else None") -and
+    $current.Contains("'semanticRebuildVerified'] = semantic_rebuild_verified") -and
+    $current.Contains("'messageEvidenceComplete'] = message_evidence_complete") -and
+    $current.Contains("identity_postflight_verified") -and
+    $current.Contains("dirty_postflight_verified") -and
+    (-not $current.Contains("target_app.clean_all(")) -and
+    (-not $current.Contains("target_app.generate_code(")) -and
+    (-not $current.Contains(".save("))
+  if ($Check) {
+    Write-Host ("[{0}] {1} opt-in clean compile producer" -f $(if ($isPatched) { "OK " } else { "TODO" }), $cleanCompileFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "opt-in clean compile producer already present - skipped: $cleanCompileFile"
+    return
+  }
+  if ($exists) {
+    $reason = if ($hasMarker) { "partial or modified ctrlX contract" } else { "unknown pre-existing file" }
+    Write-Error "Refusing to replace $reason at ${cleanCompileFile}; restore the npm package before reapplying."
+  }
+  [System.IO.File]::WriteAllText($cleanCompileFile, $expected, $utf8nobom)
+  Write-Host "installed opt-in clean compile producer -> $cleanCompileFile"
+}
+
+function PatchCleanCompileServer([string]$serverFile, [bool]$isTypeScript) {
+  if (-not (Test-Path -LiteralPath $serverFile)) { return }
+
+  $assetName = if ($isTypeScript) {
+    "clean_compile_project.tool.ts"
+  } else {
+    "clean_compile_project.tool.js"
+  }
+  $assetPath = Join-Path $PSScriptRoot $assetName
+  if (-not (Test-Path -LiteralPath $assetPath)) {
+    Write-Error "Canonical clean compile server asset is missing: $assetPath"
+  }
+  $block = ReadText $assetPath
+  $source = ReadText $serverFile
+  $blockStartMarker = if ($isTypeScript) {
+    "  // $cleanCompileMarker"
+  } else {
+    "    // $cleanCompileMarker"
+  }
+  $toolRegistration = if ($isTypeScript) {
+    "  s.tool(`n    'clean_compile_project',"
+  } else {
+    "    s.tool('clean_compile_project',"
+  }
+  $anchor = if ($isTypeScript) {
+@'
+  s.tool(
+    'compile_project',
+'@.Replace("`r`n", "`n")
+  } else {
+@'
+    s.tool('compile_project',
+'@.Replace("`r`n", "`n")
+  }
+  $blockStart = $source.IndexOf($blockStartMarker, [System.StringComparison]::Ordinal)
+  $toolStart = $source.IndexOf($toolRegistration, [System.StringComparison]::Ordinal)
+  $blockEnd = if ($blockStart -ge 0) {
+    $source.IndexOf($anchor, $blockStart, [System.StringComparison]::Ordinal)
+  } else { -1 }
+  $currentBlock = if ($blockStart -ge 0 -and $blockEnd -gt $blockStart) {
+    $source.Substring($blockStart, $blockEnd - $blockStart)
+  } else { "" }
+  $isPatched =
+    $currentBlock -eq $block -and
+    (CountLiteral $source $cleanCompileMarker) -eq 1 -and
+    (CountLiteral $source $toolRegistration) -eq 1 -and
+    $source.Contains("contractId = 'ctrlx-clean-compile-v1'") -and
+    $source.Contains("producer = 'codesys-persistent.clean_compile_project'") -and
+    $source.Contains("summary.cleanInvocation === 'application.clean'") -and
+    $source.Contains("summary.buildInvocation === 'application.build'") -and
+    $source.Contains("summary.cleanInvocationCount === 1") -and
+    $source.Contains("summary.buildInvocationCount === 1") -and
+    $source.Contains("summary.semanticRebuildVerified === true") -and
+    $source.Contains("summary.messageEvidenceComplete === true") -and
+    $source.Contains("summary.identityPostflightVerified === true") -and
+    $source.Contains("summary.dirtyPostflightVerified === true") -and
+    $source.Contains("executor.executeScript(script, 900") -and
+    (-not $currentBlock.Contains("clean_all")) -and
+    (-not $currentBlock.Contains("generate_code"))
+  if ($Check) {
+    Write-Host ("[{0}] {1} opt-in clean compile MCP tool" -f $(if ($isPatched) { "OK " } else { "TODO" }), $serverFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "opt-in clean compile MCP tool already present - skipped: $serverFile"
+    return
+  }
+  if ($source.Contains($cleanCompileMarker) -or $source.Contains($toolRegistration)) {
+    Write-Error "Partial or unknown clean compile server contract found; restore the file from its package/backup before reapplying: $serverFile"
+  }
+  BackupOnce $serverFile "bak_pre_clean_compile_contract"
+  $source = ReplaceRequired $source $anchor ($block + $anchor) "clean compile tool" $serverFile
+  [System.IO.File]::WriteAllText($serverFile, $source, $utf8nobom)
+  Write-Host "patched opt-in clean compile MCP tool -> $serverFile"
+}
+
 function PatchFastMessageUtils([string]$messageUtilsFile) {
   if (-not (Test-Path -LiteralPath $messageUtilsFile)) { return }
 
@@ -1741,6 +1860,9 @@ function PatchFreshCompileContract([string]$compileFile) {
     $boundedBlock.Contains("compile_summary['warningQueryCount']") -and
     $boundedBlock.Contains("compile_summary['typedRecordsVerified'] = typed_records_verified") -and
     $boundedBlock.Contains("compile_summary['diagnosticRowsComplete'] = diagnostic_rows_complete") -and
+    $boundedBlock.Contains($typedWarningWireMarker) -and
+    $boundedBlock.Contains("if typed_records_verified:") -and
+    $boundedBlock.Contains("'text': record.get('text')") -and
     $boundedBlock.Contains("compile_summary['recordsComplete'] = True")
   $isPatched = $hasRequiredFacts
   $isLegacy =
@@ -1951,6 +2073,24 @@ import datetime as _build_datetime
     diagnostic_rows_complete = (
         typed_warning_outcome.get('diagnosticRowsComplete') is True
     )
+
+    # ctrlX typed warning wire alignment v1 (2026-08-28)
+    # get_messages() may contain Information rows before the numeric Build
+    # summary.  They are diagnostics, not compiler warnings.  Once the exact
+    # fixed-category Warning-object multiset is verified, use it for both the
+    # summary records and the serialized message list so callers never see a
+    # same-count but semantically different set of warning texts.
+    if typed_records_verified:
+        messages = [
+            {
+                'category': 'Compiler warning',
+                'severity': 'warning',
+                'text': record.get('text'),
+            }
+            for record in typed_records
+        ]
+    else:
+        messages = []
 
     compile_summary['contractVersion'] = 1
     compile_summary['producer'] = 'codesys-persistent.compile_project'
@@ -2306,7 +2446,7 @@ $patchTransactionActive = $false
 if (-not $Check) {
   $transactionFiles = @($watcher, $msgutils) + $launcherTargets + $serverTargets + $mapTargets
   foreach ($scriptRoot in $packageScriptRoots) {
-    foreach ($scriptName in @("_message_utils.py", "compile_project.py", "get_compile_messages.py", "get_ctrlx_semantic_snapshot.py")) {
+    foreach ($scriptName in @("_message_utils.py", "compile_project.py", "clean_compile_project.py", "get_compile_messages.py", "get_ctrlx_semantic_snapshot.py")) {
       $transactionFiles += Join-Path $scriptRoot $scriptName
     }
   }
@@ -2323,7 +2463,8 @@ if (-not $Check) {
     "bak_pre_semantic_snapshot_contract",
     "bak_pre_fast_compile",
     "bak_pre_strict_compile",
-    "bak_pre_fresh_compile_contract"
+    "bak_pre_fresh_compile_contract",
+    "bak_pre_clean_compile_contract"
   )
   foreach ($transactionSourceFile in $transactionSourceFiles) {
     foreach ($transactionBackupSuffix in $transactionBackupSuffixes) {
@@ -2404,6 +2545,8 @@ PatchFreshCompileServer $serverTargets[0] $true
 PatchFreshCompileServer $serverTargets[1] $false
 PatchSemanticSnapshotServer $serverTargets[0] $true
 PatchSemanticSnapshotServer $serverTargets[1] $false
+PatchCleanCompileServer $serverTargets[0] $true
+PatchCleanCompileServer $serverTargets[1] $false
 
 $mapTargets | Select-Object -Unique | ForEach-Object { PatchIoMappingScript $_ }
 
@@ -2411,6 +2554,7 @@ $mapTargets | Select-Object -Unique | ForEach-Object { PatchIoMappingScript $_ }
 foreach ($scriptRoot in $packageScriptRoots) {
   if (-not (Test-Path -LiteralPath $scriptRoot)) { continue }
   PatchSemanticSnapshotScript (Join-Path $scriptRoot "get_ctrlx_semantic_snapshot.py")
+  PatchCleanCompileScript (Join-Path $scriptRoot "clean_compile_project.py")
   PatchFastMessageUtils (Join-Path $scriptRoot "_message_utils.py")
   PatchCompileProjectScript (Join-Path $scriptRoot "compile_project.py")
   PatchStrictCompileNoSaveGuard (Join-Path $scriptRoot "compile_project.py")
@@ -2431,7 +2575,7 @@ if (-not $Check -and -not $SkipRuntimeSyntaxCheck) {
       }
     }
     foreach ($scriptRoot in $packageScriptRoots) {
-      foreach ($scriptName in @("_message_utils.py", "compile_project.py", "get_compile_messages.py", "get_ctrlx_semantic_snapshot.py")) {
+      foreach ($scriptName in @("_message_utils.py", "compile_project.py", "clean_compile_project.py", "get_compile_messages.py", "get_ctrlx_semantic_snapshot.py")) {
         $scriptPath = Join-Path $scriptRoot $scriptName
         if (Test-Path -LiteralPath $scriptPath) {
           & python -m py_compile $scriptPath

@@ -5,6 +5,7 @@ from __future__ import print_function
 import argparse
 import os
 import re
+import textwrap
 
 
 BUILD_GUID = "97f48d64-a2a3-4856-b640-75c046e37ea9"
@@ -414,6 +415,38 @@ def main():
     assert "compile_summary['diagnosticRowsComplete'] = diagnostic_rows_complete" in compile_source
     assert "compile_summary['records'] = typed_records" in compile_source
     assert "compile_summary['warningQueryCount']" in compile_source
+    wire_marker = "# ctrlX typed warning wire alignment v1 (2026-08-28)"
+    assert wire_marker in compile_source
+    wire_marker_index = compile_source.index(wire_marker)
+    wire_start = compile_source.rfind("\n", 0, wire_marker_index) + 1
+    wire_end = compile_source.index("    compile_summary['contractVersion']", wire_start)
+    wire_source = textwrap.dedent(compile_source[wire_start:wire_end])
+    wire_namespace = {
+        "typed_records_verified": True,
+        "typed_records": [
+            {"severity": "warning", "text": "OPC.UA.DA warning one"},
+            {"severity": "warning", "text": "OPC.UA.DA warning two"},
+        ],
+        "error_count": 0,
+        "warning_count": 2,
+        "messages": [
+            {"severity": "warning", "text": "CLASS information row"},
+            {"severity": "warning", "text": "CHAR information row"},
+        ],
+    }
+    exec(wire_source, wire_namespace)
+    assert [item["text"] for item in wire_namespace["messages"]] == [
+        "OPC.UA.DA warning one",
+        "OPC.UA.DA warning two",
+    ], wire_namespace["messages"]
+    wire_namespace.update({
+        "typed_records_verified": False,
+        "error_count": 2500,
+        "warning_count": 2500,
+        "messages": [{"text": "must be discarded"}],
+    })
+    exec(wire_source, wire_namespace)
+    assert wire_namespace["messages"] == [], wire_namespace["messages"]
 
     print("fast compile message + strict fresh-v2 regression: OK")
 

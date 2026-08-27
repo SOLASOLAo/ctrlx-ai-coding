@@ -211,11 +211,18 @@ diagnostics = summary | errors | all
 
 保留当前快速 Build 路径；Clean Build 只执行一次 Clean + 一次 Build，不恢复 `clean/clean_all/build/generate_code` 的重复组合。
 
+2026-08-28 已先以独立 `clean_compile_project` 落地可选 Clean Build 技术通道：共享补丁
+producer/handler 严格一次 `application.clean()` + 一次 `application.build()`，不保存工程，
+并复用 fixed-category 清空、数字摘要、typed warning、工程 identity 与前后 dirty 门禁。
+`semanticRebuildVerified` 表示重建调用及数字证据可信，不与 `errorCount=0` 混为一谈；
+warning 文本全集另由 `warningDetailsComplete` 表示。隔离 npm fixture 已通过；全局安装和
+真实 PLE Clean Build 仍需后续受控验收，因此尚不等于完整 `compile_project_v2` 产品接口。
+
 P1.2b Broker 已固定使用一次 `compile_project`，只接受该次调用直接返回的结构化
 summary，并校验 correlation、preflight、session/project 与前后指纹；缓存型
 `get_compile_messages` 只可作人工补充显示，不能证明 fresh Build。这里定义的通用
 `compile_project_v2` 多模式产品接口仍未完成；当前固定 Build 合同已通过一次真实
-Station010 PLE 离线 action 验证。
+Station010 PLE 离线 action 验证，独立 clean 工具目前仅完成共享源与离线 fixture。
 
 验收标准：
 
