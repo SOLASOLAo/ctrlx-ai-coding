@@ -9,23 +9,69 @@
 3. HMI 产品化；
 4. 商业交付。
 
-本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。当前先交付 P1.1 Runner 控制面：统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单；它默认不启动 PLE/MCP。随后 P1.2 才接入唯一 persistent owner 的 immutable action 执行、readback、fresh Build 和 evidence。
+本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client 与 P1.2b Broker 已完成 durable action、会话所有权和失败关闭基础，但受控 adapter、语义证据 producer 与实体 PLE acceptance 尚未完成，因此还不能形成生产可用的 readback/fresh Build/evidence 闭环。
 
-`codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2 必须由交互用户会话中的唯一 Agent/Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次运行都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
+`codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2b 由交互用户会话中的唯一 Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次 action 都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
 
 ### P1.2 当前切片（2026-08-27）
 
 - **P1.2a 已实现**：.NET 8 Runner Core/CLI、immutable action 与权威 operation
-  ledger 绑定、hash/fingerprint 门禁、profile-project/action-run 双租约、不可变
-  claim/result 与重放完整性复核、Named Pipe v1 实际 server PID/Windows session
-  核验、NoSession 失败关闭和 release-bound evidence producer SHA；初始化器会把
-  相同 Runner 源码放入新项目的 `tools/runner/`。
-- **P1.2b 未实现**：交互会话中的唯一 Agent/Broker 尚未接管 persistent MCP stdio，
-  也尚未实现 Broker 端 Pipe ACL/可信注册、typed action 白名单及长 Build 的取消或
-  完成确认。当前客户端不会自行 Build，也不会启动 PLE/MCP；无 Broker 时只允许
-  生成 `BLOCKED_SESSION_UNAVAILABLE`，不得伪造 session、Build 或 acceptance。
-- `apply_change_set_and_build` 暂时返回 `BLOCKED_UNSUPPORTED_ACTION`。先完成只读
-  inspect/verify Broker，再开放带可执行 payload 和精确 readback 的写工程 action。
+  ledger 绑定、hash/fingerprint 门禁、client/action-run 租约、不可变 claim/result、
+  终态重放完整性复核和 release-bound evidence producer SHA；初始化器会把相同
+  Runner 源码放入新项目的 `tools/runner/`。
+- **P1.2b Broker 基础与离线测试已实现**：显式启动的 interactive Broker 独占
+  profile/project，并实现一个 `codesys-persistent` stdio child 与 persistent PLE 的
+  owner 生命周期；当前已安装 adapter 缺少必需契约，所以生产路径会在启动 PLE 前
+  安全阻断。Named Pipe protocol v2 采用 durable submit/query，客户端超时不抹掉已接受执行。
+- Broker 在 `%LOCALAPPDATA%` 发布 current-user validated registration；客户端验证
+  心跳、SID、Broker PID/start time、可执行路径/SHA、Windows session 及完整项目
+  identity，调用者不能传入 Pipe/PID。Pipe 使用 `CurrentUserOnly`，Broker 同时反查
+  client PID/session。
+- 这些校验防止误连和跨会话混用，但不防御同一 Windows 用户下的恶意进程；同一
+  Windows 用户是本阶段明确的本地信任边界。受控安装、签名与 release-bound Broker
+  identity 留到商业化安全阶段。
+- durable operation journal 持久化 actionId/action SHA/idempotency/state/history；
+  exact replay 不重复执行。store 层区分 pre-dispatch cancel 与 engineering call 开始后
+  继续完成，但当前公开 Pipe contract 仅开放 submit/query；进程中断则进入
+  `UNKNOWN_REVIEW_REQUIRED`，不自动重放 Build。
+- 当前 typed allowlist 仅有 `inspect_and_build` 与 `verify_after_export_2`；固定序列为
+  persistent session + exact project 核验 → 前指纹 → 单次 `compile_project` 的同次结构化
+  summary（含 correlation token、时间与 preflight）→ session/project 再核验 → 后指纹
+  稳定性检查 → terminal observation。缓存型 `get_compile_messages` 不参与 fresh 成功
+  判定。语义验收 producer 尚未齐全时返回 `BLOCKED_CAPABILITY_NOT_IMPLEMENTED`。无
+  generic MCP surface，也无在线命令。
+- `apply_change_set_and_build` 继续返回 `BLOCKED_UNSUPPORTED_ACTION`。2026-08-27
+  离线回归为 Runner 24 cases / 196 assertions（连续三轮）、Broker 12/12（连续三轮）及
+  Engineering fake MCP 9/9；测试只使用 fixture、fake engineering session 和本地
+  Pipe，不启动 PLE/MCP。**实体 PLE acceptance 尚未执行**，因此不宣称真实
+  PLE、仿真、下载或真机已验收。
+- Runner 的 protocol v2 timeout fixture 通过 submit/query 明确握手并由客户端 3 秒
+  deadline 决定 pending，不再依赖 250 ms 调度窗口。Broker atomic JSON 仅对 Windows
+  access/sharing/lock violation 做 6 次、总计约 230 ms 的有界短重试；耗尽后仍抛出，
+  immutable 创建竞态继续映射为 `BROKER_IMMUTABLE_STATE_EXISTS`，临时文件照常清理。
+
+显式启动与只读状态/客户端命令：
+
+```powershell
+dotnet .\src\runner\CtrlX.OpCon.Runner.Broker\bin\Release\net8.0\vcrunner-broker.dll `
+  start --engineering-root '<ai-root>' --station-root '<station-root>' `
+  --plc-project '<absolute-plc-project>' --profile 'ctrlX PLC 2.6.8'
+
+dotnet .\src\runner\CtrlX.OpCon.Runner.Broker\bin\Release\net8.0\vcrunner-broker.dll `
+  status --engineering-root '<ai-root>'
+
+dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
+  doctor --engineering-root '<ai-root>' --json
+
+dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
+  execute-action --engineering-root '<ai-root>' --action-path '<action.json>' `
+  --expected-sha256 '<64-hex-sha256>' --broker-action-timeout-ms 600000 --json
+```
+
+这些 `start` 命令仅保留给受控 adapter/语义证据验收后的交互式 acceptance；届时
+Broker 才能显式启动并持有 MCP/PLE。当前已安装 adapter 下，`start` 启动 MCP child
+读取状态后会在启动 PLE 前失败关闭；`status`、`doctor` 和 SelfTest 不会启动工程
+工具。详细的 run `status`/`verify` 命令见 `src/runner/README.md`。
 
 ## 1. 目标
 
@@ -98,6 +144,10 @@ Skill 负责选择流程和组合工具，不替代 MCP 的确定性接口，也
 
 在现有单进程 mutex 之上增加 OS 级租约，绑定可执行文件完整路径、profile、workspace、工程路径、owner ID 和心跳。扩展重启只能在旧 owner 失效后接管，不得启动第二个 PLE 争抢 profile。
 
+P1.2b 已实现 Broker 范围的 current interactive session owner lease（named mutex +
+exclusive file + owner metadata）和 current-user validated registration heartbeat；推广为所有 MCP
+写工具共用的通用租约、TTL 接管与 watcher 恢复仍属于本节后续工作。
+
 验收标准：
 
 - 两个 MCP 进程同时启动时只有一个获得写租约；另一个在有界时间内返回 owner、profile 和工程信息；
@@ -114,6 +164,11 @@ queued -> running -> succeeded | failed | unknown
 ```
 
 提供 `get_operation_status`、`wait_operation` 和仅针对未开始任务的取消；每个变更支持 caller 提供幂等键。
+
+P1.2b 已实现 Broker action 的 durable submit/query journal、幂等冲突检测，以及
+store 层的 pre-dispatch cancel、non-cancelable completion 和 crash-to-unknown 规则；
+当前 Pipe 仍只有 submit/query，通用 MCP operation/cancel API 与可配置保留/清理策略
+仍未完成。
 
 验收标准：
 
@@ -148,11 +203,16 @@ diagnostics = summary | errors | all
 
 保留当前快速 Build 路径；Clean Build 只执行一次 Clean + 一次 Build，不恢复 `clean/clean_all/build/generate_code` 的重复组合。
 
+P1.2b Broker 已固定使用一次 `compile_project`，只接受该次调用直接返回的结构化
+summary，并校验 correlation、preflight、session/project 与前后指纹；缓存型
+`get_compile_messages` 只可作人工补充显示，不能证明 fresh Build。这里定义的通用
+`compile_project_v2` 模式接口和实体 PLE acceptance 仍未完成。
+
 验收标准：
 
 - 返回 `buildId`、工程路径/哈希、开始时间、耗时、error/warning 数和摘要来源；
 - 错误与按需 warning 包含 code、对象、位置和原始文本；至少能完整返回类似 C0198 的诊断；
-- `get_compile_messages(buildId)` 不会把旧工程或旧 Build 缓存冒充当前结果；
+- 任何补充消息查询都不会把旧工程或旧 Build 缓存冒充当前结果；
 - 拿不到可靠 Build summary 时失败关闭，绝不报告假 0 error；
 - fast summary 与 detailed 模式均有有界调用次数，不按“全部类别 x 全部 severity”扫描。
 

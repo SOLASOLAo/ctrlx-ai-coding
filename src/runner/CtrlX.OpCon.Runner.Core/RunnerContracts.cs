@@ -100,17 +100,41 @@ public sealed record BrokerSessionIdentity(
     int ProtocolVersion,
     int BrokerPid,
     string SessionId,
+    int McpPid,
     int PlePid,
     string Profile,
     string ActiveProjectPath,
     string State,
-    bool StartedByRunner);
+    bool PleOwnedByBroker);
 
 public sealed record BrokerExecutionReply(
     bool Available,
     string ReasonCode,
     BrokerSessionIdentity? Session,
-    JsonObject? Observation);
+    JsonObject? Observation)
+{
+    /// <summary>
+    /// True only after the Broker has durably accepted the immutable action.
+    /// Once accepted, a client timeout is not equivalent to "not executed".
+    /// </summary>
+    public bool Accepted { get; init; }
+
+    /// <summary>
+    /// True when the Broker returned a durable terminal outcome. Successful,
+    /// blocked, and failed outcomes carry an observation. A terminal outcome
+    /// that cannot safely claim what happened in PLE sets ReviewRequired and
+    /// deliberately omits session/observation evidence.
+    /// </summary>
+    public bool Terminal { get; init; }
+
+    /// <summary>
+    /// True only for a durable terminal outcome which must be sealed locally as
+    /// UNKNOWN without replaying the engineering call.
+    /// </summary>
+    public bool ReviewRequired { get; init; }
+
+    public string? ExecutionId { get; init; }
+}
 
 public interface ISessionBrokerClient
 {
@@ -130,7 +154,11 @@ public sealed class NoSessionBrokerClient : ISessionBrokerClient
             Available: false,
             ReasonCode: "BLOCKED_SESSION_UNAVAILABLE",
             Session: null,
-            Observation: null));
+            Observation: null)
+        {
+            Accepted = false,
+            Terminal = false
+        });
     }
 }
 

@@ -1,6 +1,6 @@
 # ctrlX AI Coding — 讨论与决策记录(SESSION LOG)
 
-> 记录人:AI + AGZ1WX · 2026-08-04 ~ 2026-08-22
+> 记录人:AI + AGZ1WX · 2026-08-04 ~ 2026-08-27
 > 本文是过程流水账;结论性内容以 `ctrlX_AI_project_baseline.md` 为准。
 
 ## 背景
@@ -125,15 +125,69 @@
   相同 action 不会重复送往 Broker，残缺 claim 进入 `UNKNOWN` 等待人工复核。
 - action 额外绑定 `operation.json.currentAction`；每次终态重放都会重新核对 result、
   observation、evidence、guardrails 与 SHA，篡改或 ledger 漂移均在 Broker 前拒绝。
-- 新增本地 Named Pipe v1 client，只连接已存在的 Broker并核对实际 server PID 与
-  当前 Windows session；没有 Broker 时封口为 `BLOCKED_SESSION_UNAVAILABLE`，
-  不包含虚假的 session/Build/acceptance。evidence producer 由发布 SHA 固定。
-- P1.2a 不启动 PLE/MCP/Broker，不含在线工具；P1.2b 唯一 session Agent/Broker
-  仍待实现，且必须补齐 Broker-side ACL/可信注册、typed action 白名单与长 Build
-  取消或完成确认；写工程 action 继续 fail-closed。
+- 当时新增本地 Named Pipe v1 client，只连接已存在的 Broker并核对实际 server PID
+  与当前 Windows session；它已由下一节 P1.2b protocol v2 current-user validated registration +
+  submit/query 替代。evidence producer 由发布 SHA 固定。
+- P1.2a client 本身不启动 PLE/MCP/Broker，也不含在线工具；该切片结束时 P1.2b
+  尚待实现，当前状态以紧随其后的 P1.2b 记录为准。写工程 action 继续 fail-closed。
 - Release Build 为 0 errors / 0 warnings；SelfTest 14/14、176 assertions；新项目
   初始化器 81 assertions，并同时编译生成后的 Runner、执行 Doctor 与 wrapper
   不触发 `dotnet run` 的防回退检查。
+
+### 2026-08-27 · Controlled Runner P1.2b Interactive Broker
+
+- 新增必须由用户显式启动的 interactive Broker；它使用 current-session owner lease
+  独占 profile/project，并实现唯一 `codesys-persistent` stdio child 与 persistent PLE
+  session 的 owner 生命周期。当前已安装 adapter 缺少新契约，生产路径会在启动 PLE
+  前安全阻断。CLI/client、`status`、`doctor` 和测试不会替用户启动 Broker/PLE/MCP。
+- Named Pipe 升级为 protocol v2 durable submit/query：submit 先落盘并返回 acceptance，
+  随后客户端按 execution ID query；已接受后发生 timeout/cancel 只表示客户端停止等待，
+  不会把仍在 Broker 中执行的 Build 伪报成未执行或失败。
+- `%LOCALAPPDATA%` current-user registration 绑定 heartbeat、SID、Broker PID/start time、
+  executable path/SHA、Windows session、MCP/PLE PID、persistent session 和完整 project
+  identity。客户端只使用 canonical registration discovery，不能传 Pipe/PID；Pipe
+  采用 `CurrentUserOnly`，Broker 反查 client PID/session。
+- registration 是 current-user validated，而不是抵御同用户恶意代码的安全根；同一
+  Windows 用户是本阶段明确的信任边界，受控安装/签名/release-bound identity 后续实现。
+- durable operation journal 保存 actionId/action SHA/idempotency 与完整状态历史；exact
+  replay 不重复执行。store 层区分 pre-dispatch cancel 与 engineering call 开始后的
+  non-cancelable completion，但当前公开 Pipe contract 只有 submit/query；Broker 中断
+  期间的调用进入 `UNKNOWN_REVIEW_REQUIRED`，不得自动重复 Build。
+- typed allowlist 当前仅开放 `inspect_and_build`、`verify_after_export_2`；
+  `apply_change_set_and_build` 继续 fail-closed。固定离线序列为 session/exact project
+  核验 → 前指纹 → 单次 `compile_project` 同次结构化 summary/correlation/preflight
+  核验 → session/project 再核验 → 后指纹稳定性 → terminal observation；缓存型
+  `get_compile_messages` 不参与 fresh 成功判定；没有
+  generic MCP、连接、下载、运行时启停、变量写入或 FORCE surface。
+- 当前离线回归为 Runner **24 cases / 196 assertions**（连续三轮）、Broker **12/12**（连续三轮）、
+  Engineering fake MCP **9/9**，使用 fixture、fake engineering session 和本地 Pipe，
+  测试期间未启动 PLE/MCP/工程工具。**尚未执行实体 PLE
+  acceptance**；因此当前不宣称真实 PLE、仿真、下载或实体 PLC 已验收。
+- 已消除两处 Windows 回归抖动：protocol v2 fake Pipe 以 submit/query 握手和 3 秒
+  客户端 deadline 确定 pending，不再赌 250 ms 调度；Broker atomic JSON 只对
+  access/sharing/lock violation 做 6 次、总计约 230 ms 的有界短重试，耗尽仍失败，
+  immutable 目标竞态保持 `BROKER_IMMUTABLE_STATE_EXISTS`，临时文件保持清理。
+- 显式操作入口：
+
+  ```powershell
+  dotnet .\src\runner\CtrlX.OpCon.Runner.Broker\bin\Release\net8.0\vcrunner-broker.dll `
+    start --engineering-root '<ai-root>' --station-root '<station-root>' `
+    --plc-project '<plc-project>' --profile 'ctrlX PLC 2.6.8'
+
+  dotnet .\src\runner\CtrlX.OpCon.Runner.Broker\bin\Release\net8.0\vcrunner-broker.dll `
+    status --engineering-root '<ai-root>'
+
+  dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
+    doctor --engineering-root '<ai-root>' --json
+
+  dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
+    execute-action --engineering-root '<ai-root>' --action-path '<action.json>' `
+    --expected-sha256 '<64-hex-sha256>' --json
+  ```
+
+  这些 `start` 命令只用于后续 acceptance。受控 adapter 通过验收后，只有 Broker
+  `start` 能显式启动/持有 MCP 与 PLE；当前已安装 adapter 下会在启动 PLE 前失败
+  关闭。完整 client run `status`/`verify` 示例见 `src/runner/README.md`。
 
 ## 关键决策清单
 
@@ -160,14 +214,16 @@
 | D22 | **Post-export hook 只发布独立请求**；离线消费者不启动 PLE/MCP，且请求 Station/PLC 必须与项目配置强一致 | 08-20 |
 | D23 | **Stage 2 先采用 PlanOnly operation ledger**；action/evidence 必须哈希绑定，协调器不启动 PLE/MCP/REST；live runner 与跨进程 MCP 租约后续实现 | 08-22 |
 | D24 | **Runner 分为控制面和唯一会话执行面**；P1.1 默认不启动 PLE/MCP，P1.2 由交互会话 Agent/Broker 独占 stdio/PLE，Windows Service 不从 Session 0 启动 PLE | 08-27 |
+| D25 | **P1.2b 使用显式 interactive Broker + protocol v2 current-user validated registration + durable submit/query**；同一 Windows 用户是当前信任边界；当前只允许 typed inspect/verify 和固定离线 Build，写工程/在线功能继续关闭，真实 PLE acceptance 单独执行 | 08-27 |
 
 ## 待办 / 下一步
 
 1. 新项目使用统一初始化器创建 AI 旁车；用户继续在 CpStudio 维护模型/标准对象/HMI，AI 维护 ownership 声明的 PLC 增量；
-2. 配置真实 CpStudio Post-export hook，验证 Stage 1 报告和 Stage 2 PlanOnly ledger，再由既有唯一 persistent 会话执行首个 action/evidence 闭环；
-3. 按 `docs/mcp_productization_roadmap.md` 建立 live runner、跨进程 MCP 租约、健康检查、结构化编译和 change set；
-4. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；
-5. **路线④**:开发机已就绪,P0~P2 完成(继承 PreemptRt);执行转入 **FreePLCDemo**(v4 安装 → P4 集成);
+2. 先把受控 ownership/fresh-Build adapter 与语义证据 producer 验收完，再在交互会话中执行 P1.2b 首次真实 PLE acceptance：显式启动 Broker，核对 validated registration/status，再用一个只读 `inspect_and_build` action 验证固定 Build/readback/evidence；验收前不扩展写工程 action；
+3. 配置真实 CpStudio Post-export hook，验证 Stage 1 报告和 Stage 2 ledger，再通过 protocol v2 客户端执行首个真实 action/evidence 闭环；
+4. 按 `docs/mcp_productization_roadmap.md` 继续通用健康检查、结构化编译和 change set；`apply_change_set_and_build` 在 payload/readback/恢复门禁完成前保持关闭；
+5. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；
+6. **路线④**:开发机已就绪,P0~P2 完成(继承 PreemptRt);执行转入 **FreePLCDemo**(v4 安装 → P4 集成);
    交接见 `route4-rtpreempt-openplc/HANDOVER.md` §7。
 ## D17(2026-08-18 夜)PLE SymbolConfig 脚本极限实测 + Station010 GitHub 备份
 - 实测结论:SymbolConfig 条目对 ScriptEngine 树 API 完全不可见(find/get_children/export_xml 全空);可读形态仅 IDE 导出的 Symbolconfiguration XML。详见 docs/ple_symbolconfig_git_notes.md。

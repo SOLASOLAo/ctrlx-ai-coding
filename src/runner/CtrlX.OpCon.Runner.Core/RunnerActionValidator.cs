@@ -312,24 +312,25 @@ public sealed class RunnerActionValidator
             "offlineOnly",
             "onlineOperationsAllowed",
             "requireExistingPersistentSession",
-            "prohibitStartPleOrMcp",
+            "prohibitPleOrMcpStartByAction",
             "prohibitDirectWatcherIpc",
             "requireExactProjectOpen",
-            "projectLeaseRequired",
-            "releaseLeaseAfterAction",
+            "actionProjectGateRequired",
+            "releaseActionProjectGateBeforeTerminalDelivery",
             "symbolAccessSerialized",
-            "coordinationScope");
+            "actionProjectGateKind");
 
         if (!RunnerValidation.RequiredBoolean(guardrails, "offlineOnly", "Runner action guardrails") ||
             RunnerValidation.RequiredBoolean(guardrails, "onlineOperationsAllowed", "Runner action guardrails") ||
             !RunnerValidation.RequiredBoolean(guardrails, "requireExistingPersistentSession", "Runner action guardrails") ||
-            !RunnerValidation.RequiredBoolean(guardrails, "prohibitStartPleOrMcp", "Runner action guardrails") ||
+            !RunnerValidation.RequiredBoolean(guardrails, "prohibitPleOrMcpStartByAction", "Runner action guardrails") ||
             !RunnerValidation.RequiredBoolean(guardrails, "prohibitDirectWatcherIpc", "Runner action guardrails") ||
             !RunnerValidation.RequiredBoolean(guardrails, "requireExactProjectOpen", "Runner action guardrails") ||
-            !RunnerValidation.RequiredBoolean(guardrails, "projectLeaseRequired", "Runner action guardrails") ||
-            !RunnerValidation.RequiredBoolean(guardrails, "releaseLeaseAfterAction", "Runner action guardrails") ||
+            !RunnerValidation.RequiredBoolean(guardrails, "actionProjectGateRequired", "Runner action guardrails") ||
+            !RunnerValidation.RequiredBoolean(guardrails, "releaseActionProjectGateBeforeTerminalDelivery", "Runner action guardrails") ||
             !RunnerValidation.RequiredBoolean(guardrails, "symbolAccessSerialized", "Runner action guardrails") ||
-            RunnerValidation.RequiredString(guardrails, "coordinationScope", "Runner action guardrails") != "workflow-local-until-runner-lease")
+            RunnerValidation.RequiredString(guardrails, "actionProjectGateKind", "Runner action guardrails") !=
+                "broker-session-action-serialization")
         {
             throw new RunnerGateException("ACTION_GUARDRAIL_INVALID", "Runner action does not contain the required offline/single-session guardrails.");
         }
@@ -343,7 +344,7 @@ public sealed class RunnerActionValidator
             "schemaVersion",
             "requireActionRequestSha256",
             "requireOfflineOnly",
-            "requireProjectLeaseReleased",
+            "requireActionProjectGateReleased",
             "requireReadbackOnSuccess",
             "requireFreshBuildOnSuccess",
             "terminalFailureMayOmitBuild",
@@ -351,7 +352,7 @@ public sealed class RunnerActionValidator
         if (RunnerValidation.RequiredInt32(contract, "schemaVersion", "Runner action evidenceContract") != 1 ||
             !RunnerValidation.RequiredBoolean(contract, "requireActionRequestSha256", "Runner action evidenceContract") ||
             !RunnerValidation.RequiredBoolean(contract, "requireOfflineOnly", "Runner action evidenceContract") ||
-            !RunnerValidation.RequiredBoolean(contract, "requireProjectLeaseReleased", "Runner action evidenceContract") ||
+            !RunnerValidation.RequiredBoolean(contract, "requireActionProjectGateReleased", "Runner action evidenceContract") ||
             !RunnerValidation.RequiredBoolean(contract, "requireReadbackOnSuccess", "Runner action evidenceContract") ||
             !RunnerValidation.RequiredBoolean(contract, "requireFreshBuildOnSuccess", "Runner action evidenceContract") ||
             !RunnerValidation.RequiredBoolean(contract, "terminalFailureMayOmitBuild", "Runner action evidenceContract") ||

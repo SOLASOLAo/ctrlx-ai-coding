@@ -159,21 +159,37 @@ with `Invoke-PostExportEngineering.ps1 -EvidencePath`. Every success fact is
 required explicitly; the producer supplies no default `TRUE` values. A runner
 that cannot reuse the existing session writes `status: blocked`, omits Build,
 and records a safe reason code instead of fabricating acceptance.
-An apply action that fails after a partial write may report only the verified
-subset already read back; a terminal failure before the first call uses an
-empty `capabilitiesInvoked` array. Successful actions still require complete
-readback and a fresh Build.
+The current typed Broker executes only `inspect_and_build` and
+`verify_after_export_2`. Their successful capability ledger is exactly
+`get_codesys_status` plus `compile_project`; legacy `get_compile_messages`,
+project-open/read/write tools, and any extra capability are rejected at the
+producer and consumer boundaries. `apply_change_set_and_build` is not yet
+supported and therefore terminates locally as `BLOCKED` before a Broker call;
+successful or partially-applied write evidence is rejected.
 
-`projectLeaseScope: workflow-local` describes the present one-Codex-session
-coordination rule. It is not an OS-level cross-process lock. Record
-`projectLeaseAcquired` and `projectLeaseReleased` explicitly and do not claim
-`cross-process` until that lease implementation exists.
+Each immutable action names the same boundary explicitly:
+`prohibitPleOrMcpStartByAction`, `actionProjectGateRequired`,
+`releaseActionProjectGateBeforeTerminalDelivery`, and
+`actionProjectGateKind: broker-session-action-serialization`. Its evidence
+contract requires `requireActionProjectGateReleased`; legacy workflow-lease
+field names are not accepted in a new action request.
 
-The session PID, session reuse, and workflow-local lease fields are structured
-self-attestations from the active runner. The pure producer validates that they
-are present and internally consistent, but it does not independently query the
-process table or MCP session. They are therefore operational audit evidence,
-not a cryptographic or OS-enforced trust boundary.
+Runner evidence describes the action-scoped Broker serialization gate, not the
+Stage 2 coordinator's workflow-local ledger lock. A Broker-executed action must
+record `actionProjectGateAcquired: true`, `actionProjectGateReleased: true`, and
+`actionProjectGateKind: broker-session-action-serialization`. A local blocker
+that never entered the Broker records `false`, `true`, and `none` respectively.
+`operation.coordination.projectLeaseReleased` remains workflow/sentinel state
+and is deliberately not reused as Runner action evidence.
+
+The session record identifies both `plePid` and `mcpPid`, records the Boolean
+fact `pleOwnedByBroker`, and requires `pleOrMcpStartedByAction: false`. A `true`
+ownership value means the Broker started the PLE; `false` means it adopted an
+already-running PLE. Both are valid persistent sessions and neither permits an
+action to start another engineering process. The pure producer validates these
+fields and their internal consistency, but does not independently query the
+process table. They remain operational audit evidence, not a cryptographic
+identity proof.
 
 For EtherCAT BMK work, the coordinated order remains:
 

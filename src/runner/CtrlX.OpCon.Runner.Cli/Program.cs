@@ -73,24 +73,49 @@ internal static class RunnerCli
 
     private static int RunDoctor(CliOptions options)
     {
-        options.RequireOnly("engineering-root", "broker-pipe", "json");
+        options.RequireOnly("engineering-root", "json");
         var engineeringRoot = Path.GetFullPath(options.Require("engineering-root"));
         var producer = Path.Combine(engineeringRoot, "scripts", "cpstudio", "New-PostExportRunnerEvidence.ps1");
         var actionRoot = Path.Combine(engineeringRoot, "data", "operations");
-        var ready = OperatingSystem.IsWindows() &&
+        var registrationPath = BrokerWireProtocol.GetDefaultRegistrationPath(engineeringRoot);
+        BrokerRegistration? registration = null;
+        var registrationValidationReasonCode = "BROKER_REGISTRATION_VALIDATED";
+        try
+        {
+            registration = BrokerRegistrationReader.ReadValidated(engineeringRoot);
+        }
+        catch (RunnerGateException exception)
+        {
+            registrationValidationReasonCode = exception.ReasonCode;
+        }
+
+        var localPrerequisitesReady = OperatingSystem.IsWindows() &&
             Directory.Exists(engineeringRoot) &&
             File.Exists(producer);
+        // Doctor validates the installed action client independently from the
+        // explicitly started interactive Broker. This keeps project creation
+        // and offline workstation checks usable before an engineering session
+        // is opened; execution readiness is reported separately below.
+        var ready = localPrerequisitesReady;
         WriteJson(new JsonObject
         {
             ["schemaVersion"] = 1,
             ["kind"] = "ctrlx-opcon-runner-doctor",
             ["readyForActionClient"] = ready,
+            ["readyForRegisteredExecution"] = ready && registration is not null,
             ["windows"] = OperatingSystem.IsWindows(),
             ["framework"] = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
             ["engineeringRoot"] = engineeringRoot,
             ["actionRootExists"] = Directory.Exists(actionRoot),
             ["evidenceProducerExists"] = File.Exists(producer),
-            ["brokerConfigured"] = options.TryGet("broker-pipe", out _),
+            ["brokerProtocolVersion"] = BrokerWireProtocol.Version,
+            ["brokerRegistrationPath"] = registrationPath,
+            ["brokerRegistrationExists"] = File.Exists(registrationPath),
+            ["brokerRegistrationValidated"] = registration is not null,
+            ["brokerRegistrationValidationReasonCode"] = registrationValidationReasonCode,
+            ["brokerState"] = registration?.State,
+            ["brokerPid"] = registration?.BrokerPid,
+            ["brokerWindowsSessionId"] = registration?.WindowsSessionId,
             ["startsPleOrMcp"] = false,
             ["onlineOperationsAllowed"] = false
         });
@@ -103,8 +128,6 @@ internal static class RunnerCli
             "engineering-root",
             "action-path",
             "expected-sha256",
-            "broker-pipe",
-            "broker-pid",
             "broker-connect-timeout-ms",
             "broker-action-timeout-ms",
             "lease-timeout-ms",
@@ -118,36 +141,11 @@ internal static class RunnerCli
         var brokerActionTimeout = TimeSpan.FromMilliseconds(
             options.GetInt32("broker-action-timeout-ms", 600_000, minimum: 1_000, maximum: 1_800_000));
 
-        ISessionBrokerClient broker;
-        if (options.TryGet("broker-pipe", out var pipeName))
-        {
-            if (!options.TryGet("broker-pid", out _))
-            {
-                throw new RunnerGateException(
-                    "CLI_ARGUMENT_MISSING",
-                    "Option --broker-pid is required with --broker-pipe.",
-                    RunnerExitCodes.Usage);
-            }
-
-            var brokerPid = options.GetInt32("broker-pid", 0, minimum: 1, maximum: int.MaxValue);
-            broker = new NamedPipeSessionBrokerClient(
-                pipeName,
-                brokerPid,
-                brokerConnectTimeout,
-                brokerActionTimeout);
-        }
-        else
-        {
-            if (options.TryGet("broker-pid", out _))
-            {
-                throw new RunnerGateException(
-                    "CLI_ARGUMENT_INVALID",
-                    "Option --broker-pid requires --broker-pipe.",
-                    RunnerExitCodes.Usage);
-            }
-
-            broker = new NoSessionBrokerClient();
-        }
+        ISessionBrokerClient broker = new NamedPipeSessionBrokerClient(
+            engineeringRoot,
+            registrationPath: null,
+            brokerConnectTimeout,
+            brokerActionTimeout);
         var executor = new RunnerExecutor(broker, new PowerShellEvidenceSealer());
         var result = await executor.ExecuteAsync(
             new RunnerExecutionRequest(engineeringRoot, actionPath, expectedSha256, leaseTimeout),
@@ -185,9 +183,8 @@ internal static class RunnerCli
             vcrunner - ctrlX OpCon offline Stage2 action client
 
             Commands:
-              doctor --engineering-root <path> [--broker-pipe <name>] [--json]
+              doctor --engineering-root <path> [--json]
               execute-action --engineering-root <path> --action-path <path> --expected-sha256 <sha256>
-                             [--broker-pipe <name> --broker-pid <trusted-pid>]
                              [--broker-connect-timeout-ms <ms>] [--broker-action-timeout-ms <ms>]
                              [--lease-timeout-ms <ms>] [--json]
               status --engineering-root <path> --run-id <id> [--json]
@@ -195,7 +192,9 @@ internal static class RunnerCli
 
             Safety boundary:
               This client never starts PLE, MCP, a Broker, or any online PLC operation.
-              Without an already-running Broker, execute-action seals BLOCKED_SESSION_UNAVAILABLE.
+              Broker protocol v2 is discovered only through the current-user validated registration path.
+              The same Windows user is the present local trust boundary.
+              Callers cannot override the Broker Pipe or PID.
             """);
     }
 }

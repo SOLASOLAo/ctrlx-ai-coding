@@ -26,13 +26,6 @@ param(
     [string]$ActionRunId,
 
     [Parameter(Mandatory = $false)]
-    [string]$BrokerPipe,
-
-    [Parameter(Mandatory = $false)]
-    [ValidateRange(0, 2147483647)]
-    [int]$BrokerPid = 0,
-
-    [Parameter(Mandatory = $false)]
     [ValidateRange(100, 120000)]
     [int]$BrokerConnectTimeoutMilliseconds = 2000,
 
@@ -419,16 +412,6 @@ if ($Command -in @('Doctor', 'ExecuteAction', 'ActionStatus', 'ActionVerify')) {
             @('verify', '--engineering-root', $engineeringRootResolved, '--run-id', $ActionRunId, '--json')
         }
     }
-    if (($Command -in @('Doctor', 'ExecuteAction')) -and
-        (-not [string]::IsNullOrWhiteSpace($BrokerPipe))) {
-        $runnerArguments += @('--broker-pipe', $BrokerPipe)
-        if ($Command -eq 'ExecuteAction') {
-            if ($BrokerPid -le 0) {
-                throw 'ExecuteAction with -BrokerPipe also requires the trusted -BrokerPid published by the registered Broker.'
-            }
-            $runnerArguments += @('--broker-pid', [string]$BrokerPid)
-        }
-    }
     $runnerExitCode = Invoke-RunnerCli -Assembly $runnerAssembly -Arguments $runnerArguments
     exit $runnerExitCode
 }
@@ -507,7 +490,7 @@ try {
         }
         guardrails = [ordered]@{
             onlineOperationsUsed = $false
-            pleOrMcpStarted = $false
+            pleOrMcpStartedByAction = $false
             secondPleStarted = $false
             generatedProjectBytesWritten = $false
             deploymentAllowed = $false
@@ -630,7 +613,7 @@ catch {
             completedAtUtc = $null
             project = [ordered]@{ engineeringRoot = $engineeringRootResolved }
             lease = [ordered]@{ scope = 'os-file-exclusive'; leaseId = if ($lease) { $lease.LeaseId } else { $null }; acquired = ($null -ne $lease); released = $false }
-            guardrails = [ordered]@{ onlineOperationsUsed = $false; pleOrMcpStarted = $false; secondPleStarted = $false; generatedProjectBytesWritten = $false; deploymentAllowed = $false }
+            guardrails = [ordered]@{ onlineOperationsUsed = $false; pleOrMcpStartedByAction = $false; secondPleStarted = $false; generatedProjectBytesWritten = $false; deploymentAllowed = $false }
             allowedCapabilities = @('post_export_stage1_audit', 'post_export_stage2_plan')
             capabilitiesInvoked = @()
             steps = @()

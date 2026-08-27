@@ -371,7 +371,7 @@ function New-RunnerEvidence {
         [Parameter(Mandatory = $false)][object[]]$CapabilitiesInvoked,
         [Parameter(Mandatory = $false)][bool]$OnlineOperationsUsed = $false,
         [Parameter(Mandatory = $false)][bool]$SecondPleStarted = $false,
-        [Parameter(Mandatory = $false)][bool]$ProjectLeaseReleased = $true,
+        [Parameter(Mandatory = $false)][bool]$ActionProjectGateReleased = $true,
         [Parameter(Mandatory = $false)][bool]$OmitBuild = $false,
         [Parameter(Mandatory = $false)][string]$ActionRequestSha256
     )
@@ -381,13 +381,7 @@ function New-RunnerEvidence {
     }
     if (-not $PSBoundParameters.ContainsKey('CapabilitiesInvoked')) {
         $CapabilitiesInvoked = if ($ResultStatus -eq 'succeeded') {
-            $baseCapabilities = @('get_codesys_status', 'compile_project', 'get_compile_messages')
-            if ([string]$Action.kind -eq 'apply_change_set_and_build') {
-                @($baseCapabilities + @('get_all_pou_code', 'set_pou_code'))
-            }
-            else {
-                @($baseCapabilities)
-            }
+            @('get_codesys_status', 'compile_project')
         }
         else {
             @()
@@ -440,14 +434,14 @@ function New-RunnerEvidence {
         }
         capabilitiesInvoked = $serializedCapabilities
         guardrails          = [ordered]@{
-            onlineOperationsUsed = $OnlineOperationsUsed
-            secondPleStarted     = $SecondPleStarted
-            projectLeaseAcquired = ($ResultStatus -eq 'succeeded')
-            projectLeaseReleased = $ProjectLeaseReleased
-            projectLeaseScope    = 'workflow-local'
-            symbolLeaseHeld      = $false
-            pleOrMcpStarted      = $false
-            directWatcherIpcUsed = $false
+            onlineOperationsUsed      = $OnlineOperationsUsed
+            secondPleStarted          = $SecondPleStarted
+            actionProjectGateAcquired = ($ResultStatus -eq 'succeeded')
+            actionProjectGateReleased = $ActionProjectGateReleased
+            actionProjectGateKind     = if ($ResultStatus -eq 'succeeded') { 'broker-session-action-serialization' } else { 'none' }
+            symbolLeaseHeld           = $false
+            pleOrMcpStartedByAction    = $false
+            directWatcherIpcUsed      = $false
         }
         result              = [ordered]@{
             status              = $ResultStatus
@@ -484,7 +478,7 @@ function New-RunnerEvidence {
                 recoverableBaselineVerified   = $true
                 warningSignaturesReviewed     = $true
                 existingSessionReused         = $true
-                pleOrMcpStarted                = $false
+                pleOrMcpStartedByAction        = $false
                 directWatcherIpcUsed           = $false
                 symbolPostProcessingVerified  = (-not $RequiresSecondExport -and -not $RequiresCpStudioChange)
             }
@@ -498,9 +492,10 @@ function New-RunnerEvidence {
             mode              = 'persistent'
             sessionId         = 'fixture-stage2-session'
             plePid            = 1234
+            mcpPid            = 2345
             profile           = $Action.payload.project.profile
             activeProjectPath = $Action.payload.project.plcProject
-            startedByRunner   = $false
+            pleOwnedByBroker  = $true
         }
     }
     else {
@@ -547,25 +542,26 @@ function New-ProducerBackedEvidence {
         actionRequestSha256 = $Action.sha256
         status              = 'succeeded'
         completedAtUtc      = $completedAt.ToString('o')
-        capabilitiesInvoked = @('get_codesys_status', 'open_project', 'get_all_pou_code', 'compile_project', 'get_compile_messages')
+        capabilitiesInvoked = @('get_codesys_status', 'compile_project')
         session             = [ordered]@{
             state             = 'ready'
             mode              = 'persistent'
             sessionId         = 'fixture-stage2-session'
             plePid            = 1234
+            mcpPid            = 2345
             profile           = $Action.payload.project.profile
             activeProjectPath = $Action.payload.project.plcProject
-            startedByRunner   = $false
+            pleOwnedByBroker  = $false
         }
         guardrails          = [ordered]@{
-            onlineOperationsUsed = $false
-            secondPleStarted     = $false
-            projectLeaseAcquired = $true
-            projectLeaseReleased = $true
-            projectLeaseScope    = 'workflow-local'
-            symbolLeaseHeld      = $false
-            pleOrMcpStarted      = $false
-            directWatcherIpcUsed = $false
+            onlineOperationsUsed      = $false
+            secondPleStarted          = $false
+            actionProjectGateAcquired = $true
+            actionProjectGateReleased = $true
+            actionProjectGateKind     = 'broker-session-action-serialization'
+            symbolLeaseHeld           = $false
+            pleOrMcpStartedByAction    = $false
+            directWatcherIpcUsed      = $false
         }
         result              = [ordered]@{
             verificationOk         = $true
@@ -595,7 +591,7 @@ function New-ProducerBackedEvidence {
                 recoverableBaselineVerified  = $true
                 warningSignaturesReviewed    = $true
                 existingSessionReused        = $true
-                pleOrMcpStarted               = $false
+                pleOrMcpStartedByAction       = $false
                 directWatcherIpcUsed          = $false
                 symbolPostProcessingVerified = $true
             }
@@ -722,6 +718,15 @@ tools:
     Assert-True -Condition ((Get-FileHash -LiteralPath ([string]$idempotentStart.actionRequestPath) -Algorithm SHA256).Hash -eq [string]$idempotentStart.actionRequestSha256) -Message 'New operation result action hash does not match the immutable action file.'
     $idempotentAction = Get-ActionRequestInfo -Result $idempotentStart -OperationRoot $operationRoot -OperationId $idempotentStart.operationId
     Assert-True -Condition ($idempotentAction.kind -eq 'inspect_and_build') -Message 'Initial action kind is not inspect_and_build.'
+    Assert-True -Condition ($idempotentAction.payload.guardrails.prohibitPleOrMcpStartByAction) -Message 'Action omitted the action-scoped PLE/MCP start prohibition.'
+    Assert-True -Condition ($idempotentAction.payload.guardrails.actionProjectGateRequired) -Message 'Action omitted the Broker serialization gate requirement.'
+    Assert-True -Condition ($idempotentAction.payload.guardrails.releaseActionProjectGateBeforeTerminalDelivery) -Message 'Action omitted the gate release-before-terminal contract.'
+    Assert-True -Condition ([string]$idempotentAction.payload.guardrails.actionProjectGateKind -eq 'broker-session-action-serialization') -Message 'Action used the wrong Broker serialization gate kind.'
+    Assert-True -Condition ($idempotentAction.payload.evidenceContract.requireActionProjectGateReleased) -Message 'Action evidence contract omitted the action gate release proof.'
+    foreach ($legacyActionField in @('prohibitStartPleOrMcp', 'projectLeaseRequired', 'releaseLeaseAfterAction', 'coordinationScope')) {
+        Assert-True -Condition ($null -eq $idempotentAction.payload.guardrails.PSObject.Properties[$legacyActionField]) -Message "Action retained legacy guardrail '$legacyActionField'."
+    }
+    Assert-True -Condition ($null -eq $idempotentAction.payload.evidenceContract.PSObject.Properties['requireProjectLeaseReleased']) -Message 'Action retained the legacy evidence lease field.'
     $operationFilesBeforeRepeat = Get-FileFingerprintMap -Root $operationRoot
     $idempotentRepeat = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
         AuditReport    = $idempotentAudit
@@ -761,9 +766,9 @@ tools:
         -OperationId $idempotentStart.operationId `
         -Action $idempotentAction
     $legacyDirect.Remove('session')
-    $legacyDirect.guardrails.Remove('projectLeaseAcquired')
-    $legacyDirect.guardrails.Remove('projectLeaseScope')
-    $legacyDirect.guardrails.Remove('pleOrMcpStarted')
+    $legacyDirect.guardrails.Remove('actionProjectGateAcquired')
+    $legacyDirect.guardrails.Remove('actionProjectGateKind')
+    $legacyDirect.guardrails.Remove('pleOrMcpStartedByAction')
     $legacyDirect.guardrails.Remove('directWatcherIpcUsed')
     $legacyDirect['capabilitiesInvoked'] = @()
     Write-JsonFile -Path $legacyDirectPath -Value $legacyDirect
@@ -775,15 +780,13 @@ tools:
     }
     Assert-True -Condition $legacyDirectResult.rejected -Message 'Legacy hand-written evidence bypassed the producer field contract.'
 
-    # Required capabilities must each be reported exactly once. Additional
-    # safe read-only audit capabilities are allowed and exercised in the
-    # producer-backed DONE path below.
+    # The typed Broker success contract is exactly status + compile, each once.
     $extraCapabilityPath = Join-Path $evidenceRoot 'duplicate-required-capability.json'
     $null = New-RunnerEvidence `
         -Path $extraCapabilityPath `
         -OperationId $idempotentStart.operationId `
         -Action $idempotentAction `
-        -CapabilitiesInvoked @('get_codesys_status', 'compile_project', 'compile_project', 'get_compile_messages')
+        -CapabilitiesInvoked @('get_codesys_status', 'compile_project', 'compile_project')
     $extraCapabilityResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
         OperationId = $idempotentStart.operationId
         EvidencePath = $extraCapabilityPath
@@ -792,12 +795,56 @@ tools:
     }
     Assert-True -Condition $extraCapabilityResult.rejected -Message 'Successful evidence with a duplicated required capability was accepted.'
 
+    $legacyCompileMessagesPath = Join-Path $evidenceRoot 'legacy-compile-messages-capability.json'
+    $null = New-RunnerEvidence `
+        -Path $legacyCompileMessagesPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction `
+        -CapabilitiesInvoked @('get_codesys_status', 'compile_project', 'get_compile_messages')
+    $legacyCompileMessagesResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $legacyCompileMessagesPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $legacyCompileMessagesResult.rejected -Message 'Legacy get_compile_messages capability was accepted.'
+
+    $missingPleOwnershipPath = Join-Path $evidenceRoot 'missing-ple-ownership.json'
+    $missingPleOwnership = New-RunnerEvidence `
+        -Path $missingPleOwnershipPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction
+    $missingPleOwnership.session.Remove('pleOwnedByBroker')
+    Write-JsonFile -Path $missingPleOwnershipPath -Value $missingPleOwnership
+    $missingPleOwnershipResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $missingPleOwnershipPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $missingPleOwnershipResult.rejected -Message 'Session evidence missing pleOwnedByBroker was accepted.'
+
+    $invalidPleOwnershipPath = Join-Path $evidenceRoot 'invalid-ple-ownership.json'
+    $invalidPleOwnership = New-RunnerEvidence `
+        -Path $invalidPleOwnershipPath `
+        -OperationId $idempotentStart.operationId `
+        -Action $idempotentAction
+    $invalidPleOwnership.session.pleOwnedByBroker = 'false'
+    Write-JsonFile -Path $invalidPleOwnershipPath -Value $invalidPleOwnership
+    $invalidPleOwnershipResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId = $idempotentStart.operationId
+        EvidencePath = $invalidPleOwnershipPath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition $invalidPleOwnershipResult.rejected -Message 'Non-Boolean pleOwnedByBroker evidence was accepted.'
+
     $unapprovedCapabilityPath = Join-Path $evidenceRoot 'unapproved-capability.json'
     $null = New-RunnerEvidence `
         -Path $unapprovedCapabilityPath `
         -OperationId $idempotentStart.operationId `
         -Action $idempotentAction `
-        -CapabilitiesInvoked @('get_codesys_status', 'delete_object', 'compile_project', 'get_compile_messages')
+        -CapabilitiesInvoked @('get_codesys_status', 'delete_object', 'compile_project')
     $unapprovedCapabilityResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
         OperationId = $idempotentStart.operationId
         EvidencePath = $unapprovedCapabilityPath
@@ -811,7 +858,7 @@ tools:
         -Path $redundantSavePath `
         -OperationId $idempotentStart.operationId `
         -Action $idempotentAction `
-        -CapabilitiesInvoked @('get_codesys_status', 'save_project', 'compile_project', 'get_compile_messages')
+        -CapabilitiesInvoked @('get_codesys_status', 'save_project', 'compile_project')
     $redundantSaveResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
         OperationId = $idempotentStart.operationId
         EvidencePath = $redundantSavePath
@@ -825,7 +872,7 @@ tools:
         -Path $inspectWriteCapabilityPath `
         -OperationId $idempotentStart.operationId `
         -Action $idempotentAction `
-        -CapabilitiesInvoked @('get_codesys_status', 'get_all_pou_code', 'set_pou_code', 'compile_project', 'get_compile_messages')
+        -CapabilitiesInvoked @('get_codesys_status', 'get_all_pou_code', 'set_pou_code', 'compile_project')
     $inspectWriteCapabilityResult = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
         OperationId = $idempotentStart.operationId
         EvidencePath = $inspectWriteCapabilityPath
@@ -1061,7 +1108,8 @@ tools:
     $cleanProducedEvidence = New-ProducerBackedEvidence -ProducerPath $producer -Path $cleanEvidencePath -ObservationPath $cleanObservationPath -Action $cleanAction
     Assert-True -Condition ([string]$cleanProducedEvidence.actionId -eq [string]$cleanAction.actionId) -Message 'Producer-backed E2E evidence lost the Stage2 action identity.'
     Assert-True -Condition ([string]$cleanProducedEvidence.session.state -eq 'ready') -Message 'Producer-backed E2E evidence lost the ready persistent session identity.'
-    Assert-True -Condition (@($cleanProducedEvidence.capabilitiesInvoked).Count -eq 5) -Message 'Producer-backed E2E evidence did not preserve the safe read-only audit capability.'
+    Assert-True -Condition (@($cleanProducedEvidence.capabilitiesInvoked).Count -eq 2) -Message 'Producer-backed E2E evidence did not preserve the exact typed Broker capability set.'
+    Assert-True -Condition (-not $cleanProducedEvidence.session.pleOwnedByBroker) -Message 'Producer-backed E2E evidence lost the Broker-adopted PLE ownership fact.'
     $cleanEvidenceText = [System.IO.File]::ReadAllText($cleanEvidencePath)
     $utf8WithBom = New-Object System.Text.UTF8Encoding $true
     [System.IO.File]::WriteAllText($cleanEvidencePath, $cleanEvidenceText, $utf8WithBom)
@@ -1149,15 +1197,31 @@ tools:
     Assert-True -Condition ($repairActionText -match 'mixed_declared_hook') -Message 'Repair action lost the declared mixed-hook authorization.'
     Assert-True -Condition ($repairActionText -match 'semantic_merge') -Message 'Repair action is not a semantic merge.'
     Assert-True -Condition ($repairActionText -match 'station_cyclic_controls') -Message 'Repair action lost its declared hook ID.'
-    $repairApplyEvidencePath = Join-Path $evidenceRoot 'repair-apply.json'
+    $repairApplyEvidencePath = Join-Path $evidenceRoot 'repair-apply-unsupported-success.json'
     $null = New-RunnerEvidence -Path $repairApplyEvidencePath -OperationId $repairStart.operationId -Action $repairApplyAction
-    $repairDone = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+    $repairApplyRejected = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
         OperationId   = $repairStart.operationId
         EvidencePath  = $repairApplyEvidencePath
         EngineeringRoot = $engineeringRoot
         OperationRoot = $operationRoot
     }
-    Assert-True -Condition (([string]$repairDone.status).ToUpperInvariant() -eq 'DONE') -Message 'Verified repair evidence did not reach DONE.'
+    Assert-True -Condition $repairApplyRejected.rejected -Message 'Unsupported successful apply evidence was accepted.'
+    $repairBlockedEvidencePath = Join-Path $evidenceRoot 'repair-apply-blocked.json'
+    $null = New-RunnerEvidence `
+        -Path $repairBlockedEvidencePath `
+        -OperationId $repairStart.operationId `
+        -Action $repairApplyAction `
+        -ResultStatus 'blocked' `
+        -VerificationOk $false `
+        -AppliedReadbackOk $false `
+        -OmitBuild $true
+    $repairBlocked = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+        OperationId   = $repairStart.operationId
+        EvidencePath  = $repairBlockedEvidencePath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot = $operationRoot
+    }
+    Assert-True -Condition (([string]$repairBlocked.status).ToUpperInvariant() -eq 'BLOCKED') -Message 'Unsupported apply action did not terminate as a local BLOCKED result.'
 
     # An apply action may stop before its first tool call. Empty capabilities and
     # no Build/readback are valid only for an explicit terminal result.
@@ -1206,7 +1270,7 @@ tools:
     }
     Assert-True -Condition (([string]$applyBlockedFinal.status).ToUpperInvariant() -eq 'BLOCKED') -Message 'Apply-before-call evidence with an empty capability array did not reach BLOCKED.'
 
-    # A failed apply may honestly report the verified subset already written.
+    # The typed Broker cannot report any partially applied write subset.
     $partialFailedAudit = Join-Path $reportRoot 'apply-partial-failed.json'
     $null = New-Stage1AuditReport `
         -Path $partialFailedAudit `
@@ -1286,13 +1350,13 @@ tools:
         readbackSha256 = $partialChangeOne.desired.sha256
     })
     Write-JsonFile -Path $validPartialPath -Value $validPartial
-    $partialFailedFinal = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+    $partialFailedFinal = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
         OperationId = $partialFailedStart.operationId
         EvidencePath = $validPartialPath
         EngineeringRoot = $engineeringRoot
         OperationRoot = $operationRoot
     }
-    Assert-True -Condition (([string]$partialFailedFinal.status).ToUpperInvariant() -eq 'FAILED') -Message 'Verified partial apply failure did not reach FAILED.'
+    Assert-True -Condition $partialFailedFinal.rejected -Message 'Partial apply evidence outside the typed Broker scope was accepted.'
 
     # CpStudio-owned/interface writes are never converted into an AI repair.
     $blockedAudit = Join-Path $reportRoot 'blocked.json'

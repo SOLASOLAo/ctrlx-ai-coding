@@ -2,7 +2,22 @@
 
 > 适用:`codesys-mcp-persistent` v0.6.3(npm 全局包)
 > 目标 IDE:ctrlX PLC Engineering(PLE-V-0206.x,profile `ctrlX PLC 2.6.8`)及其他 OEM CODESYS 品牌 IDE
-> 首次应用:2026-08-12 · connector I/O 扩展:2026-08-18 · 编译消息/会话接管扩展:2026-08-20 · no-save Build 门禁:2026-08-23 · 状态:已在本机验证
+> 首次应用:2026-08-12 · connector I/O 扩展:2026-08-18 · 编译消息/会话接管扩展:2026-08-20 · no-save Build 门禁:2026-08-23 · Broker ownership/fresh-build contract:2026-08-27
+
+> **当前门禁（2026-08-27）**：本机已安装 adapter 尚未应用最后一项
+> ownership/fresh-build contract；本轮没有修改全局 npm。Broker 因此会在任何
+> `launch_codesys` 前失败关闭。只有单独审阅并应用本仓库脚本、再完成实体
+> acceptance 后，才能把该能力写成“已安装/可用”。
+>
+> fresh-build contract v2 不接受推断结果：两个预期消息类别必须全部成功清空并回读为空，
+> 应用对象必须实际执行一次 `build()`（不接受 `generate_code()` 代替），两个类别
+> 必须全部读取成功，且 Build 类别必须返回以 `Compile complete` 或 `Build complete`
+> 开头的明确数字摘要。包含通用 `0 errors / 0 warnings` 的其他文本（内部标记为
+> `Other summary`）只供诊断，不能认证 fresh。上述事实任一缺失时，
+> `fresh`、`patchPreflightVerified` 与 `recordsComplete` 都不会被认证为 `true`。
+> 当前 fast message API 只有在这些前提成立且结果为 0 errors / 0 warnings 时能证明
+> 同次记录集完整；非零摘要中的占位记录只供诊断，`recordsComplete=false`，在
+> adapter 能逐条返回结构化诊断前继续失败关闭。
 
 ## 症状 1：CRLF 导致编译工具失败
 
@@ -63,10 +78,12 @@ device.connectors → connector.host_parameters
 | `dist/scripts/_message_utils.py` | 全文 CRLF → LF |
 | `dist/scripts/map_io_channel.py` | 增加 connector mappable-parameter 查找；支持按 `Channel_6.Output` 或零基索引定位；写后强制回读校验；增加 `@batch-json` 事务式批量映射并只保存一次工程 |
 | `src/scripts/map_io_channel.py` | 同步源码副本，避免本机重建 `dist` 时丢失补丁 |
-| `dist/scripts` + `src/scripts` 的 `_message_utils.py` | 增加有界 Build 消息快照与向后兼容的结构化消息转换；未知摘要按失败处理 |
+| `dist/scripts` + `src/scripts` 的 `_message_utils.py` | 增加有界 Build 消息快照与向后兼容的结构化消息转换；通用数字行可保留为 `Other summary` 诊断，但 fresh-v2 不接受它作为 Build 证明 |
 | `dist/scripts` + `src/scripts` 的 `compile_project.py` | 应用工程只执行一次 `build()`；只读两个编译类别；移除 dirty 工程的隐式 save，dirty/未知状态失败关闭 |
 | `dist/scripts` + `src/scripts` 的 `get_compile_messages.py` | 使用同一有界缓存读取路径，避免只读消息也阻塞 IDE |
 | `dist/launcher.js` + `src/launcher.ts` | 校验持久会话 PID 的 PLE 可执行文件身份，并在接管前探测 watcher；健康检查和 shutdown 同样防 PID 复用 |
+| `dist/launcher.js` + `src/launcher.ts`、`dist/server.js` + `src/server.ts` | 输出 `ctrlx-ple-ownership-v1`，区分本 launcher 创建的 `broker` 与接管的 `external`；外部 PLE 禁止 shutdown |
+| `dist/scripts` + `src/scripts` 的 `compile_project.py`、`dist/server.js` + `src/server.ts` | 输出 `ctrlx-fresh-compile-v2` 同次 summary；只有类别全清空、真实 `application.build()`、类别全读回、明确以 `Compile complete`/`Build complete` 开头的 Build 数字摘要均成立时才认证 fresh/patch preflight；通用数字行不得认证 fresh；0 errors / 0 warnings 保留完整空 records，非零但缺逐条详情时明确 `recordsComplete=false` |
 
 ## 一键应用
 
@@ -87,7 +104,8 @@ python -m py_compile "$env:APPDATA\npm\node_modules\codesys-mcp-persistent\dist\
 
 然后通过 MCP 调用 `compile_project`,应返回结构化错误/警告列表而非 SyntaxError。
 `-Check` 还必须显示 dist/src 两份 `compile_project.py` 的
-`strict no-save compile guard` 均为 `[OK]`。
+`strict no-save compile guard`、`fail-closed same-call fresh compile contract`，以及 launcher/server
+的 `PLE ownership` 均为 `[OK]`。
 2026-08-23 本机已完成补丁应用、`-Check`、Python/Node 语法和离线 fixture
 验证；由于当时仍有既有 PLE/MCP owner 与活动 `.project.~u`，新的独立
 checker 生命周期实测按门禁延期，不能把静态验证表述为已完成真实启动/退出验收。
@@ -96,7 +114,8 @@ checker 生命周期实测按门禁延期，不能把静态验证表述为已完
 
 ```powershell
 python .\test-fast-compile-message.py `
-  "$env:APPDATA\npm\node_modules\codesys-mcp-persistent\dist\scripts\_message_utils.py"
+  "$env:APPDATA\npm\node_modules\codesys-mcp-persistent\dist\scripts\_message_utils.py" `
+  "$env:APPDATA\npm\node_modules\codesys-mcp-persistent\dist\scripts\compile_project.py"
 ```
 
 2026-08-20 在 Station010 实测：旧路径超过 300 s；补丁后 `compile_project` 约 7.6 s 返回 0 errors / 7 warnings，`get_compile_messages` 约 0.8 s 返回同一缓存。该验证是离线 Build，未连接、下载或运行实体 PLC。
@@ -143,7 +162,7 @@ map_io_channel(
 | `watcher.py.patched` | 打补丁后的完整文件 |
 | `watcher_crlf_normalize.patch` | unified diff(仅 5 行插入) |
 | `apply-crlf-patch.ps1` | 一键应用/检查 ctrlX 兼容补丁（CRLF、docstring、connector I/O Mapping、有界编译消息、no-save Build、安全会话接管） |
-| `test-fast-compile-message.py` | 不启动 IDE 的编译摘要解析/失败关闭回归测试 |
+| `test-fast-compile-message.py` | 不启动 IDE 的编译摘要解析/失败关闭回归测试；覆盖无关 `0 errors / 0 warnings` 只能作为 `Other summary`，不得进入 fresh-v2 allow-list |
 
 ## 附注:docstring 损坏修复
 

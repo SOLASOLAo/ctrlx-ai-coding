@@ -1,87 +1,54 @@
-using System.IO.Pipes;
 using System.Diagnostics;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
-using System.Text;
-using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 
 namespace CtrlX.OpCon.Runner.Core;
 
 /// <summary>
-/// Connects to an already-running interactive-session Broker. This transport
-/// has no process-lifecycle capability and never falls back to another channel.
+/// Uses current-user validated Broker registration and protocol v2 durable
+/// submit/query semantics. This client has no process-lifecycle capability.
 /// </summary>
-public sealed partial class NamedPipeSessionBrokerClient : ISessionBrokerClient
+public sealed class NamedPipeSessionBrokerClient : ISessionBrokerClient
 {
-    public const int ProtocolVersion = 1;
-    public const int MaximumMessageBytes = 1024 * 1024;
+    public const int ProtocolVersion = BrokerWireProtocol.Version;
+    public const int MaximumMessageBytes = BrokerWireProtocol.MaximumMessageBytes;
 
-    private const string ExecuteRequestKind = "ctrlx-opcon-runner-broker-execute";
-    private const string ExecuteReplyKind = "ctrlx-opcon-runner-broker-reply";
     private const string SessionUnavailable = "BLOCKED_SESSION_UNAVAILABLE";
     private const string ProtocolInvalid = "BLOCKED_SESSION_PROTOCOL_INVALID";
     private const string ProtocolMismatch = "BLOCKED_SESSION_PROTOCOL_MISMATCH";
-    private const string SessionUnhealthy = "BLOCKED_SESSION_UNHEALTHY";
-    private const string SessionProfileMismatch = "BLOCKED_SESSION_PROFILE_MISMATCH";
-    private const string SessionProjectMismatch = "BLOCKED_SESSION_PROJECT_MISMATCH";
-    private const string SessionProvenanceInvalid = "BLOCKED_SESSION_PROVENANCE_INVALID";
     private const string BrokerIdentityInvalid = "BLOCKED_BROKER_IDENTITY_INVALID";
-    private const string ObservationIdentityMismatch = "BLOCKED_OBSERVATION_IDENTITY_MISMATCH";
-    private const string ObservationInvalid = "BLOCKED_OBSERVATION_INVALID";
-    private const string ObservationSensitive = "BLOCKED_OBSERVATION_SENSITIVE_FIELD";
+    private const string ExecutionPending = "EXECUTION_CONTINUES_IN_BROKER";
 
-    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
-    private static readonly JsonSerializerOptions CompactJson = new()
-    {
-        WriteIndented = false
-    };
-
-    private readonly string pipeName;
+    private readonly string engineeringRoot;
+    private readonly string? registrationPath;
     private readonly TimeSpan connectTimeout;
     private readonly TimeSpan responseTimeout;
-    private readonly int expectedBrokerPid;
+    private readonly TimeSpan pollInterval;
 
-    public NamedPipeSessionBrokerClient(string pipeName, int expectedBrokerPid)
-        : this(pipeName, expectedBrokerPid, TimeSpan.FromSeconds(1), TimeSpan.FromMinutes(5))
-    {
-    }
-
-    public NamedPipeSessionBrokerClient(string pipeName, int expectedBrokerPid, TimeSpan timeout)
-        : this(pipeName, expectedBrokerPid, timeout, timeout)
+    public NamedPipeSessionBrokerClient(string engineeringRoot)
+        : this(engineeringRoot, null, TimeSpan.FromSeconds(2), TimeSpan.FromMinutes(10), TimeSpan.FromMilliseconds(250))
     {
     }
 
     public NamedPipeSessionBrokerClient(
-        string pipeName,
-        int expectedBrokerPid,
+        string engineeringRoot,
+        string? registrationPath,
         TimeSpan connectTimeout,
-        TimeSpan responseTimeout)
+        TimeSpan responseTimeout,
+        TimeSpan? pollInterval = null)
     {
-        if (string.IsNullOrWhiteSpace(pipeName) ||
-            pipeName.Length > 128 ||
-            !SafePipeNameRegex().IsMatch(pipeName) ||
-            pipeName is "." or "..")
-        {
-            throw new ArgumentException(
-                "The Broker pipe name must contain only ASCII letters, digits, dot, underscore, or hyphen.",
-                nameof(pipeName));
-        }
-
-        if (expectedBrokerPid <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(expectedBrokerPid), "A trusted Broker PID is required.");
-        }
-
-        this.connectTimeout = connectTimeout;
-        this.responseTimeout = responseTimeout;
-        this.expectedBrokerPid = expectedBrokerPid;
-        ValidateTimeout(this.connectTimeout, nameof(connectTimeout), TimeSpan.FromMinutes(2));
-        ValidateTimeout(this.responseTimeout, nameof(responseTimeout), TimeSpan.FromMinutes(15));
-        this.pipeName = pipeName;
+        this.engineeringRoot = RunnerValidation.FullPath(engineeringRoot);
+        this.registrationPath = registrationPath;
+        this.connectTimeout = RequireTimeout(connectTimeout, nameof(connectTimeout), TimeSpan.FromMinutes(2));
+        this.responseTimeout = RequireTimeout(responseTimeout, nameof(responseTimeout), TimeSpan.FromMinutes(30));
+        this.pollInterval = RequireTimeout(
+            pollInterval ?? TimeSpan.FromMilliseconds(250),
+            nameof(pollInterval),
+            TimeSpan.FromSeconds(10));
     }
 
-    public string TransportName => $"named-pipe:{pipeName}";
+    public string TransportName => "registered-named-pipe:v2";
 
     public async Task<BrokerExecutionReply> ExecuteAsync(
         ValidatedRunnerAction action,
@@ -89,337 +56,341 @@ public sealed partial class NamedPipeSessionBrokerClient : ISessionBrokerClient
     {
         ArgumentNullException.ThrowIfNull(action);
         cancellationToken.ThrowIfCancellationRequested();
-
-        if (!OperatingSystem.IsWindows())
+        if (!action.EngineeringRoot.Equals(engineeringRoot, StringComparison.OrdinalIgnoreCase))
         {
-            return Unavailable(SessionUnavailable);
+            return Unavailable("BLOCKED_BROKER_REGISTRATION_PROJECT_MISMATCH");
         }
 
+        BrokerRegistration registration;
         try
         {
-            await using var pipe = new NamedPipeClientStream(
-                serverName: ".",
-                pipeName,
-                PipeDirection.InOut,
-                PipeOptions.Asynchronous);
+            registration = BrokerRegistrationReader.ReadValidated(engineeringRoot, registrationPath);
+            ValidateRegistrationForAction(registration, action);
+        }
+        catch (RunnerGateException exception)
+        {
+            return Unavailable(SafeReason(exception.ReasonCode, BrokerIdentityInvalid));
+        }
 
-            await pipe.ConnectAsync(ToTimeoutMilliseconds(connectTimeout), cancellationToken).ConfigureAwait(false);
-            var serverIdentity = GetServerIdentity(pipe);
-            using (var currentProcess = Process.GetCurrentProcess())
+        var clientNonce = Guid.NewGuid().ToString("N");
+        SubmitReceipt receipt;
+        try
+        {
+            var reply = await ExchangeAsync(
+                registration,
+                CreateSubmit(action, registration, clientNonce),
+                cancellationToken).ConfigureAwait(false);
+            receipt = ParseSubmitReply(action, registration, clientNonce, reply);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (IsTransportOrProtocolFailure(exception))
+        {
+            return Unavailable(ReasonFor(exception));
+        }
+
+        if (!receipt.Accepted)
+        {
+            return Unavailable(receipt.ReasonCode);
+        }
+
+        var deadline = DateTimeOffset.UtcNow + responseTimeout;
+        while (true)
+        {
+            if (cancellationToken.IsCancellationRequested || DateTimeOffset.UtcNow >= deadline)
             {
-                if (serverIdentity.ProcessId != expectedBrokerPid ||
-                    serverIdentity.WindowsSessionId != currentProcess.SessionId)
+                return Pending(receipt.ExecutionId, ExecutionPending);
+            }
+
+            try
+            {
+                registration = BrokerRegistrationReader.ReadValidated(engineeringRoot, registrationPath);
+                ValidateRegistrationForAction(registration, action);
+                var queryNonce = Guid.NewGuid().ToString("N");
+                using var queryCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                var remaining = deadline - DateTimeOffset.UtcNow;
+                queryCancellation.CancelAfter(remaining < connectTimeout + TimeSpan.FromSeconds(5)
+                    ? remaining
+                    : connectTimeout + TimeSpan.FromSeconds(5));
+                var reply = await ExchangeAsync(
+                    registration,
+                    CreateQuery(action, registration, queryNonce, receipt.ExecutionId),
+                    queryCancellation.Token).ConfigureAwait(false);
+                var current = ParseQueryReply(
+                    action,
+                    registration,
+                    queryNonce,
+                    receipt.ExecutionId,
+                    reply);
+                if (current.Terminal)
                 {
-                    return Unavailable(BrokerIdentityInvalid);
+                    return current;
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // A durable receipt already exists. Query timeout is not proof that
+                // the engineering operation did not run.
+            }
+            catch (Exception exception) when (IsTransportOrProtocolFailure(exception))
+            {
+                if (exception is RunnerGateException gate &&
+                    gate.ReasonCode is ProtocolInvalid or ProtocolMismatch)
+                {
+                    return Pending(receipt.ExecutionId, gate.ReasonCode);
                 }
             }
 
-            using var responseCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            responseCancellation.CancelAfter(responseTimeout);
-
-            var request = CreateRequest(action);
-            await WriteBoundedLineAsync(pipe, request, responseCancellation.Token).ConfigureAwait(false);
-            var responseBytes = await ReadBoundedLineAsync(pipe, responseCancellation.Token).ConfigureAwait(false);
-            return ParseReply(action, responseBytes, serverIdentity);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            return Unavailable(SessionUnavailable);
-        }
-        catch (TimeoutException)
-        {
-            return Unavailable(SessionUnavailable);
-        }
-        catch (IOException)
-        {
-            return Unavailable(SessionUnavailable);
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return Unavailable(SessionUnavailable);
-        }
-        catch (BrokerReplyException exception)
-        {
-            return Unavailable(exception.ReasonCode);
-        }
-        catch (JsonException)
-        {
-            return Unavailable(ProtocolInvalid);
-        }
-        catch (DecoderFallbackException)
-        {
-            return Unavailable(ProtocolInvalid);
-        }
-        catch (RunnerGateException exception) when (exception.ReasonCode == "SENSITIVE_FIELD_REJECTED")
-        {
-            return Unavailable(ObservationSensitive);
-        }
-        catch (RunnerGateException)
-        {
-            return Unavailable(ProtocolInvalid);
+            try
+            {
+                await Task.Delay(pollInterval, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return Pending(receipt.ExecutionId, ExecutionPending);
+            }
         }
     }
 
-    private static JsonObject CreateRequest(ValidatedRunnerAction action) => new()
-    {
-        ["protocolVersion"] = ProtocolVersion,
-        ["kind"] = ExecuteRequestKind,
-        ["requestId"] = action.ActionId,
-        ["action"] = new JsonObject
-        {
-            ["operationId"] = action.OperationId,
-            ["actionId"] = action.ActionId,
-            ["actionKind"] = action.ActionKind,
-            ["actionRequestPath"] = action.ActionPath,
-            ["actionRequestSha256"] = action.ActionSha256,
-            ["idempotencyKey"] = action.IdempotencyKey
-        },
-        ["project"] = new JsonObject
-        {
-            ["engineeringRoot"] = action.EngineeringRoot,
-            ["stationRoot"] = action.StationRoot,
-            ["plcProject"] = action.PlcProject,
-            ["profile"] = action.Profile
-        },
-        ["guardrails"] = new JsonObject
-        {
-            ["offlineOnly"] = true,
-            ["onlineOperationsAllowed"] = false,
-            ["requireExistingPersistentSession"] = true,
-            ["prohibitStartPleOrMcp"] = true,
-            ["prohibitDirectWatcherIpc"] = true,
-            ["requireExactProjectOpen"] = true,
-            ["startedByRunnerAllowed"] = false
-        }
-    };
-
-    private static async Task WriteBoundedLineAsync(
-        Stream stream,
+    private async Task<JsonObject> ExchangeAsync(
+        BrokerRegistration registration,
         JsonObject request,
         CancellationToken cancellationToken)
     {
-        var json = request.ToJsonString(CompactJson);
-        if (json.IndexOfAny(['\r', '\n']) >= 0)
+        await using var pipe = new NamedPipeClientStream(
+            ".",
+            registration.PipeName,
+            PipeDirection.InOut,
+            PipeOptions.Asynchronous);
+        await pipe.ConnectAsync(ToMilliseconds(connectTimeout), cancellationToken).ConfigureAwait(false);
+        var identity = GetServerIdentity(pipe);
+        using var current = Process.GetCurrentProcess();
+        if (identity.ProcessId != registration.BrokerPid ||
+            identity.WindowsSessionId != registration.WindowsSessionId ||
+            identity.WindowsSessionId != current.SessionId)
         {
-            throw new BrokerReplyException(ProtocolInvalid);
+            throw new RunnerGateException(BrokerIdentityInvalid, "Named Pipe server identity does not match the validated Broker registration.");
         }
 
-        var bytes = StrictUtf8.GetBytes(json);
-        if (bytes.Length > MaximumMessageBytes)
-        {
-            throw new BrokerReplyException(ProtocolInvalid);
-        }
-
-        await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-        await stream.WriteAsync(new byte[] { (byte)'\n' }, cancellationToken).ConfigureAwait(false);
-        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        await BrokerPipeCodec.WriteAsync(pipe, request, cancellationToken).ConfigureAwait(false);
+        return await BrokerPipeCodec.ReadAsync(pipe, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<byte[]> ReadBoundedLineAsync(Stream stream, CancellationToken cancellationToken)
-    {
-        var buffer = new byte[4096];
-        using var line = new MemoryStream(capacity: 4096);
-
-        while (true)
-        {
-            var read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-            if (read == 0)
-            {
-                throw new BrokerReplyException(ProtocolInvalid);
-            }
-
-            var newlineIndex = Array.IndexOf(buffer, (byte)'\n', 0, read);
-            var bodyLength = newlineIndex >= 0 ? newlineIndex : read;
-            if (line.Length + bodyLength > MaximumMessageBytes)
-            {
-                throw new BrokerReplyException(ProtocolInvalid);
-            }
-
-            line.Write(buffer, 0, bodyLength);
-            if (newlineIndex < 0)
-            {
-                continue;
-            }
-
-            for (var index = newlineIndex + 1; index < read; index++)
-            {
-                if (buffer[index] is not (byte)' ' and not (byte)'\t' and not (byte)'\r')
-                {
-                    throw new BrokerReplyException(ProtocolInvalid);
-                }
-            }
-
-            var result = line.ToArray();
-            if (result.Length > 0 && result[^1] == (byte)'\r')
-            {
-                Array.Resize(ref result, result.Length - 1);
-            }
-
-            if (result.Length == 0 || Array.IndexOf(result, (byte)'\r') >= 0)
-            {
-                throw new BrokerReplyException(ProtocolInvalid);
-            }
-
-            return result;
-        }
-    }
-
-    private static BrokerExecutionReply ParseReply(
+    private static JsonObject CreateSubmit(
         ValidatedRunnerAction action,
-        byte[] responseBytes,
-        PipeServerIdentity serverIdentity)
+        BrokerRegistration registration,
+        string nonce) => new()
     {
-        _ = StrictUtf8.GetString(responseBytes);
-        using (var document = JsonDocument.Parse(responseBytes, new JsonDocumentOptions
-        {
-            AllowTrailingCommas = false,
-            CommentHandling = JsonCommentHandling.Disallow,
-            MaxDepth = 64
-        }))
-        {
-            if (document.RootElement.ValueKind != JsonValueKind.Object || HasDuplicateProperty(document.RootElement))
-            {
-                throw new BrokerReplyException(ProtocolInvalid);
-            }
-        }
+        ["protocolVersion"] = ProtocolVersion,
+        ["kind"] = BrokerWireProtocol.SubmitKind,
+        ["requestId"] = action.ActionId,
+        ["brokerInstanceId"] = registration.BrokerInstanceId,
+        ["clientNonce"] = nonce,
+        ["action"] = BrokerWireProtocol.ActionIdentity(action),
+        ["project"] = BrokerWireProtocol.ProjectIdentity(action),
+        ["guardrails"] = BrokerWireProtocol.OfflineGuardrails()
+    };
 
-        if (JsonNode.Parse(responseBytes, nodeOptions: null, documentOptions: new JsonDocumentOptions
-            {
-                AllowTrailingCommas = false,
-                CommentHandling = JsonCommentHandling.Disallow,
-                MaxDepth = 64
-            }) is not JsonObject reply)
-        {
-            throw new BrokerReplyException(ProtocolInvalid);
-        }
+    private static JsonObject CreateQuery(
+        ValidatedRunnerAction action,
+        BrokerRegistration registration,
+        string nonce,
+        string executionId) => new()
+    {
+        ["protocolVersion"] = ProtocolVersion,
+        ["kind"] = BrokerWireProtocol.QueryKind,
+        ["requestId"] = action.ActionId,
+        ["brokerInstanceId"] = registration.BrokerInstanceId,
+        ["clientNonce"] = nonce,
+        ["executionId"] = executionId,
+        ["actionId"] = action.ActionId,
+        ["actionRequestSha256"] = action.ActionSha256,
+        ["idempotencyKey"] = action.IdempotencyKey
+    };
 
+    private static SubmitReceipt ParseSubmitReply(
+        ValidatedRunnerAction action,
+        BrokerRegistration registration,
+        string nonce,
+        JsonObject reply)
+    {
         RunnerValidation.AssertNoSensitiveFields(reply);
         RunnerValidation.RequireOnly(
             reply,
-            "Broker reply",
+            "Broker submit reply",
             "protocolVersion",
             "kind",
             "requestId",
-            "available",
+            "brokerInstanceId",
+            "clientNonce",
+            "accepted",
             "reasonCode",
+            "executionId",
+            "disposition",
+            "state");
+        ValidateReplyEnvelope(reply, BrokerWireProtocol.SubmitReplyKind, action, registration, nonce);
+        var accepted = RunnerValidation.RequiredBoolean(reply, "accepted", "Broker submit reply");
+        var reason = SafeReason(RunnerValidation.RequiredString(reply, "reasonCode", "Broker submit reply"), ProtocolInvalid);
+        var executionId = RunnerValidation.RequiredString(reply, "executionId", "Broker submit reply");
+        var disposition = RunnerValidation.RequiredString(reply, "disposition", "Broker submit reply");
+        var state = RunnerValidation.RequiredString(reply, "state", "Broker submit reply");
+        if (!RunnerValidation.IsSafeIdentifier(executionId) ||
+            disposition is not ("ACCEPTED" or "REPLAYED" or "REJECTED") ||
+            !RunnerValidation.IsSafeIdentifier(state, 64) ||
+            (accepted && disposition == "REJECTED") ||
+            (!accepted && disposition != "REJECTED"))
+        {
+            throw new RunnerGateException(ProtocolInvalid, "Broker submit receipt is malformed.");
+        }
+
+        return new SubmitReceipt(accepted, reason, executionId);
+    }
+
+    private static BrokerExecutionReply ParseQueryReply(
+        ValidatedRunnerAction action,
+        BrokerRegistration registration,
+        string nonce,
+        string executionId,
+        JsonObject reply)
+    {
+        RunnerValidation.AssertNoSensitiveFields(reply);
+        RunnerValidation.RequireOnly(
+            reply,
+            "Broker query reply",
+            "protocolVersion",
+            "kind",
+            "requestId",
+            "brokerInstanceId",
+            "clientNonce",
+            "executionId",
+            "terminal",
+            "reasonCode",
+            "state",
+            "reviewRequired",
             "session",
             "observation");
-
-        if (RunnerValidation.RequiredInt32(reply, "protocolVersion", "Broker reply") != ProtocolVersion ||
-            RunnerValidation.RequiredString(reply, "kind", "Broker reply") != ExecuteReplyKind ||
-            RunnerValidation.RequiredString(reply, "requestId", "Broker reply") != action.ActionId)
+        ValidateReplyEnvelope(reply, BrokerWireProtocol.QueryReplyKind, action, registration, nonce);
+        if (RunnerValidation.RequiredString(reply, "executionId", "Broker query reply") != executionId)
         {
-            throw new BrokerReplyException(ProtocolMismatch);
+            throw new RunnerGateException(ProtocolMismatch, "Broker query execution identity changed.");
         }
 
-        var reasonCode = RunnerValidation.RequiredString(reply, "reasonCode", "Broker reply");
-        if (!RunnerValidation.IsSafeIdentifier(reasonCode, maximumLength: 96))
+        var terminal = RunnerValidation.RequiredBoolean(reply, "terminal", "Broker query reply");
+        var reviewRequired = RunnerValidation.RequiredBoolean(reply, "reviewRequired", "Broker query reply");
+        var reason = SafeReason(RunnerValidation.RequiredString(reply, "reasonCode", "Broker query reply"), ProtocolInvalid);
+        var state = RunnerValidation.RequiredString(reply, "state", "Broker query reply");
+        if (!RunnerValidation.IsSafeIdentifier(state, 64))
         {
-            throw new BrokerReplyException(ProtocolInvalid);
+            throw new RunnerGateException(ProtocolInvalid, "Broker query state is malformed.");
         }
 
-        var available = RunnerValidation.RequiredBoolean(reply, "available", "Broker reply");
-        if (!available)
+        if (!terminal)
         {
-            if (reply["session"] is not null || reply["observation"] is not null)
+            if (reviewRequired || reply["session"] is not null || reply["observation"] is not null)
             {
-                throw new BrokerReplyException(ProtocolInvalid);
+                throw new RunnerGateException(ProtocolInvalid, "A non-terminal Broker reply cannot contain terminal evidence.");
             }
 
-            return Unavailable(reasonCode.StartsWith("BLOCKED_", StringComparison.Ordinal)
-                ? reasonCode
-                : SessionUnavailable);
+            return Pending(executionId, reason);
+        }
+
+        if (reviewRequired)
+        {
+            if (state is not ("UNKNOWN_REVIEW_REQUIRED" or "CANCELED") ||
+                reply["session"] is not null ||
+                reply["observation"] is not null)
+            {
+                throw new RunnerGateException(ProtocolInvalid, "Terminal review outcome contains an invalid state or fabricated evidence.");
+            }
+
+            return new BrokerExecutionReply(true, reason, Session: null, Observation: null)
+            {
+                Accepted = true,
+                Terminal = true,
+                ReviewRequired = true,
+                ExecutionId = executionId
+            };
         }
 
         if (reply["session"] is not JsonObject sessionNode || reply["observation"] is not JsonObject observation)
         {
-            throw new BrokerReplyException(ProtocolInvalid);
+            throw new RunnerGateException(ProtocolInvalid, "Terminal Broker reply is missing session or observation.");
         }
 
-        var session = ParseSession(sessionNode);
-        if (session.BrokerPid != serverIdentity.ProcessId)
-        {
-            throw new BrokerReplyException(BrokerIdentityInvalid);
-        }
-
+        var session = ParseSession(sessionNode, registration);
         ValidateSession(action, session);
         ValidateObservation(action, session, observation);
-
-        return new BrokerExecutionReply(
-            Available: true,
-            ReasonCode: reasonCode,
-            Session: session,
-            Observation: (JsonObject)observation.DeepClone());
+        return new BrokerExecutionReply(true, reason, session, (JsonObject)observation.DeepClone())
+        {
+            Accepted = true,
+            Terminal = true,
+            ReviewRequired = false,
+            ExecutionId = executionId
+        };
     }
 
-    private static BrokerSessionIdentity ParseSession(JsonObject session)
+    private static void ValidateReplyEnvelope(
+        JsonObject reply,
+        string expectedKind,
+        ValidatedRunnerAction action,
+        BrokerRegistration registration,
+        string nonce)
+    {
+        if (RunnerValidation.RequiredInt32(reply, "protocolVersion", "Broker reply") != ProtocolVersion ||
+            RunnerValidation.RequiredString(reply, "kind", "Broker reply") != expectedKind ||
+            RunnerValidation.RequiredString(reply, "requestId", "Broker reply") != action.ActionId ||
+            RunnerValidation.RequiredString(reply, "brokerInstanceId", "Broker reply") != registration.BrokerInstanceId ||
+            RunnerValidation.RequiredString(reply, "clientNonce", "Broker reply") != nonce)
+        {
+            throw new RunnerGateException(ProtocolMismatch, "Broker reply envelope does not match the request.");
+        }
+    }
+
+    private static BrokerSessionIdentity ParseSession(JsonObject node, BrokerRegistration registration)
     {
         RunnerValidation.RequireOnly(
-            session,
+            node,
             "Broker session",
             "protocolVersion",
             "brokerPid",
             "sessionId",
+            "mcpPid",
             "plePid",
             "profile",
             "activeProjectPath",
             "state",
-            "startedByRunner");
-
-        var identity = new BrokerSessionIdentity(
-            ProtocolVersion: RunnerValidation.RequiredInt32(session, "protocolVersion", "Broker session"),
-            BrokerPid: RunnerValidation.RequiredInt32(session, "brokerPid", "Broker session"),
-            SessionId: RunnerValidation.RequiredString(session, "sessionId", "Broker session"),
-            PlePid: RunnerValidation.RequiredInt32(session, "plePid", "Broker session"),
-            Profile: RunnerValidation.RequiredString(session, "profile", "Broker session"),
-            ActiveProjectPath: RunnerValidation.RequiredString(session, "activeProjectPath", "Broker session"),
-            State: RunnerValidation.RequiredString(session, "state", "Broker session"),
-            StartedByRunner: RunnerValidation.RequiredBoolean(session, "startedByRunner", "Broker session"));
-
-        if (identity.ProtocolVersion != ProtocolVersion)
+            "pleOwnedByBroker");
+        var session = new BrokerSessionIdentity(
+            RunnerValidation.RequiredInt32(node, "protocolVersion", "Broker session"),
+            RunnerValidation.RequiredInt32(node, "brokerPid", "Broker session"),
+            RunnerValidation.RequiredString(node, "sessionId", "Broker session"),
+            RunnerValidation.RequiredInt32(node, "mcpPid", "Broker session"),
+            RunnerValidation.RequiredInt32(node, "plePid", "Broker session"),
+            RunnerValidation.RequiredString(node, "profile", "Broker session"),
+            RunnerValidation.RequiredString(node, "activeProjectPath", "Broker session"),
+            RunnerValidation.RequiredString(node, "state", "Broker session"),
+            RunnerValidation.RequiredBoolean(node, "pleOwnedByBroker", "Broker session"));
+        if (session.ProtocolVersion != ProtocolVersion ||
+            session.BrokerPid != registration.BrokerPid ||
+            session.McpPid != registration.McpPid ||
+            session.PlePid != registration.PlePid ||
+            session.SessionId != registration.PersistentSessionId)
         {
-            throw new BrokerReplyException(ProtocolMismatch);
+            throw new RunnerGateException(BrokerIdentityInvalid, "Broker terminal session does not match registration.");
         }
 
-        if (identity.BrokerPid <= 0 || identity.PlePid <= 0 ||
-            !RunnerValidation.IsSafeIdentifier(identity.SessionId))
-        {
-            throw new BrokerReplyException(SessionUnhealthy);
-        }
-
-        return identity;
+        return session;
     }
 
     private static void ValidateSession(ValidatedRunnerAction action, BrokerSessionIdentity session)
     {
-        if (!session.State.Equals("ready", StringComparison.Ordinal))
+        if (session.State != "ready" || session.McpPid <= 0 || session.PlePid <= 0 ||
+            !RunnerValidation.IsSafeIdentifier(session.SessionId) || session.Profile != action.Profile ||
+            !RunnerValidation.FullPath(session.ActiveProjectPath).Equals(action.PlcProject, StringComparison.OrdinalIgnoreCase))
         {
-            throw new BrokerReplyException(SessionUnhealthy);
-        }
-
-        if (session.StartedByRunner)
-        {
-            throw new BrokerReplyException(SessionProvenanceInvalid);
-        }
-
-        if (!session.Profile.Equals(action.Profile, StringComparison.Ordinal))
-        {
-            throw new BrokerReplyException(SessionProfileMismatch);
-        }
-
-        string activeProjectPath;
-        try
-        {
-            activeProjectPath = RunnerValidation.FullPath(session.ActiveProjectPath);
-        }
-        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            throw new BrokerReplyException(SessionProjectMismatch);
-        }
-
-        if (!activeProjectPath.Equals(action.PlcProject, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new BrokerReplyException(SessionProjectMismatch);
+            throw new RunnerGateException("BLOCKED_SESSION_MISMATCH", "Broker session does not match the immutable action.");
         }
     }
 
@@ -428,15 +399,7 @@ public sealed partial class NamedPipeSessionBrokerClient : ISessionBrokerClient
         BrokerSessionIdentity session,
         JsonObject observation)
     {
-        try
-        {
-            RunnerValidation.AssertNoSensitiveFields(observation);
-        }
-        catch (RunnerGateException exception) when (exception.ReasonCode == "SENSITIVE_FIELD_REJECTED")
-        {
-            throw new BrokerReplyException(ObservationSensitive);
-        }
-
+        RunnerValidation.AssertNoSensitiveFields(observation);
         RunnerValidation.RequireOnly(
             observation,
             "Broker observation",
@@ -451,44 +414,121 @@ public sealed partial class NamedPipeSessionBrokerClient : ISessionBrokerClient
             "session",
             "guardrails",
             "result");
-
-        var observedHash = RunnerValidation.RequiredString(observation, "actionRequestSha256", "Broker observation");
         if (RunnerValidation.RequiredInt32(observation, "schemaVersion", "Broker observation") != 1 ||
             RunnerValidation.RequiredString(observation, "operationId", "Broker observation") != action.OperationId ||
             RunnerValidation.RequiredString(observation, "actionId", "Broker observation") != action.ActionId ||
             RunnerValidation.RequiredString(observation, "actionKind", "Broker observation") != action.ActionKind ||
-            !observedHash.Equals(action.ActionSha256, StringComparison.OrdinalIgnoreCase))
+            !RunnerValidation.RequiredString(observation, "actionRequestSha256", "Broker observation")
+                .Equals(action.ActionSha256, StringComparison.OrdinalIgnoreCase) ||
+            !DateTimeOffset.TryParse(RunnerValidation.RequiredString(observation, "completedAtUtc", "Broker observation"), out _))
         {
-            throw new BrokerReplyException(ObservationIdentityMismatch);
+            throw new RunnerGateException("BLOCKED_OBSERVATION_IDENTITY_MISMATCH", "Broker observation identity is invalid.");
         }
 
         var status = RunnerValidation.RequiredString(observation, "status", "Broker observation");
-        if (status is not ("succeeded" or "blocked" or "failed") ||
-            !DateTimeOffset.TryParse(
-                RunnerValidation.RequiredString(observation, "completedAtUtc", "Broker observation"),
-                out _))
+        if (status is not ("succeeded" or "blocked" or "failed"))
         {
-            throw new BrokerReplyException(ObservationInvalid);
+            throw new RunnerGateException(ProtocolInvalid, "Broker observation status is invalid.");
         }
 
-        _ = RunnerValidation.RequiredArray(observation, "capabilitiesInvoked", "Broker observation");
-        _ = RunnerValidation.RequiredObject(observation, "guardrails", "Broker observation");
+        ValidateCapabilities(observation, status == "succeeded");
+        ValidateGuardrails(RunnerValidation.RequiredObject(observation, "guardrails", "Broker observation"));
         var result = RunnerValidation.RequiredObject(observation, "result", "Broker observation");
         _ = RunnerValidation.RequiredArray(result, "proposedChanges", "Broker observation result");
         _ = RunnerValidation.RequiredArray(result, "appliedChanges", "Broker observation result");
-
         if (status == "succeeded")
         {
             if (observation["session"] is not JsonObject observedSession)
             {
-                throw new BrokerReplyException(ObservationInvalid);
+                throw new RunnerGateException(ProtocolInvalid, "Successful Broker observation has no session.");
             }
 
             ValidateObservedSession(session, observedSession);
+            ValidateSuccessfulResult(result);
         }
-        else if (observation.ContainsKey("session"))
+        else if (observation["session"] is not null)
         {
-            throw new BrokerReplyException(ObservationInvalid);
+            throw new RunnerGateException(ProtocolInvalid, "Non-success observation must not claim a successful session.");
+        }
+    }
+
+    private static void ValidateCapabilities(JsonObject observation, bool success)
+    {
+        var capabilities = RunnerValidation.RequiredArray(observation, "capabilitiesInvoked", "Broker observation");
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var allowed = new HashSet<string>(new[]
+        {
+            "get_codesys_status",
+            "compile_project"
+        }, StringComparer.Ordinal);
+        foreach (var node in capabilities)
+        {
+            string value;
+            try
+            {
+                value = node?.GetValue<string>() ?? string.Empty;
+            }
+            catch (InvalidOperationException)
+            {
+                throw new RunnerGateException(ProtocolInvalid, "Broker capability identifier is not a string.");
+            }
+
+            if (!allowed.Contains(value) || !seen.Add(value))
+            {
+                throw new RunnerGateException(ProtocolInvalid, "Broker reported a prohibited or duplicate capability.");
+            }
+        }
+
+        if (success && !seen.SetEquals(allowed))
+        {
+            throw new RunnerGateException(ProtocolInvalid, "Successful Broker observation lacks the fixed capability sequence.");
+        }
+    }
+
+    private static void ValidateGuardrails(JsonObject guardrails)
+    {
+        RunnerValidation.RequireOnly(
+            guardrails,
+            "Broker observation guardrails",
+            "onlineOperationsUsed",
+            "secondPleStarted",
+            "actionProjectGateAcquired",
+            "actionProjectGateReleased",
+            "actionProjectGateKind",
+            "symbolLeaseHeld",
+            "pleOrMcpStartedByAction",
+            "directWatcherIpcUsed");
+        if (RunnerValidation.RequiredBoolean(guardrails, "onlineOperationsUsed", "Broker observation guardrails") ||
+            RunnerValidation.RequiredBoolean(guardrails, "secondPleStarted", "Broker observation guardrails") ||
+            RunnerValidation.RequiredBoolean(guardrails, "symbolLeaseHeld", "Broker observation guardrails") ||
+            RunnerValidation.RequiredBoolean(guardrails, "pleOrMcpStartedByAction", "Broker observation guardrails") ||
+            RunnerValidation.RequiredBoolean(guardrails, "directWatcherIpcUsed", "Broker observation guardrails") ||
+            !RunnerValidation.RequiredBoolean(guardrails, "actionProjectGateAcquired", "Broker observation guardrails") ||
+            !RunnerValidation.RequiredBoolean(guardrails, "actionProjectGateReleased", "Broker observation guardrails") ||
+            RunnerValidation.RequiredString(guardrails, "actionProjectGateKind", "Broker observation guardrails") !=
+                "broker-session-action-serialization")
+        {
+            throw new RunnerGateException(ProtocolInvalid, "Broker observation violates offline/action-gate guardrails.");
+        }
+    }
+
+    private static void ValidateSuccessfulResult(JsonObject result)
+    {
+        foreach (var name in new[]
+        {
+            "verificationOk",
+            "appliedReadbackOk",
+            "repairRequired",
+            "requiresSecondExport",
+            "requiresCpStudioChange"
+        })
+        {
+            _ = RunnerValidation.RequiredBoolean(result, name, "Broker observation result");
+        }
+
+        if (result["build"] is not JsonObject || result["acceptance"] is not JsonObject)
+        {
+            throw new RunnerGateException(ProtocolInvalid, "Successful Broker observation lacks Build or acceptance evidence.");
         }
     }
 
@@ -500,71 +540,84 @@ public sealed partial class NamedPipeSessionBrokerClient : ISessionBrokerClient
             "state",
             "mode",
             "sessionId",
+            "mcpPid",
             "plePid",
             "profile",
             "activeProjectPath",
-            "startedByRunner");
-
-        string observedProject;
-        try
-        {
-            observedProject = RunnerValidation.FullPath(
-                RunnerValidation.RequiredString(observed, "activeProjectPath", "Broker observation session"));
-        }
-        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            throw new BrokerReplyException(ObservationInvalid);
-        }
-
+            "pleOwnedByBroker");
         if (RunnerValidation.RequiredString(observed, "state", "Broker observation session") != "ready" ||
             RunnerValidation.RequiredString(observed, "mode", "Broker observation session") != "persistent" ||
             RunnerValidation.RequiredString(observed, "sessionId", "Broker observation session") != expected.SessionId ||
+            RunnerValidation.RequiredInt32(observed, "mcpPid", "Broker observation session") != expected.McpPid ||
             RunnerValidation.RequiredInt32(observed, "plePid", "Broker observation session") != expected.PlePid ||
             RunnerValidation.RequiredString(observed, "profile", "Broker observation session") != expected.Profile ||
-            !observedProject.Equals(RunnerValidation.FullPath(expected.ActiveProjectPath), StringComparison.OrdinalIgnoreCase) ||
-            RunnerValidation.RequiredBoolean(observed, "startedByRunner", "Broker observation session"))
+            !RunnerValidation.FullPath(RunnerValidation.RequiredString(observed, "activeProjectPath", "Broker observation session"))
+                .Equals(RunnerValidation.FullPath(expected.ActiveProjectPath), StringComparison.OrdinalIgnoreCase) ||
+            RunnerValidation.RequiredBoolean(observed, "pleOwnedByBroker", "Broker observation session") !=
+                expected.PleOwnedByBroker)
         {
-            throw new BrokerReplyException(ObservationInvalid);
+            throw new RunnerGateException(ProtocolInvalid, "Broker observation session changed during execution.");
         }
     }
 
-    private static bool HasDuplicateProperty(JsonElement element)
+    private static void ValidateRegistrationForAction(BrokerRegistration registration, ValidatedRunnerAction action)
     {
-        if (element.ValueKind == JsonValueKind.Object)
+        if (!registration.EngineeringRoot.Equals(action.EngineeringRoot, StringComparison.OrdinalIgnoreCase) ||
+            !registration.StationRoot.Equals(action.StationRoot, StringComparison.OrdinalIgnoreCase) ||
+            !registration.PlcProject.Equals(action.PlcProject, StringComparison.OrdinalIgnoreCase) ||
+            registration.Profile != action.Profile)
         {
-            var names = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var property in element.EnumerateObject())
-            {
-                if (!names.Add(property.Name) || HasDuplicateProperty(property.Value))
-                {
-                    return true;
-                }
-            }
+            throw new RunnerGateException("BLOCKED_BROKER_REGISTRATION_PROJECT_MISMATCH", "Broker registration does not match the immutable action project.");
         }
-        else if (element.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var child in element.EnumerateArray())
-            {
-                if (HasDuplicateProperty(child))
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
     }
+
+    private static BrokerExecutionReply Pending(string executionId, string reasonCode) => new(
+        Available: true,
+        ReasonCode: SafeReason(reasonCode, ExecutionPending),
+        Session: null,
+        Observation: null)
+    {
+        Accepted = true,
+        Terminal = false,
+        ReviewRequired = false,
+        ExecutionId = executionId
+    };
 
     private static BrokerExecutionReply Unavailable(string reasonCode) => new(
         Available: false,
-        ReasonCode: RunnerValidation.IsSafeIdentifier(reasonCode, maximumLength: 96)
-            ? reasonCode
-            : ProtocolInvalid,
+        ReasonCode: SafeReason(reasonCode, SessionUnavailable),
         Session: null,
-        Observation: null);
+        Observation: null)
+    {
+        Accepted = false,
+        Terminal = false,
+        ReviewRequired = false
+    };
 
-    private static int ToTimeoutMilliseconds(TimeSpan timeout) =>
-        checked((int)Math.Ceiling(timeout.TotalMilliseconds));
+    private static string SafeReason(string? reason, string fallback) =>
+        !string.IsNullOrWhiteSpace(reason) && RunnerValidation.IsSafeIdentifier(reason, 96)
+            ? reason
+            : fallback;
+
+    private static bool IsTransportOrProtocolFailure(Exception exception) =>
+        exception is IOException or UnauthorizedAccessException or TimeoutException or RunnerGateException or
+            System.Text.Json.JsonException or System.Text.DecoderFallbackException;
+
+    private static string ReasonFor(Exception exception) => exception is RunnerGateException gate
+        ? SafeReason(gate.ReasonCode, ProtocolInvalid)
+        : SessionUnavailable;
+
+    private static TimeSpan RequireTimeout(TimeSpan value, string name, TimeSpan maximum)
+    {
+        if (value <= TimeSpan.Zero || value > maximum)
+        {
+            throw new ArgumentOutOfRangeException(name, $"Timeout must be greater than zero and no more than {maximum}.");
+        }
+
+        return value;
+    }
+
+    private static int ToMilliseconds(TimeSpan value) => checked((int)Math.Ceiling(value.TotalMilliseconds));
 
     private static PipeServerIdentity GetServerIdentity(NamedPipeClientStream pipe)
     {
@@ -572,45 +625,20 @@ public sealed partial class NamedPipeSessionBrokerClient : ISessionBrokerClient
             !GetNamedPipeServerSessionId(pipe.SafePipeHandle, out var sessionId) ||
             processId == 0 || processId > int.MaxValue || sessionId > int.MaxValue)
         {
-            throw new BrokerReplyException(BrokerIdentityInvalid);
+            throw new RunnerGateException(BrokerIdentityInvalid, "Named Pipe server identity cannot be read.");
         }
 
         return new PipeServerIdentity((int)processId, (int)sessionId);
     }
 
-    private static void ValidateTimeout(TimeSpan value, string parameterName, TimeSpan maximum)
-    {
-        if (value <= TimeSpan.Zero || value > maximum)
-        {
-            throw new ArgumentOutOfRangeException(parameterName, $"Timeout must be greater than zero and no more than {maximum}.");
-        }
-    }
-
-    [GeneratedRegex("^[A-Za-z0-9_.-]+$", RegexOptions.CultureInvariant)]
-    private static partial Regex SafePipeNameRegex();
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetNamedPipeServerProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint serverProcessId);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetNamedPipeServerProcessId(
-        Microsoft.Win32.SafeHandles.SafePipeHandle pipe,
-        out uint serverProcessId);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetNamedPipeServerSessionId(
-        Microsoft.Win32.SafeHandles.SafePipeHandle pipe,
-        out uint serverSessionId);
+    private static extern bool GetNamedPipeServerSessionId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint serverSessionId);
 
     private sealed record PipeServerIdentity(int ProcessId, int WindowsSessionId);
-
-    private sealed class BrokerReplyException : Exception
-    {
-        public BrokerReplyException(string reasonCode)
-            : base(reasonCode)
-        {
-            ReasonCode = reasonCode;
-        }
-
-        public string ReasonCode { get; }
-    }
+    private sealed record SubmitReceipt(bool Accepted, string ReasonCode, string ExecutionId);
 }

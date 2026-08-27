@@ -185,7 +185,7 @@ Write-Output ([pscustomobject]@{
     Assert-True -Condition ($statusManifest.lease.scope -eq 'os-file-exclusive') -Message 'Lease scope is not OS-file-exclusive.'
     Assert-True -Condition ($statusManifest.lease.acquired -and $statusManifest.lease.released) -Message 'Status lease lifecycle was not recorded.'
     Assert-True -Condition (-not $statusManifest.guardrails.onlineOperationsUsed) -Message 'Status claimed online operations.'
-    Assert-True -Condition (-not $statusManifest.guardrails.pleOrMcpStarted) -Message 'Status claimed PLE/MCP startup.'
+    Assert-True -Condition (-not $statusManifest.guardrails.pleOrMcpStartedByAction) -Message 'Status claimed PLE/MCP startup by an action.'
 
     $leaseRoot = Join-Path $testRoot 'data\runner'
     [System.IO.Directory]::CreateDirectory($leaseRoot) | Out-Null
@@ -219,7 +219,7 @@ Write-Output ([pscustomobject]@{
     Assert-True -Condition ([string]$actionManifest.result.actionRequestSha256 -match '^[0-9A-Fa-f]{64}$') -Message 'Action SHA-256 was not recorded.'
     Assert-True -Condition (@($actionManifest.capabilitiesInvoked).Count -eq 2) -Message 'ProcessOne capability ledger is incomplete.'
     Assert-True -Condition (-not $actionManifest.guardrails.onlineOperationsUsed) -Message 'ProcessOne used an online capability.'
-    Assert-True -Condition (-not $actionManifest.guardrails.pleOrMcpStarted) -Message 'P1.1 started PLE/MCP.'
+    Assert-True -Condition (-not $actionManifest.guardrails.pleOrMcpStartedByAction) -Message 'P1.1 action started PLE/MCP.'
 
     $secondProcess = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'ProcessOne'
     Assert-True -Condition ($secondProcess.ExitCode -eq 0) -Message ('Second ProcessOne failed: ' + ($secondProcess.Output -join ' '))
@@ -246,7 +246,7 @@ Write-Output ([pscustomobject]@{
     Assert-True -Condition ([string]$failureManifest.result.status -eq 'FAILED') -Message 'Failed gate did not produce FAILED manifest.'
     Assert-True -Condition ([string]$failureManifest.error.message -match 'fixture audit failure') -Message 'Failure reason was not retained.'
     Assert-True -Condition (-not $failureManifest.guardrails.onlineOperationsUsed) -Message 'Failure path claimed online operations.'
-    Assert-True -Condition (-not $failureManifest.guardrails.pleOrMcpStarted) -Message 'Failure path claimed PLE/MCP startup.'
+    Assert-True -Condition (-not $failureManifest.guardrails.pleOrMcpStartedByAction) -Message 'Failure path claimed PLE/MCP startup by an action.'
 
     Write-Output ("Controlled Runner P1.1 self-test OK ({0} assertions)" -f $script:assertionCount)
 }

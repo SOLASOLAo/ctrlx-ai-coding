@@ -17,7 +17,7 @@ Every P1.1 invocation takes an OS-enforced exclusive file lease under
 `data/runner/` and writes `data/runs/runner/<run-id>/run-manifest.json`.
 Concurrent invocations return exit code `20`.
 
-## P1.2a action client
+## P1.2 action client and Broker discovery
 
 The .NET 8 Runner client is installed under `tools/runner/` by the project
 initializer.
@@ -36,9 +36,7 @@ dotnet build .\tools\runner\CtrlX.OpCon.Runner.Cli\CtrlX.OpCon.Runner.Cli.csproj
 .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 `
   -Command ExecuteAction `
   -ActionPath '<absolute actionRequestPath from Stage 2>' `
-  -ExpectedActionSha256 '<actionRequestSha256>' `
-  -BrokerPipe 'ctrlx-opcon-runner-v1' `
-  -BrokerPid '<trusted PID from the registered Broker>'
+  -ExpectedActionSha256 '<actionRequestSha256>'
 
 .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 `
   -Command ActionStatus -ActionRunId '<runId>'
@@ -50,22 +48,37 @@ dotnet build .\tools\runner\CtrlX.OpCon.Runner.Cli\CtrlX.OpCon.Runner.Cli.csproj
 The client binds the immutable action to `operation.json.currentAction`,
 validates hashes/fingerprints and every replay artifact, obtains separate
 profile/project and action-run leases, and connects only to an already-running
-local Named Pipe Broker. The Broker reply must match the actual Pipe server PID
-and the current interactive Windows session. The evidence producer is bound to
-the released script hash. The client never starts PLE, MCP, or the Broker.
+local Named Pipe Broker. Protocol v2 discovers that Broker only from the
+current-user registration path derived from `EngineeringRoot`. The registration
+must have a fresh heartbeat and match the live Broker PID, process start time,
+executable hash, Windows session and project identity. Callers cannot supply or
+override a Pipe name or Broker PID.
 
-If `ExecuteAction` is deliberately invoked without `-BrokerPipe`, it writes
-and seals an honest `BLOCKED_SESSION_UNAVAILABLE` result. That result is
-immutable for the action, so this no-session path is a diagnostic/acceptance
-test, not a way to queue an action for later retry.
+`Doctor` prints the canonical registration path plus
+`brokerRegistrationValidated` and `brokerRegistrationValidationReasonCode`. Start the
+interactive Broker separately, wait for a fresh `ready` registration, and run
+`Doctor` before `ExecuteAction`. The action wrapper never starts PLE, MCP or the
+Broker. If registration is missing, stale or invalid, action execution is
+blocked by the Runner rather than falling back to an unregistered Pipe.
 
-P1.2b is still pending: the interactive-session Agent/Broker that exclusively
-owns the persistent MCP stdio session and produces fresh Build/readback
-observations. It must also enforce Broker-side Pipe ACL/trusted registration,
-typed allowlisted actions and explicit cancel-or-completion semantics for a
-long Build; it must never execute free-form `instructions`. Until that Broker
-exists, the action client cannot claim a Build or a successful Stage 2
-engineering result.
+The same Windows user is the present local trust boundary. Registration
+validation prevents accidental or cross-session attachment; it does not defend
+against malicious code already running under that account. A product release
+must add controlled installation and signed/release-bound Broker identity.
+
+The Broker exclusively owns the persistent MCP stdio session, accepts only
+typed allowlisted actions and keeps a durable execution record so a client
+timeout is not mistaken for a failed Build. It never executes free-form
+`instructions`.
+
+This is an offline-tested Broker foundation, not an accepted engineering-success
+path. The repository contains the controlled MCP ownership/fresh-Build patch,
+but it must be reviewed and applied to the workstation adapter separately; the
+independent ownership, mapping, readback, recoverable-baseline and Symbol
+post-processing evidence producers are also incomplete. Until those gates and
+a real-PLE offline acceptance pass, production actions must terminate as
+`BLOCKED_CAPABILITY_NOT_IMPLEMENTED` and must never turn a clean compile into a
+successful Stage 2 result.
 
 ## Safety boundary
 

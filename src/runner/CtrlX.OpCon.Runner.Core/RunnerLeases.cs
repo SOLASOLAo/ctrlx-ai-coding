@@ -14,36 +14,17 @@ public sealed class RunnerLeaseSet : IDisposable
 
     public string LeaseId => string.Join("+", slots.Select(slot => slot.LeaseId));
 
-    public void ReleaseSessionLease()
-    {
-        if (slots.Count == 0)
-        {
-            throw new RunnerGateException("RUNNER_LEASE_STATE_INVALID", "Runner session lease is missing.");
-        }
-
-        // Slot 0 is the profile/project session lease. Slot 1 is the immutable
-        // action-run lease and remains held until result.json is committed.
-        slots[0].Dispose();
-    }
-
     public static RunnerLeaseSet Acquire(ValidatedRunnerAction action, TimeSpan timeout)
     {
         var leaseRoot = Path.Combine(action.EngineeringRoot, "data", "runner", "leases");
-        var sessionIdentity = OperatingSystem.IsWindows()
-            ? $"{action.Profile}|{action.PlcProject}".ToUpperInvariant()
-            : $"{action.Profile}|{action.PlcProject}";
-        // Transport aliases must never partition the single-session lease for one
-        // exact profile/project. The transport is audit metadata, not lock identity.
-        var sessionKey = RunnerHash.Sha256Text(sessionIdentity)[..32];
         var actionKey = RunnerHash.Sha256Text($"{action.ActionId}|{action.ActionSha256}|{action.IdempotencyKey}")[..32];
         var acquired = new List<RunnerLeaseSlot>();
         try
         {
-            acquired.Add(RunnerLeaseSlot.Acquire(
-                Path.Combine(leaseRoot, "session-client", sessionKey),
-                $"session-client:{sessionKey}",
-                action,
-                timeout));
+            // The Runner client owns only the immutable action/run claim.  The
+            // interactive Broker is the sole profile/project session owner and
+            // holds its independent session-owner lease for the Broker lifetime.
+            // Sharing that lease here would deadlock every Runner -> Broker call.
             acquired.Add(RunnerLeaseSlot.Acquire(
                 Path.Combine(leaseRoot, "actions", actionKey),
                 $"action:{actionKey}",

@@ -137,7 +137,7 @@ public sealed class RunnerRunStore
             ["guardrails"] = new JsonObject
             {
                 ["onlineOperationsUsed"] = false,
-                ["pleOrMcpStarted"] = false,
+                ["pleOrMcpStartedByAction"] = false,
                 ["secondPleStarted"] = false,
                 ["directWatcherIpcUsed"] = false,
                 ["deploymentAllowed"] = false
@@ -329,14 +329,14 @@ public sealed class RunnerRunStore
             guardrails,
             "Runner result guardrails",
             "onlineOperationsUsed",
-            "pleOrMcpStarted",
+            "pleOrMcpStartedByAction",
             "secondPleStarted",
             "directWatcherIpcUsed",
             "deploymentAllowed");
         foreach (var name in new[]
         {
             "onlineOperationsUsed",
-            "pleOrMcpStarted",
+            "pleOrMcpStartedByAction",
             "secondPleStarted",
             "directWatcherIpcUsed",
             "deploymentAllowed"
@@ -397,13 +397,30 @@ public sealed class RunnerRunStore
             var evidence = RunnerJson.ReadObject(evidencePath, "Runner evidence");
             ValidateArtifactIdentity(evidence, "Runner evidence");
             var evidenceGuardrails = RunnerValidation.RequiredObject(evidence, "guardrails", "Runner evidence");
+            var actionProjectGateAcquired = RunnerValidation.RequiredBoolean(
+                evidenceGuardrails,
+                "actionProjectGateAcquired",
+                "Runner evidence guardrails");
+            var actionProjectGateReleased = RunnerValidation.RequiredBoolean(
+                evidenceGuardrails,
+                "actionProjectGateReleased",
+                "Runner evidence guardrails");
+            var actionProjectGateKind = RunnerValidation.RequiredString(
+                evidenceGuardrails,
+                "actionProjectGateKind",
+                "Runner evidence guardrails");
+            var actionProjectGateConsistent = actionProjectGateAcquired
+                ? actionProjectGateKind == "broker-session-action-serialization"
+                : actionProjectGateKind == "none";
             if (RunnerValidation.RequiredBoolean(evidenceGuardrails, "onlineOperationsUsed", "Runner evidence guardrails") ||
                 RunnerValidation.RequiredBoolean(evidenceGuardrails, "secondPleStarted", "Runner evidence guardrails") ||
-                RunnerValidation.RequiredBoolean(evidenceGuardrails, "pleOrMcpStarted", "Runner evidence guardrails") ||
+                RunnerValidation.RequiredBoolean(evidenceGuardrails, "pleOrMcpStartedByAction", "Runner evidence guardrails") ||
                 RunnerValidation.RequiredBoolean(evidenceGuardrails, "directWatcherIpcUsed", "Runner evidence guardrails") ||
-                !RunnerValidation.RequiredBoolean(evidenceGuardrails, "projectLeaseReleased", "Runner evidence guardrails"))
+                !actionProjectGateReleased ||
+                !actionProjectGateConsistent ||
+                (state == RunnerStates.Done && !actionProjectGateAcquired))
             {
-                throw new RunnerGateException("RUN_RESULT_GUARDRAIL_INVALID", "Runner evidence violates offline/released-lease guardrails.");
+                throw new RunnerGateException("RUN_RESULT_GUARDRAIL_INVALID", "Runner evidence violates offline/action-gate guardrails.");
             }
 
             var evidenceResult = RunnerValidation.RequiredObject(evidence, "result", "Runner evidence");

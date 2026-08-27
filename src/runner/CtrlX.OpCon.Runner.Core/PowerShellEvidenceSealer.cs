@@ -9,7 +9,7 @@ public sealed class PowerShellEvidenceSealer : IEvidenceSealer
     // SHA-256 of the trusted producer after CRLF/CR are normalized to LF.
     // Updating the producer requires an explicit Runner release and constant update.
     public const string TrustedEvidenceProducerNormalizedSha256 =
-        "CD8F728AD33A145AA116734287832F9AF9E95FE64E8776D6787E9FF487ACF497";
+        "DAC568BA41A50B127D5D3DDF9F44C8AA874A92B22B76CEFB16296898295663E6";
 
     private readonly TimeSpan timeout;
 

@@ -36,7 +36,8 @@ public sealed class RunnerExecutor
         JsonObject? observation = null;
         ExecutionTerminal? terminal = null;
         string? observationSha256 = null;
-        var claimCreated = false;
+        var claimPresent = false;
+        var recoveringExistingClaim = false;
         RunnerLeaseSet? leaseSet = null;
 
         try
@@ -47,25 +48,28 @@ public sealed class RunnerExecutor
                 return replay;
             }
 
-            claimCreated = store.TryCreateClaim(brokerClient.TransportName);
-            if (!claimCreated)
+            var claimCreated = store.TryCreateClaim(brokerClient.TransportName);
+            claimPresent = true;
+            recoveringExistingClaim = !claimCreated;
+            if (recoveringExistingClaim)
             {
                 if (store.TryReadResult(out replay) && replay is not null)
                 {
                     return replay;
                 }
 
-                return store.Complete(
-                    RunnerStates.Unknown,
-                    "INTERRUPTED_RUN_REVIEW_REQUIRED",
-                    RunnerExitCodes.GateFailure,
-                    observationSha256: null,
-                    evidence: null);
+                // A previous client may have detached after the Broker accepted
+                // this idempotent action.  Keep the claim open and ask the Broker
+                // for the authoritative operation state instead of fabricating an
+                // UNKNOWN terminal result or dispatching a second Build.
+                store.AppendEvent(RunnerStates.Received, "ACTION_RECOVERY_REQUESTED");
             }
-
-            store.AppendEvent(RunnerStates.Received, "ACTION_RECEIVED");
-            store.AppendEvent(RunnerStates.ActionValidated, "ACTION_VALIDATED");
-            store.AppendEvent(RunnerStates.ActionLeased, "ACTION_LEASED");
+            else
+            {
+                store.AppendEvent(RunnerStates.Received, "ACTION_RECEIVED");
+                store.AppendEvent(RunnerStates.ActionValidated, "ACTION_VALIDATED");
+                store.AppendEvent(RunnerStates.ActionLeased, "ACTION_LEASED");
+            }
 
             if (!action.IsSupported)
             {
@@ -81,11 +85,41 @@ public sealed class RunnerExecutor
                 store.AppendEvent(RunnerStates.SessionProbed, reply.Available ? "SESSION_AVAILABLE" : reply.ReasonCode);
                 if (!reply.Available)
                 {
+                    if (recoveringExistingClaim)
+                    {
+                        store.AppendEvent(RunnerStates.Executing, "BROKER_RECOVERY_PENDING");
+                        throw Pending("BROKER_RECOVERY_PENDING");
+                    }
+
                     terminal = new ExecutionTerminal(
                         RunnerStates.Blocked,
                         SafeBrokerReason(reply.ReasonCode, "BLOCKED_SESSION_UNAVAILABLE"),
                         RunnerExitCodes.Blocked);
                     observation = RunnerObservationFactory.Blocked(action, "session_probe", terminal.ReasonCode);
+                }
+                else if (reply.Terminal && reply.ReviewRequired)
+                {
+                    // UNKNOWN_REVIEW_REQUIRED and CANCELED are durable Broker
+                    // terminal outcomes, not a polling state.  Seal a local
+                    // UNKNOWN result without inventing evidence and, critically,
+                    // without submitting the immutable action for another Build.
+                    return store.Complete(
+                        RunnerStates.Unknown,
+                        SafeBrokerReason(reply.ReasonCode, "BROKER_REVIEW_REQUIRED"),
+                        RunnerExitCodes.GateFailure,
+                        observationSha256: null,
+                        evidence: null);
+                }
+                else if ((reply.Accepted && !reply.Terminal) ||
+                         (!reply.Terminal && reply.Observation is null))
+                {
+                    // A durable Broker acceptance is not a terminal result.  The
+                    // second condition preserves the short-lived v1 bridge where
+                    // Available=true plus Observation=null represented pending.
+                    // Do not write observation.json or result.json here; the next
+                    // call resumes by idempotency key / execution id.
+                    store.AppendEvent(RunnerStates.Executing, "BROKER_OPERATION_PENDING");
+                    throw Pending("BROKER_OPERATION_PENDING");
                 }
                 else if (!SessionMatches(action, reply.Session))
                 {
@@ -97,11 +131,9 @@ public sealed class RunnerExecutor
                 }
                 else if (reply.Observation is null)
                 {
-                    terminal = new ExecutionTerminal(
-                        RunnerStates.Blocked,
-                        "BLOCKED_BROKER_OBSERVATION_MISSING",
-                        RunnerExitCodes.Blocked);
-                    observation = RunnerObservationFactory.Blocked(action, "broker_observation", terminal.ReasonCode);
+                    throw new RunnerGateException(
+                        "BROKER_TERMINAL_OBSERVATION_MISSING",
+                        "Broker marked the operation terminal without returning its durable observation.");
                 }
                 else
                 {
@@ -112,34 +144,56 @@ public sealed class RunnerExecutor
                 }
             }
 
-            observationSha256 = store.WriteObservation(observation);
-            store.AppendEvent(RunnerStates.ObservationWritten, "OBSERVATION_WRITTEN");
+            if (File.Exists(store.ObservationPath))
+            {
+                // Recovery can resume after a terminal observation was persisted
+                // but before evidence/result commit.  The Broker must replay the
+                // exact terminal observation for the idempotent action.
+                var existingObservation = RunnerJson.ReadObject(store.ObservationPath, "Runner observation");
+                ValidateObservationIdentity(action, existingObservation);
+                if (!JsonNode.DeepEquals(existingObservation, observation))
+                {
+                    throw new RunnerGateException(
+                        "BROKER_OBSERVATION_REPLAY_MISMATCH",
+                        "Broker replay did not match the already persisted terminal observation.");
+                }
 
-            // Release only the profile/project session lease before evidence claims
-            // that engineering coordination is released. The immutable action lease
-            // remains held through evidence sealing and result.json commit.
-            leaseSet.ReleaseSessionLease();
+                observation = existingObservation;
+                observationSha256 = RunnerHash.Sha256File(store.ObservationPath);
+            }
+            else
+            {
+                observationSha256 = store.WriteObservation(observation);
+            }
+            store.AppendEvent(RunnerStates.ObservationWritten, "OBSERVATION_WRITTEN");
 
             if (terminal is null || observationSha256 is null)
             {
                 throw new RunnerGateException("RUNNER_STATE_INVALID", "Runner did not reach a sealable terminal observation.");
             }
 
-            // Both client/action leases are released before evidence claims
-            // that coordination is no longer held.
+            // The Broker observation is authoritative for its action-scoped
+            // project serialization gate. The Runner's separate immutable-action
+            // lease stays held through evidence sealing and atomic result commit.
             store.AppendEvent(RunnerStates.Sealing, "SEALING_EVIDENCE");
             var evidence = await evidenceSealer.SealAsync(action, store.ObservationPath, cancellationToken).ConfigureAwait(false);
             return store.Complete(terminal.State, terminal.ReasonCode, terminal.ExitCode, observationSha256, evidence);
         }
-        catch (OperationCanceledException) when (claimCreated)
+        catch (OperationCanceledException) when (claimPresent)
         {
-            return CompleteAfterClaimIfNeeded(
-                store,
-                RunnerStates.Unknown,
-                "EXECUTION_INTERRUPTED_REVIEW_REQUIRED",
-                RunnerExitCodes.GateFailure);
+            // Client cancellation/detach is not proof that an accepted MCP/PLE
+            // operation stopped.  Keep claim.json without a terminal result so a
+            // later call can query/replay the Broker operation idempotently.
+            store.AppendEvent(RunnerStates.Executing, "CLIENT_DETACHED_CANCELLATION_REQUESTED");
+            throw;
         }
-        catch (RunnerGateException exception) when (claimCreated)
+        catch (RunnerGateException exception) when (claimPresent && IsPending(exception))
+        {
+            // Pending is deliberately non-terminal: the immutable claim remains
+            // the recovery anchor and no observation/evidence/result is sealed.
+            throw;
+        }
+        catch (RunnerGateException exception) when (claimPresent)
         {
             return CompleteAfterClaimIfNeeded(
                 store,
@@ -147,7 +201,7 @@ public sealed class RunnerExecutor
                 exception.ReasonCode,
                 exception.ExitCode == RunnerExitCodes.Busy ? RunnerExitCodes.GateFailure : exception.ExitCode);
         }
-        catch (Exception) when (claimCreated)
+        catch (Exception) when (claimPresent)
         {
             return CompleteAfterClaimIfNeeded(
                 store,
@@ -188,14 +242,22 @@ public sealed class RunnerExecutor
             : fallback;
     }
 
+    private static RunnerGateException Pending(string reasonCode) => new(
+        reasonCode,
+        "The Broker operation is accepted or recoverable but has not reached a terminal state.",
+        RunnerExitCodes.Busy);
+
+    private static bool IsPending(RunnerGateException exception) =>
+        exception.ReasonCode is "BROKER_OPERATION_PENDING" or "BROKER_RECOVERY_PENDING";
+
     private static bool SessionMatches(ValidatedRunnerAction action, BrokerSessionIdentity? session)
     {
         if (session is null ||
-            session.ProtocolVersion != 1 ||
+            session.ProtocolVersion != BrokerWireProtocol.Version ||
             session.BrokerPid <= 0 ||
+            session.McpPid <= 0 ||
             session.PlePid <= 0 ||
             session.State != "ready" ||
-            session.StartedByRunner ||
             session.Profile != action.Profile ||
             !RunnerValidation.IsSafeIdentifier(session.SessionId))
         {

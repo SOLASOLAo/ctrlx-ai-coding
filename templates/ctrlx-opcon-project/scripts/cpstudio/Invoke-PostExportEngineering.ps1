@@ -466,15 +466,7 @@ function Assert-NoOnlineCapabilities {
     $prohibitedPattern = '(?i)(connect[_-]?to[_-]?device|download[_-]?to[_-]?device|start[_-]?stop|write[_-]?variable|read[_-]?variable|monitor[_-]?variables|force|set[_-]?simulation|online|launch[_-]?(codesys|ple|mcp)|watcher[_-]?ipc)'
     $approvedOfflineCapabilities = @(
         'get_codesys_status',
-        'get_all_pou_code',
-        'find_references',
-        'inspect_device_node',
-        'list_project_libraries',
-        'search_code',
-        'open_project',
-        'compile_project',
-        'get_compile_messages',
-        'set_pou_code'
+        'compile_project'
     )
     foreach ($capability in @($capabilityProperty.Value)) {
         if ($null -eq $capability) {
@@ -995,13 +987,13 @@ function New-RunnerAction {
             offlineOnly                    = $true
             onlineOperationsAllowed        = $false
             requireExistingPersistentSession = $true
-            prohibitStartPleOrMcp           = $true
+            prohibitPleOrMcpStartByAction   = $true
             prohibitDirectWatcherIpc        = $true
             requireExactProjectOpen         = $true
-            projectLeaseRequired            = $true
-            releaseLeaseAfterAction          = $true
+            actionProjectGateRequired       = $true
+            releaseActionProjectGateBeforeTerminalDelivery = $true
             symbolAccessSerialized           = $true
-            coordinationScope                = 'workflow-local-until-runner-lease'
+            actionProjectGateKind            = 'broker-session-action-serialization'
         }
         changeSet     = @($ChangeSet)
         instructions  = $instructions
@@ -1009,7 +1001,7 @@ function New-RunnerAction {
             schemaVersion               = 1
             requireActionRequestSha256  = $true
             requireOfflineOnly          = $true
-            requireProjectLeaseReleased = $true
+            requireActionProjectGateReleased = $true
             requireReadbackOnSuccess     = $true
             requireFreshBuildOnSuccess   = $true
             terminalFailureMayOmitBuild  = $true
@@ -1536,11 +1528,11 @@ function Read-AndValidateEvidence {
     Assert-ExactPropertySet -Object $guardrails -ExpectedNames @(
         'onlineOperationsUsed',
         'secondPleStarted',
-        'projectLeaseAcquired',
-        'projectLeaseReleased',
-        'projectLeaseScope',
+        'actionProjectGateAcquired',
+        'actionProjectGateReleased',
+        'actionProjectGateKind',
         'symbolLeaseHeld',
-        'pleOrMcpStarted',
+        'pleOrMcpStartedByAction',
         'directWatcherIpcUsed'
     ) -Context 'Runner evidence guardrails'
     if (Get-BooleanValue -Object $guardrails -Name 'onlineOperationsUsed' -Required -Context 'Runner evidence guardrails') {
@@ -1549,18 +1541,24 @@ function Read-AndValidateEvidence {
     if (Get-BooleanValue -Object $guardrails -Name 'secondPleStarted' -Required -Context 'Runner evidence guardrails') {
         throw 'Runner evidence reports that a second PLE was started.'
     }
-    $projectLeaseAcquired = Get-BooleanValue -Object $guardrails -Name 'projectLeaseAcquired' -Required -Context 'Runner evidence guardrails'
-    if (-not (Get-BooleanValue -Object $guardrails -Name 'projectLeaseReleased' -Required -Context 'Runner evidence guardrails')) {
-        throw 'Runner evidence must prove that the project lease was released.'
+    $actionProjectGateAcquired = Get-BooleanValue -Object $guardrails -Name 'actionProjectGateAcquired' -Required -Context 'Runner evidence guardrails'
+    if (-not (Get-BooleanValue -Object $guardrails -Name 'actionProjectGateReleased' -Required -Context 'Runner evidence guardrails')) {
+        throw 'Runner evidence must prove that the action project serialization gate was released.'
     }
-    if ((Get-RequiredString -Object $guardrails -Name 'projectLeaseScope' -Context 'Runner evidence guardrails') -ne 'workflow-local') {
-        throw 'Runner evidence projectLeaseScope must be workflow-local.'
+    $actionProjectGateKind = Get-RequiredString -Object $guardrails -Name 'actionProjectGateKind' -Context 'Runner evidence guardrails'
+    if ($actionProjectGateAcquired) {
+        if ($actionProjectGateKind -ne 'broker-session-action-serialization') {
+            throw 'An acquired runner action project gate must use broker-session-action-serialization.'
+        }
+    }
+    elseif ($actionProjectGateKind -ne 'none') {
+        throw 'A non-acquired runner action project gate must use kind=none.'
     }
     if (Get-BooleanValue -Object $guardrails -Name 'symbolLeaseHeld' -Required -Context 'Runner evidence guardrails') {
         throw 'Runner evidence still holds the Symbol lease.'
     }
-    if (Get-BooleanValue -Object $guardrails -Name 'pleOrMcpStarted' -Required -Context 'Runner evidence guardrails') {
-        throw 'Runner evidence reports that PLE or MCP was started by the runner.'
+    if (Get-BooleanValue -Object $guardrails -Name 'pleOrMcpStartedByAction' -Required -Context 'Runner evidence guardrails') {
+        throw 'Runner evidence reports that PLE or MCP was started by the action.'
     }
     if (Get-BooleanValue -Object $guardrails -Name 'directWatcherIpcUsed' -Required -Context 'Runner evidence guardrails') {
         throw 'Runner evidence reports direct watcher IPC use.'
@@ -1645,25 +1643,17 @@ function Read-AndValidateEvidence {
         throw 'Inspect and verify evidence cannot report project write capabilities.'
     }
     if ($resultStatus -eq 'succeeded') {
-        if (-not $projectLeaseAcquired) {
-            throw 'Successful runner evidence must prove that the workflow-local project lease was acquired.'
+        if (-not $actionProjectGateAcquired) {
+            throw 'Successful runner evidence must prove that the Broker action project gate was acquired.'
+        }
+        if ([string]$Operation.currentAction.kind -eq 'apply_change_set_and_build') {
+            throw 'apply_change_set_and_build is not supported by the typed Broker and cannot produce successful evidence.'
         }
 
-        $requiredCapabilities = @('get_codesys_status', 'compile_project', 'get_compile_messages')
+        $requiredCapabilities = @('get_codesys_status', 'compile_project')
         foreach ($requiredCapability in $requiredCapabilities) {
             if (@($capabilities | Where-Object { [string]$_ -eq $requiredCapability }).Count -ne 1) {
                 throw "Successful runner evidence must report capability '$requiredCapability' exactly once."
-            }
-        }
-        if ([string]$Operation.currentAction.kind -eq 'apply_change_set_and_build') {
-            $writeCapabilities = @($capabilities | Where-Object {
-                [string]$_ -eq 'set_pou_code'
-            })
-            $readbackCapabilities = @($capabilities | Where-Object {
-                [string]$_ -match '^(get_all_pou_code|search_code|find_references)$'
-            })
-            if (($writeCapabilities.Count -lt 1) -or ($readbackCapabilities.Count -lt 1)) {
-                throw 'Successful apply evidence must report an approved write capability and an approved readback capability.'
             }
         }
 
@@ -1671,7 +1661,7 @@ function Read-AndValidateEvidence {
         if ($null -eq $session) {
             throw 'Successful runner evidence has no producer-validated persistent session identity.'
         }
-        Assert-ExactPropertySet -Object $session -ExpectedNames @('state', 'mode', 'sessionId', 'plePid', 'profile', 'activeProjectPath', 'startedByRunner') -Context 'Runner evidence session'
+        Assert-ExactPropertySet -Object $session -ExpectedNames @('state', 'mode', 'sessionId', 'plePid', 'mcpPid', 'profile', 'activeProjectPath', 'pleOwnedByBroker') -Context 'Runner evidence session'
 
         $successBuild = Get-PropertyValue -Object $result -Name 'build'
         Assert-JsonArrayProperty -RawJson $document.raw -PropertyPath @('result', 'build', 'warningSignatures') -Context 'Runner evidence'
@@ -1698,7 +1688,7 @@ function Read-AndValidateEvidence {
             'recoverableBaselineVerified',
             'warningSignaturesReviewed',
             'existingSessionReused',
-            'pleOrMcpStarted',
+            'pleOrMcpStartedByAction',
             'directWatcherIpcUsed',
             'symbolPostProcessingVerified'
         ) -Context 'Runner evidence acceptance'
@@ -1717,6 +1707,11 @@ function Read-AndValidateEvidence {
             ($sessionPid -le 0)) {
             throw 'Runner evidence session plePid must be a positive producer-validated process identifier.'
         }
+        $sessionMcpPid = 0
+        if ((-not [int]::TryParse([string](Get-PropertyValue -Object $session -Name 'mcpPid'), [ref]$sessionMcpPid)) -or
+            ($sessionMcpPid -le 0)) {
+            throw 'Runner evidence session mcpPid must be a positive producer-validated process identifier.'
+        }
         if ((Get-RequiredString -Object $session -Name 'profile' -Context 'Runner evidence session') -ne [string]$Operation.identity.profile) {
             throw 'Runner evidence session profile does not match the configured PLE profile.'
         }
@@ -1724,9 +1719,7 @@ function Read-AndValidateEvidence {
             -Expected ([string]$Operation.identity.plcProject) `
             -Actual (Get-RequiredString -Object $session -Name 'activeProjectPath' -Context 'Runner evidence session') `
             -Description 'Runner evidence session active project'
-        if (Get-BooleanValue -Object $session -Name 'startedByRunner' -Required -Context 'Runner evidence session') {
-            throw 'Runner evidence reports that the persistent session was started by the runner.'
-        }
+        $null = Get-BooleanValue -Object $session -Name 'pleOwnedByBroker' -Required -Context 'Runner evidence session'
     }
     $completedAtText = Get-RequiredString -Object $evidence -Name 'completedAtUtc' -Context 'Runner evidence'
     $completedAt = [DateTime]::MinValue
@@ -1860,7 +1853,7 @@ function Assert-StructuredAcceptance {
             throw "Runner acceptance did not prove '$name'."
         }
     }
-    foreach ($name in @('pleOrMcpStarted', 'directWatcherIpcUsed')) {
+    foreach ($name in @('pleOrMcpStartedByAction', 'directWatcherIpcUsed')) {
         if (Get-BooleanValue -Object $acceptance -Name $name -Required -Context 'Runner acceptance') {
             throw "Runner acceptance reports prohibited behavior '$name'."
         }

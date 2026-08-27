@@ -303,14 +303,46 @@ function Assert-ActionCurrent {
     }
 
     $guardrails = Get-PropertyValue -Object $Action -Name 'guardrails'
+    Assert-ExactPropertySet -Object $guardrails -Allowed @(
+        'offlineOnly',
+        'onlineOperationsAllowed',
+        'requireExistingPersistentSession',
+        'prohibitPleOrMcpStartByAction',
+        'prohibitDirectWatcherIpc',
+        'requireExactProjectOpen',
+        'actionProjectGateRequired',
+        'releaseActionProjectGateBeforeTerminalDelivery',
+        'symbolAccessSerialized',
+        'actionProjectGateKind'
+    ) -Context 'Runner action guardrails'
     if ((-not (Get-RequiredBoolean -Object $guardrails -Name 'offlineOnly' -Context 'Runner action guardrails')) -or
         (Get-RequiredBoolean -Object $guardrails -Name 'onlineOperationsAllowed' -Context 'Runner action guardrails') -or
         (-not (Get-RequiredBoolean -Object $guardrails -Name 'requireExistingPersistentSession' -Context 'Runner action guardrails')) -or
-        (-not (Get-RequiredBoolean -Object $guardrails -Name 'prohibitStartPleOrMcp' -Context 'Runner action guardrails')) -or
+        (-not (Get-RequiredBoolean -Object $guardrails -Name 'prohibitPleOrMcpStartByAction' -Context 'Runner action guardrails')) -or
         (-not (Get-RequiredBoolean -Object $guardrails -Name 'prohibitDirectWatcherIpc' -Context 'Runner action guardrails')) -or
         (-not (Get-RequiredBoolean -Object $guardrails -Name 'requireExactProjectOpen' -Context 'Runner action guardrails')) -or
-        (-not (Get-RequiredBoolean -Object $guardrails -Name 'projectLeaseRequired' -Context 'Runner action guardrails'))) {
+        (-not (Get-RequiredBoolean -Object $guardrails -Name 'actionProjectGateRequired' -Context 'Runner action guardrails')) -or
+        (-not (Get-RequiredBoolean -Object $guardrails -Name 'releaseActionProjectGateBeforeTerminalDelivery' -Context 'Runner action guardrails')) -or
+        (-not (Get-RequiredBoolean -Object $guardrails -Name 'symbolAccessSerialized' -Context 'Runner action guardrails')) -or
+        ((Get-RequiredString -Object $guardrails -Name 'actionProjectGateKind' -Context 'Runner action guardrails') -ne 'broker-session-action-serialization')) {
         throw 'Runner action does not contain the required offline/single-session guardrails.'
+    }
+    $evidenceContract = Get-PropertyValue -Object $Action -Name 'evidenceContract'
+    Assert-ExactPropertySet -Object $evidenceContract -Allowed @(
+        'schemaVersion',
+        'requireActionRequestSha256',
+        'requireOfflineOnly',
+        'requireActionProjectGateReleased',
+        'requireReadbackOnSuccess',
+        'requireFreshBuildOnSuccess',
+        'terminalFailureMayOmitBuild',
+        'warningComparison'
+    ) -Context 'Runner action evidenceContract'
+    if (([int](Get-PropertyValue -Object $evidenceContract -Name 'schemaVersion' -DefaultValue 0) -ne 1) -or
+        (-not (Get-RequiredBoolean -Object $evidenceContract -Name 'requireActionRequestSha256' -Context 'Runner action evidenceContract')) -or
+        (-not (Get-RequiredBoolean -Object $evidenceContract -Name 'requireOfflineOnly' -Context 'Runner action evidenceContract')) -or
+        (-not (Get-RequiredBoolean -Object $evidenceContract -Name 'requireActionProjectGateReleased' -Context 'Runner action evidenceContract'))) {
+        throw 'Runner action does not contain the required evidence contract.'
     }
 
     return [pscustomobject]@{
@@ -593,15 +625,7 @@ $capabilities = @($capabilityProperty.Value)
 $prohibitedCapability = '(?i)(connect[_-]?to[_-]?device|download[_-]?to[_-]?device|start[_-]?stop|write[_-]?variable|read[_-]?variable|monitor[_-]?variables|force|set[_-]?simulation|online|launch[_-]?(codesys|ple|mcp)|watcher[_-]?ipc)'
 $approvedOfflineCapabilities = @(
     'get_codesys_status',
-    'get_all_pou_code',
-    'find_references',
-    'inspect_device_node',
-    'list_project_libraries',
-    'search_code',
-    'open_project',
-    'compile_project',
-    'get_compile_messages',
-    'set_pou_code'
+    'compile_project'
 )
 foreach ($capability in $capabilities) {
     if (([string]$capability -notmatch '^[A-Za-z0-9_.-]{1,96}$') -or
@@ -612,47 +636,53 @@ foreach ($capability in $capabilities) {
         throw "Runner observation reports an unapproved offline capability: $capability"
     }
 }
-if (($identity.actionKind -ne 'apply_change_set_and_build') -and
-    (@($capabilities | Where-Object { [string]$_ -eq 'set_pou_code' }).Count -ne 0)) {
-    throw 'Inspect and verify actions cannot report project write capabilities.'
-}
 if ($status -eq 'succeeded') {
-    foreach ($requiredCapability in @('get_codesys_status', 'compile_project', 'get_compile_messages')) {
+    if ($identity.actionKind -eq 'apply_change_set_and_build') {
+        throw 'apply_change_set_and_build is not supported by the typed Broker and cannot produce successful evidence.'
+    }
+    foreach ($requiredCapability in @('get_codesys_status', 'compile_project')) {
         if (@($capabilities | Where-Object { [string]$_ -eq $requiredCapability }).Count -ne 1) {
             throw "Successful runner observation must report capability '$requiredCapability' exactly once."
-        }
-    }
-    if ($identity.actionKind -eq 'apply_change_set_and_build') {
-        $writeCapabilities = @($capabilities | Where-Object {
-            [string]$_ -eq 'set_pou_code'
-        })
-        $readbackCapabilities = @($capabilities | Where-Object {
-            [string]$_ -match '^(get_all_pou_code|search_code|find_references)$'
-        })
-        if (($writeCapabilities.Count -lt 1) -or ($readbackCapabilities.Count -lt 1)) {
-            throw 'Successful apply evidence must report an approved write capability and an approved readback capability.'
         }
     }
 }
 
 $observedGuardrails = Get-PropertyValue -Object $observation -Name 'guardrails'
+Assert-ExactPropertySet -Object $observedGuardrails -Allowed @(
+    'onlineOperationsUsed',
+    'secondPleStarted',
+    'actionProjectGateAcquired',
+    'actionProjectGateReleased',
+    'actionProjectGateKind',
+    'symbolLeaseHeld',
+    'pleOrMcpStartedByAction',
+    'directWatcherIpcUsed'
+) -Context 'Runner observation guardrails'
 $onlineOperationsUsed = Get-RequiredBoolean -Object $observedGuardrails -Name 'onlineOperationsUsed' -Context 'Runner observation guardrails'
 $secondPleStarted = Get-RequiredBoolean -Object $observedGuardrails -Name 'secondPleStarted' -Context 'Runner observation guardrails'
-$projectLeaseAcquired = Get-RequiredBoolean -Object $observedGuardrails -Name 'projectLeaseAcquired' -Context 'Runner observation guardrails'
-$projectLeaseReleased = Get-RequiredBoolean -Object $observedGuardrails -Name 'projectLeaseReleased' -Context 'Runner observation guardrails'
+$actionProjectGateAcquired = Get-RequiredBoolean -Object $observedGuardrails -Name 'actionProjectGateAcquired' -Context 'Runner observation guardrails'
+$actionProjectGateReleased = Get-RequiredBoolean -Object $observedGuardrails -Name 'actionProjectGateReleased' -Context 'Runner observation guardrails'
+$actionProjectGateKind = Get-RequiredString -Object $observedGuardrails -Name 'actionProjectGateKind' -Context 'Runner observation guardrails'
 $symbolLeaseHeld = Get-RequiredBoolean -Object $observedGuardrails -Name 'symbolLeaseHeld' -Context 'Runner observation guardrails'
-$pleOrMcpStarted = Get-RequiredBoolean -Object $observedGuardrails -Name 'pleOrMcpStarted' -Context 'Runner observation guardrails'
+$pleOrMcpStartedByAction = Get-RequiredBoolean -Object $observedGuardrails -Name 'pleOrMcpStartedByAction' -Context 'Runner observation guardrails'
 $directWatcherIpcUsed = Get-RequiredBoolean -Object $observedGuardrails -Name 'directWatcherIpcUsed' -Context 'Runner observation guardrails'
-$leaseScope = Get-RequiredString -Object $observedGuardrails -Name 'projectLeaseScope' -Context 'Runner observation guardrails'
-if ($leaseScope -ne 'workflow-local') {
-    throw "Unsupported project lease scope: $leaseScope"
+if (-not $actionProjectGateReleased) {
+    throw 'Runner observation must prove that the action project serialization gate was released.'
 }
-if ($onlineOperationsUsed -or $secondPleStarted -or (-not $projectLeaseReleased) -or $symbolLeaseHeld -or
-    $pleOrMcpStarted -or $directWatcherIpcUsed) {
-    throw 'Runner observation violates the offline, single-PLE, or released-lease guardrail.'
+if ($actionProjectGateAcquired) {
+    if ($actionProjectGateKind -ne 'broker-session-action-serialization') {
+        throw 'An acquired action project gate must use broker-session-action-serialization.'
+    }
 }
-if (($status -eq 'succeeded') -and (-not $projectLeaseAcquired)) {
-    throw 'A successful runner observation must explicitly record an acquired project lease.'
+elseif ($actionProjectGateKind -ne 'none') {
+    throw 'A non-acquired action project gate must use kind=none.'
+}
+if ($onlineOperationsUsed -or $secondPleStarted -or $symbolLeaseHeld -or
+    $pleOrMcpStartedByAction -or $directWatcherIpcUsed) {
+    throw 'Runner observation violates the offline, single-PLE, or released action-gate guardrail.'
+}
+if (($status -eq 'succeeded') -and (-not $actionProjectGateAcquired)) {
+    throw 'A successful runner observation must explicitly record the Broker action project gate.'
 }
 
 $observedResult = Get-PropertyValue -Object $observation -Name 'result'
@@ -760,16 +790,18 @@ if ($status -eq 'succeeded') {
     if ($null -eq $session) {
         throw 'A successful runner observation must contain the reused persistent session identity.'
     }
+    Assert-ExactPropertySet -Object $session -Allowed @('state', 'mode', 'sessionId', 'plePid', 'mcpPid', 'profile', 'activeProjectPath', 'pleOwnedByBroker') -Context 'Runner observation session'
     $sessionState = Get-RequiredString -Object $session -Name 'state' -Context 'Runner session'
     $sessionMode = Get-RequiredString -Object $session -Name 'mode' -Context 'Runner session'
     $sessionId = Get-RequiredString -Object $session -Name 'sessionId' -Context 'Runner session'
     $sessionPid = [int](Get-PropertyValue -Object $session -Name 'plePid' -DefaultValue 0)
+    $sessionMcpPid = [int](Get-PropertyValue -Object $session -Name 'mcpPid' -DefaultValue 0)
     $sessionProfile = Get-RequiredString -Object $session -Name 'profile' -Context 'Runner session'
     $activeProjectPath = [System.IO.Path]::GetFullPath((Get-RequiredString -Object $session -Name 'activeProjectPath' -Context 'Runner session'))
-    $sessionStartedByRunner = Get-RequiredBoolean -Object $session -Name 'startedByRunner' -Context 'Runner session'
+    $pleOwnedByBroker = Get-RequiredBoolean -Object $session -Name 'pleOwnedByBroker' -Context 'Runner session'
     if (($sessionState -ne 'ready') -or ($sessionMode -ne 'persistent') -or
-        ($sessionId -notmatch '^[A-Za-z0-9_.-]{1,128}$') -or ($sessionPid -le 0) -or
-        ($sessionProfile -ne $identity.profile) -or $sessionStartedByRunner -or
+        ($sessionId -notmatch '^[A-Za-z0-9_.-]{1,128}$') -or ($sessionPid -le 0) -or ($sessionMcpPid -le 0) -or
+        ($sessionProfile -ne $identity.profile) -or
         (-not $activeProjectPath.Equals($identity.plcProject, [System.StringComparison]::OrdinalIgnoreCase))) {
         throw 'Observed persistent session does not match the required ready/profile/project identity.'
     }
@@ -778,9 +810,10 @@ if ($status -eq 'succeeded') {
         mode              = $sessionMode
         sessionId         = $sessionId
         plePid            = $sessionPid
+        mcpPid            = $sessionMcpPid
         profile           = $sessionProfile
         activeProjectPath = $activeProjectPath
-        startedByRunner   = $sessionStartedByRunner
+        pleOwnedByBroker  = $pleOwnedByBroker
     }
 
     $build = Get-PropertyValue -Object $observedResult -Name 'build'
@@ -837,8 +870,19 @@ if ($status -eq 'succeeded') {
     }
 
     $acceptance = Get-PropertyValue -Object $observedResult -Name 'acceptance'
+    Assert-ExactPropertySet -Object $acceptance -Allowed @(
+        'ownershipVerified',
+        'mappingConsistent',
+        'readbackVerified',
+        'recoverableBaselineVerified',
+        'warningSignaturesReviewed',
+        'existingSessionReused',
+        'pleOrMcpStartedByAction',
+        'directWatcherIpcUsed',
+        'symbolPostProcessingVerified'
+    ) -Context 'Runner observation acceptance'
     $evidenceResult.acceptance = [ordered]@{}
-    foreach ($name in @('ownershipVerified', 'mappingConsistent', 'readbackVerified', 'recoverableBaselineVerified', 'warningSignaturesReviewed', 'existingSessionReused', 'pleOrMcpStarted', 'directWatcherIpcUsed', 'symbolPostProcessingVerified')) {
+    foreach ($name in @('ownershipVerified', 'mappingConsistent', 'readbackVerified', 'recoverableBaselineVerified', 'warningSignaturesReviewed', 'existingSessionReused', 'pleOrMcpStartedByAction', 'directWatcherIpcUsed', 'symbolPostProcessingVerified')) {
         $evidenceResult.acceptance[$name] = Get-RequiredBoolean -Object $acceptance -Name $name -Context 'Runner observation acceptance'
     }
     foreach ($name in @('ownershipVerified', 'mappingConsistent', 'readbackVerified', 'recoverableBaselineVerified', 'warningSignaturesReviewed', 'existingSessionReused')) {
@@ -846,7 +890,7 @@ if ($status -eq 'succeeded') {
             throw "Runner observation acceptance did not prove '$name'."
         }
     }
-    if ($evidenceResult.acceptance.pleOrMcpStarted -or $evidenceResult.acceptance.directWatcherIpcUsed) {
+    if ($evidenceResult.acceptance.pleOrMcpStartedByAction -or $evidenceResult.acceptance.directWatcherIpcUsed) {
         throw 'Runner observation reports that it started PLE/MCP or used direct watcher IPC.'
     }
     if ((-not $requiresSecondExport) -and (-not $requiresCpStudioChange) -and
@@ -888,14 +932,14 @@ $evidence = [ordered]@{
     }
     capabilitiesInvoked = @($capabilities)
     guardrails          = [ordered]@{
-        onlineOperationsUsed = $onlineOperationsUsed
-        secondPleStarted     = $secondPleStarted
-        projectLeaseAcquired = $projectLeaseAcquired
-        projectLeaseReleased = $projectLeaseReleased
-        projectLeaseScope    = $leaseScope
-        symbolLeaseHeld      = $symbolLeaseHeld
-        pleOrMcpStarted      = $pleOrMcpStarted
-        directWatcherIpcUsed = $directWatcherIpcUsed
+        onlineOperationsUsed      = $onlineOperationsUsed
+        secondPleStarted          = $secondPleStarted
+        actionProjectGateAcquired = $actionProjectGateAcquired
+        actionProjectGateReleased = $actionProjectGateReleased
+        actionProjectGateKind     = $actionProjectGateKind
+        symbolLeaseHeld           = $symbolLeaseHeld
+        pleOrMcpStartedByAction    = $pleOrMcpStartedByAction
+        directWatcherIpcUsed      = $directWatcherIpcUsed
     }
     result              = $evidenceResult
 }

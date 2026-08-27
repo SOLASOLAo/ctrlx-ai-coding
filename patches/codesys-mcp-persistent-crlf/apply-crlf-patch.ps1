@@ -21,7 +21,9 @@
     7. Replaces the timeout-prone compile/message scan with a bounded ctrlX path
     8. Rejects stale persistent sessions whose PID was reused by another process
     9. Refuses compile_project when the project is dirty instead of implicitly saving it
-   10. Verifies Python/JavaScript syntax when the runtimes are available
+   10. Exposes explicit broker/external PLE ownership and guards shutdown
+   11. Returns a correlated same-call compile summary even for a clean 0/0 Build
+   12. Verifies Python/JavaScript syntax when the runtimes are available
 
   WARNING: `npm install/update codesys-mcp-persistent` OVERWRITES the patch.
   Re-run this script after every upgrade.
@@ -33,13 +35,18 @@
 .PARAMETER Check
   Only report what would be done; write nothing.
 
+.PARAMETER SkipRuntimeSyntaxCheck
+  Do not invoke Python or Node syntax check processes after patching. Intended
+  only for isolated fixture tests; normal workstation patching should omit it.
+
 .EXAMPLE
   .\apply-crlf-patch.ps1 -Check
   .\apply-crlf-patch.ps1
 #>
 param(
   [string]$PackageScriptsDir = "",
-  [switch]$Check
+  [switch]$Check,
+  [switch]$SkipRuntimeSyntaxCheck
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,6 +60,10 @@ $fastCompileMarker = "ctrlX bounded application build (2026-08-20)"
 $fastCachedMarker = "ctrlX bounded cached-message read (2026-08-20)"
 $safeAdoptionMarker = "ctrlX safe stale-session adoption (2026-08-20)"
 $strictCompileMarker = "ctrlX strict no-save compile guard v2 (2026-08-23)"
+$pleOwnershipMarker = "ctrlX PLE ownership contract v1 (2026-08-27)"
+$freshCompileContractLegacyMarker = "ctrlX fresh compile contract v1 (2026-08-27)"
+$freshCompileContractMarker = "ctrlX fresh compile contract v2 (2026-08-27)"
+$strictBuildSummaryMarker = "ctrlX explicit Build summary only (2026-08-27)"
 $utf8nobom = New-Object System.Text.UTF8Encoding($false)
 
 function ReadText([string]$p) {
@@ -671,6 +682,121 @@ function PatchLauncherDist([string]$launcherFile) {
   Write-Host "patched safe stale-session adoption -> $launcherFile"
 }
 
+function PatchPleOwnershipLauncher([string]$launcherFile, [bool]$isTypeScript) {
+  if (-not (Test-Path -LiteralPath $launcherFile)) { return }
+
+  $source = ReadText $launcherFile
+  $isPatched = $source.Contains($pleOwnershipMarker)
+  if ($Check) {
+    Write-Host ("[{0}] {1} explicit PLE ownership provenance" -f $(if ($isPatched) { "OK " } else { "TODO" }), $launcherFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "PLE ownership provenance already present - skipped: $launcherFile"
+    return
+  }
+
+  BackupOnce $launcherFile "bak_pre_ple_ownership_contract"
+  $anchor = if ($isTypeScript) {
+@'
+  /** Get current launcher status */
+'@.Replace("`r`n", "`n")
+  } else {
+@'
+    /** Get current launcher status */
+'@.Replace("`r`n", "`n")
+  }
+  $block = if ($isTypeScript) {
+@'
+  // ctrlX PLE ownership contract v1 (2026-08-27)
+  // A non-null ChildProcess exists only for a PLE spawned by this launcher.
+  // Adopted persistent sessions deliberately retain process=null.
+  ownsProcess(): boolean {
+    return this.process !== null;
+  }
+
+'@.Replace("`r`n", "`n")
+  } else {
+@'
+    // ctrlX PLE ownership contract v1 (2026-08-27)
+    // A non-null ChildProcess exists only for a PLE spawned by this launcher.
+    // Adopted persistent sessions deliberately retain process=null.
+    ownsProcess() {
+        return this.process !== null;
+    }
+
+'@.Replace("`r`n", "`n")
+  }
+  $source = ReplaceRequired $source $anchor ($block + $anchor) "PLE ownership method" $launcherFile
+  [System.IO.File]::WriteAllText($launcherFile, $source, $utf8nobom)
+  Write-Host "patched PLE ownership provenance -> $launcherFile"
+}
+
+function PatchPleOwnershipServer([string]$serverFile, [bool]$isTypeScript) {
+  if (-not (Test-Path -LiteralPath $serverFile)) { return }
+
+  $source = ReadText $serverFile
+  $isPatched = $source.Contains($pleOwnershipMarker)
+  if ($Check) {
+    Write-Host ("[{0}] {1} PLE ownership status/shutdown guard" -f $(if ($isPatched) { "OK " } else { "TODO" }), $serverFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "PLE ownership status/shutdown guard already present - skipped: $serverFile"
+    return
+  }
+
+  BackupOnce $serverFile "bak_pre_ple_ownership_contract"
+  $statusAnchor = if ($isTypeScript) {
+    "        ``Session: `${status.sessionId ?? 'N/A'}``,"
+  } else {
+    "            ``Session: `${status.sessionId ?? 'N/A'}``,"
+  }
+  $statusReplacement = if ($isTypeScript) {
+@'
+        `Session: ${status.sessionId ?? 'N/A'}`,
+        // ctrlX PLE ownership contract v1 (2026-08-27)
+        `PLE Ownership: ${launcher ? (launcher.ownsProcess() ? 'broker' : (status.state === 'ready' ? 'external' : 'none')) : 'none'}`,
+        'PLE Ownership Contract: ctrlx-ple-ownership-v1',
+'@.Replace("`r`n", "`n").TrimEnd("`n")
+  } else {
+@'
+            `Session: ${status.sessionId ?? 'N/A'}`,
+            // ctrlX PLE ownership contract v1 (2026-08-27)
+            `PLE Ownership: ${launcher ? (launcher.ownsProcess() ? 'broker' : (status.state === 'ready' ? 'external' : 'none')) : 'none'}`,
+            'PLE Ownership Contract: ctrlx-ple-ownership-v1',
+'@.Replace("`r`n", "`n").TrimEnd("`n")
+  }
+  $source = ReplaceRequired $source $statusAnchor $statusReplacement "PLE ownership status" $serverFile
+
+  $toolStart = $source.IndexOf("'shutdown_codesys'")
+  $toolEnd = $source.IndexOf("'eval_python'", $toolStart)
+  if ($toolStart -lt 0 -or $toolEnd -le $toolStart) {
+    Write-Error "shutdown tool anchors not found: $serverFile"
+  }
+  $toolBlock = $source.Substring($toolStart, $toolEnd - $toolStart)
+  $launcherGuard = "if (!launcher) {"
+  if (-not $toolBlock.Contains($launcherGuard)) {
+    Write-Error "shutdown ownership guard anchor not found: $serverFile"
+  }
+  $toolBlock = $toolBlock.Replace($launcherGuard, "if (!launcher || !launcher.ownsProcess()) {")
+  $toolBlock = $toolBlock.Replace(
+    "No persistent CODESYS instance to shut down.",
+    "No Broker-owned persistent CODESYS instance to shut down.")
+  $source = $source.Substring(0, $toolStart) + $toolBlock + $source.Substring($toolEnd)
+
+  $signalStart = $source.IndexOf("const shutdown = async () =>")
+  if ($signalStart -lt 0) { Write-Error "signal shutdown anchor not found: $serverFile" }
+  $signalTail = $source.Substring($signalStart)
+  $signalGuard = "if (launcher) {"
+  if (-not $signalTail.Contains($signalGuard)) { Write-Error "signal ownership guard not found: $serverFile" }
+  $signalTail = $signalTail.Replace($signalGuard, "if (launcher && launcher.ownsProcess()) {")
+  $source = $source.Substring(0, $signalStart) + $signalTail
+
+  [System.IO.File]::WriteAllText($serverFile, $source, $utf8nobom)
+  Write-Host "patched PLE ownership status/shutdown guard -> $serverFile"
+}
+
 function PatchFastMessageUtils([string]$messageUtilsFile) {
   if (-not (Test-Path -LiteralPath $messageUtilsFile)) { return }
 
@@ -949,14 +1075,14 @@ function PatchCompileProjectScript([string]$compileFile) {
     build_invoked = False
 
     if project_kind == "application":
-        if hasattr(target_app, 'build'):
-            target_app.build()
-            print("DEBUG: build() executed once for application '%s'." % app_name)
-            build_invoked = True
-        elif hasattr(target_app, 'generate_code'):
-            target_app.generate_code()
-            print("WARN: build() unavailable; generate_code() fallback executed for '%s'." % app_name)
-            build_invoked = True
+        if not hasattr(target_app, 'build'):
+            raise TypeError(
+                "Application '%s' exposes no build(); generate_code() is not accepted as Build evidence." %
+                app_name
+            )
+        target_app.build()
+        print("DEBUG: build() executed once for application '%s'." % app_name)
+        build_invoked = True
     elif project_kind == "library":
         if hasattr(primary_project, 'check_all_pool_objects'):
             primary_project.check_all_pool_objects()
@@ -1048,6 +1174,451 @@ function PatchStrictCompileNoSaveGuard([string]$compileFile) {
   $source = $source.Substring(0, $startIndex) + $replacement + $source.Substring($endIndex)
   [System.IO.File]::WriteAllText($compileFile, $source, $utf8nobom)
   Write-Host "patched strict no-save compile guard -> $compileFile"
+}
+
+function PatchFreshCompileContract([string]$compileFile) {
+  if (-not (Test-Path -LiteralPath $compileFile)) { return }
+
+  $source = ReadText $compileFile
+  $boundedStartMarker = "    # $fastCompileMarker"
+  $serializationMarker = '    # --- Serialize as JSON between markers for the Node.js side to parse ---'
+  $boundedStart = $source.IndexOf($boundedStartMarker)
+  $serializationStart = $source.IndexOf($serializationMarker, [Math]::Max(0, $boundedStart))
+  $boundedBlock = if ($boundedStart -ge 0 -and $serializationStart -gt $boundedStart) {
+    $source.Substring($boundedStart, $serializationStart - $boundedStart)
+  } else {
+    ""
+  }
+  $hasRequiredFacts =
+    $source.Contains($freshCompileContractMarker) -and
+    $source.Contains("import datetime as _build_datetime`n") -and
+    $source.Contains("hasattr(child, 'build'):") -and
+    $boundedBlock.Contains("if project_kind != 'application':") -and
+    $boundedBlock.Contains("target_app.build()") -and
+    (-not $boundedBlock.Contains("target_app.generate_code()")) -and
+    $boundedBlock.Contains("all_expected_categories_cleared") -and
+    $boundedBlock.Contains("rowsRemainingAfterClear") -and
+    $boundedBlock.Contains("clearedAndVerified") -and
+    $boundedBlock.Contains("all_expected_categories_read") -and
+    $boundedBlock.Contains("explicit_build_summary") -and
+    $boundedBlock.Contains($strictBuildSummaryMarker) -and
+    (-not $boundedBlock.Contains("('Compile complete', 'Build complete', 'Other summary')")) -and
+    $boundedBlock.Contains("compile_summary['fresh'] = fresh_evidence_verified") -and
+    $boundedBlock.Contains("compile_summary['patchPreflightVerified'] = patch_preflight_verified") -and
+    $boundedBlock.Contains("compile_summary['recordsComplete'] = records_complete")
+  $isPatched = $hasRequiredFacts
+  $isLegacy =
+    $source.Contains($freshCompileContractLegacyMarker) -or
+    ($source.Contains($freshCompileContractMarker) -and (-not $hasRequiredFacts))
+  if ($Check) {
+    $state = if ($isPatched) { "OK " } elseif ($isLegacy) { "UPGR" } else { "TODO" }
+    Write-Host ("[{0}] {1} fail-closed same-call fresh compile contract" -f $state, $compileFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "fail-closed same-call fresh compile contract already present - skipped: $compileFile"
+    return
+  }
+
+  BackupOnce $compileFile "bak_pre_fresh_compile_contract"
+  $legacyImports = @'
+# ctrlX fresh compile contract v1 (2026-08-27)
+import uuid as _build_uuid
+import datetime as _build_datetime
+'@.Replace("`r`n", "`n").TrimEnd("`n") + "`n"
+  $currentImports = @'
+# ctrlX fresh compile contract v2 (2026-08-27)
+import uuid as _build_uuid
+import datetime as _build_datetime
+'@.Replace("`r`n", "`n").TrimEnd("`n") + "`n"
+  $legacyImportsBody = $legacyImports.TrimEnd("`n")
+  $currentImportsBody = $currentImports.TrimEnd("`n")
+  if ($source.Contains($legacyImportsBody)) {
+    # Match both a well-formed legacy block and the v1 block that accidentally
+    # omitted its final newline before `try:`.
+    $source = $source.Replace($legacyImportsBody, $currentImports)
+  } elseif ($source.Contains($currentImportsBody)) {
+    # The same repair keeps an interrupted/early v2 fixture upgrade idempotent.
+    $source = $source.Replace($currentImportsBody, $currentImports)
+  } else {
+    $importAnchor = "import tempfile`n"
+    $source = ReplaceRequired $source $importAnchor ($importAnchor + $currentImports) "fresh compile imports" $compileFile
+  }
+
+  $legacyApplicationDiscovery = "if hasattr(child, 'is_application') and child.is_application and hasattr(child, 'generate_code'):"
+  $buildApplicationDiscovery = "if hasattr(child, 'is_application') and child.is_application and hasattr(child, 'build'):"
+  if ($source.Contains($legacyApplicationDiscovery)) {
+    $source = $source.Replace($legacyApplicationDiscovery, $buildApplicationDiscovery)
+  } elseif (-not $source.Contains($buildApplicationDiscovery)) {
+    Write-Error "application build-capability discovery anchor not found: $compileFile"
+  }
+
+  $boundedStart = $source.IndexOf($boundedStartMarker)
+  $serializationStart = $source.IndexOf($serializationMarker, [Math]::Max(0, $boundedStart))
+  if ($boundedStart -lt 0 -or $serializationStart -le $boundedStart) {
+    Write-Error "compile_project.py bounded-build anchors not found for fresh-contract upgrade: $compileFile"
+  }
+
+  $replacement = @'
+    # ctrlX bounded application build (2026-08-20)
+    # ctrlX fresh compile contract v2 (2026-08-27)
+    # A fresh result is evidence only when every expected category was cleared,
+    # ScriptApplication.build() actually returned, every expected category was
+    # read without error, and the Build category contains an explicit numeric
+    # summary produced after that clear/build sequence. Any missing fact remains
+    # false and therefore cannot certify an inferred or stale 0/0 result.
+    expected_category_names = ('Build', 'Additional code checks')
+    fast_categories = msg_fast_compile_categories()
+    actual_category_names = tuple([category_name for category_guid, category_name in fast_categories])
+    expected_category_coverage = (actual_category_names == expected_category_names)
+    if not expected_category_coverage:
+        raise RuntimeError(
+            "Expected compile categories %r, but adapter resolved %r; refusing Build." %
+            (expected_category_names, actual_category_names)
+        )
+
+    category_clear_results = []
+    for category_guid, category_name in fast_categories:
+        clear_succeeded = False
+        clear_error_text = None
+        clear_readback_succeeded = False
+        clear_readback_error_text = None
+        rows_remaining_after_clear = None
+        try:
+            script_engine.system.clear_messages(category_guid)
+            clear_succeeded = True
+        except Exception as clear_error:
+            clear_error_text = unicode(clear_error)
+        if clear_succeeded:
+            try:
+                rows_remaining_after_clear = 0
+                rows_after_clear = script_engine.system.get_messages(category_guid)
+                if rows_after_clear is not None:
+                    for ignored_row in rows_after_clear:
+                        rows_remaining_after_clear += 1
+                clear_readback_succeeded = True
+            except Exception as clear_readback_error:
+                clear_readback_error_text = unicode(clear_readback_error)
+        cleared_and_verified = (
+            clear_succeeded and
+            clear_readback_succeeded and
+            rows_remaining_after_clear == 0
+        )
+        category_clear_results.append({
+            'category': category_name,
+            'succeeded': clear_succeeded,
+            'error': clear_error_text,
+            'readbackSucceeded': clear_readback_succeeded,
+            'readbackError': clear_readback_error_text,
+            'rowsRemainingAfterClear': rows_remaining_after_clear,
+            'clearedAndVerified': cleared_and_verified,
+        })
+
+    all_expected_categories_cleared = (
+        expected_category_coverage and
+        len(category_clear_results) == len(expected_category_names) and
+        all([item.get('clearedAndVerified') is True for item in category_clear_results])
+    )
+    if not all_expected_categories_cleared:
+        clear_failures = [
+            "%s: clearError=%s, readbackError=%s, rowsRemaining=%r" %
+            (item.get('category'), item.get('error'), item.get('readbackError'),
+             item.get('rowsRemainingAfterClear'))
+            for item in category_clear_results
+            if item.get('clearedAndVerified') is not True
+        ]
+        raise RuntimeError(
+            "Could not clear and verify every expected compile category; refusing Build: %s" %
+            '; '.join(clear_failures)
+        )
+
+    import time as _build_time
+    fresh_build_token = _build_uuid.uuid4().hex
+    fresh_build_started_utc = _build_datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+    build_started = _build_time.time()
+    actual_application_build = False
+
+    if project_kind != 'application':
+        raise TypeError(
+            "Fresh compile evidence requires an application target; got kind=%s." % project_kind
+        )
+    if not hasattr(target_app, 'build'):
+        raise TypeError(
+            "Application '%s' exposes no build(); generate_code() is not accepted as fresh Build evidence." %
+            app_name
+        )
+
+    target_app.build()
+    actual_application_build = True
+    print("DEBUG: build() executed once for application '%s'." % app_name)
+    print("DEBUG: Build invocation elapsed %.3f s." % (_build_time.time() - build_started))
+    _flush_debug_to_file()
+
+    snapshot_started = _build_time.time()
+    compile_summary = msg_fast_compile_snapshot(fast_categories)
+    compile_summary['buildElapsedSeconds'] = round(snapshot_started - build_started, 3)
+    compile_summary['snapshotElapsedSeconds'] = round(_build_time.time() - snapshot_started, 3)
+    messages = msg_fast_structured_entries(compile_summary)
+
+    category_results = compile_summary.get('categoryResults', []) or []
+    result_by_name = dict((item.get('category'), item) for item in category_results)
+    all_expected_categories_read = (
+        len(category_results) == len(expected_category_names) and
+        all([
+            name in result_by_name and result_by_name[name].get('readError') is None
+            for name in expected_category_names
+        ])
+    )
+    build_category_result = result_by_name.get('Build', {})
+    # ctrlX explicit Build summary only (2026-08-27)
+    # A generic row that merely contains "0 errors, 0 warnings" is diagnostic
+    # text, not proof that application.build() produced the same-call result.
+    explicit_build_summary = (
+        build_category_result.get('summarySource') in
+        ('Compile complete', 'Build complete') and
+        build_category_result.get('errors') is not None and
+        build_category_result.get('warnings') is not None
+    )
+    dirty_preflight_verified = (project_is_dirty is False)
+    patch_preflight_verified = (
+        dirty_preflight_verified and
+        expected_category_coverage and
+        all_expected_categories_cleared and
+        actual_application_build and
+        all_expected_categories_read and
+        explicit_build_summary
+    )
+    fresh_evidence_verified = (
+        patch_preflight_verified and
+        compile_summary.get('verified') is True
+    )
+    expected_diagnostics = (
+        int(compile_summary.get('errorCount', 0) or 0) +
+        int(compile_summary.get('warningCount', 0) or 0)
+    )
+    # The bounded API may synthesize count-preserving placeholders for nonzero
+    # results. Until it supplies every structured diagnostic, only a proven
+    # same-call 0/0 result has a complete empty record set.
+    records_complete = (
+        fresh_evidence_verified and
+        expected_diagnostics == 0 and
+        len(messages) == 0
+    )
+
+    compile_summary['contractVersion'] = 1
+    compile_summary['producer'] = 'codesys-persistent.compile_project'
+    compile_summary['adapterPatchId'] = 'ctrlx-fresh-compile-v2'
+    compile_summary['buildInvocation'] = 'application.build' if actual_application_build else None
+    compile_summary['fresh'] = fresh_evidence_verified
+    compile_summary['projectFilePath'] = os.path.abspath(PROJECT_FILE_PATH)
+    compile_summary['buildToken'] = fresh_build_token
+    compile_summary['startedAtUtc'] = fresh_build_started_utc
+    compile_summary['completedAtUtc'] = _build_datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+    compile_summary['dirtyPreflightVerified'] = dirty_preflight_verified
+    compile_summary['expectedCategoryCoverageVerified'] = expected_category_coverage
+    compile_summary['categoryClearResults'] = category_clear_results
+    compile_summary['allExpectedCategoriesCleared'] = all_expected_categories_cleared
+    compile_summary['allExpectedCategoriesRead'] = all_expected_categories_read
+    compile_summary['explicitBuildSummaryVerified'] = explicit_build_summary
+    compile_summary['patchPreflightVerified'] = patch_preflight_verified
+    compile_summary['verified'] = fresh_evidence_verified
+    compile_summary['messageCount'] = len(messages)
+    compile_summary['recordsComplete'] = records_complete
+    compile_summary['records'] = messages
+    print("DEBUG: bounded message snapshot verified=%s errors=%d warnings=%d rows=%d elapsed=%.3f s" %
+          (compile_summary.get('verified'), compile_summary.get('errorCount', 0),
+           compile_summary.get('warningCount', 0), compile_summary.get('messageCount', 0),
+           compile_summary.get('snapshotElapsedSeconds', 0.0)))
+
+'@.Replace("`r`n", "`n")
+
+  $source = $source.Substring(0, $boundedStart) + $replacement + $source.Substring($serializationStart)
+
+  [System.IO.File]::WriteAllText($compileFile, $source, $utf8nobom)
+  Write-Host "patched fail-closed same-call fresh compile contract -> $compileFile"
+}
+
+function PatchFreshCompileServer([string]$serverFile, [bool]$isTypeScript) {
+  if (-not (Test-Path -LiteralPath $serverFile)) { return }
+
+  $source = ReadText $serverFile
+  $isPatched =
+    $source.Contains($freshCompileContractMarker) -and
+    $source.Contains("compileSummary.adapterPatchId === 'ctrlx-fresh-compile-v2'") -and
+    $source.Contains("compileSummary.buildInvocation === 'application.build'") -and
+    $source.Contains("compileSummary.allExpectedCategoriesCleared === true") -and
+    $source.Contains("compileSummary.allExpectedCategoriesRead === true") -and
+    $source.Contains("compileSummary.explicitBuildSummaryVerified === true") -and
+    $source.Contains("Fresh compile contract rejected the result; it is diagnostic only.")
+  $isLegacy = $source.Contains($freshCompileContractLegacyMarker)
+  if ($Check) {
+    $state = if ($isPatched) { "OK " } elseif ($isLegacy) { "UPGR" } else { "TODO" }
+    Write-Host ("[{0}] {1} fail-closed fresh compile response passthrough" -f $state, $serverFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "fail-closed fresh compile response passthrough already present - skipped: $serverFile"
+    return
+  }
+
+  BackupOnce $serverFile "bak_pre_fresh_compile_contract"
+  $handlerStart = $source.IndexOf("'compile_project'")
+  $handlerEnd = $source.IndexOf("'get_compile_messages'", $handlerStart)
+  if ($handlerStart -lt 0 -or $handlerEnd -le $handlerStart) {
+    Write-Error "compile_project handler anchors not found: $serverFile"
+  }
+  $originalParseAnchor = if ($isTypeScript) {
+    "      // Parse structured compile messages if present"
+  } else {
+    "        // Parse structured compile messages if present"
+  }
+  $currentParseAnchor = if ($isTypeScript) {
+    "      // $freshCompileContractMarker"
+  } else {
+    "        // $freshCompileContractMarker"
+  }
+  $legacyParseAnchor = if ($isTypeScript) {
+    "      // $freshCompileContractLegacyMarker"
+  } else {
+    "        // $freshCompileContractLegacyMarker"
+  }
+  $parseStart = $source.IndexOf($currentParseAnchor, $handlerStart)
+  if ($parseStart -lt 0 -or $parseStart -ge $handlerEnd) {
+    $parseStart = $source.IndexOf($legacyParseAnchor, $handlerStart)
+  }
+  if ($parseStart -lt 0 -or $parseStart -ge $handlerEnd) {
+    $parseStart = $source.IndexOf($originalParseAnchor, $handlerStart)
+  }
+  $returnLine = if ($isTypeScript) {
+    "      return { content: [{ type: 'text' as const, text: message }], isError };"
+  } else {
+    "        return { content: [{ type: 'text', text: message }], isError };"
+  }
+  $returnStart = $source.IndexOf($returnLine, $parseStart)
+  if ($parseStart -lt 0 -or $returnStart -lt 0 -or $returnStart -ge $handlerEnd) {
+    Write-Error "compile_project response anchors not found: $serverFile"
+  }
+  $replaceEnd = $returnStart + $returnLine.Length
+  $replacement = if ($isTypeScript) {
+@'
+      // ctrlX fresh compile contract v2 (2026-08-27)
+      // The same compile_project call must return its own summary even for a
+      // clean 0/0 Build. Cached get_compile_messages output is not evidence.
+      const summaryStartMarker = '### COMPILE_SUMMARY_START ###';
+      const summaryEndMarker = '### COMPILE_SUMMARY_END ###';
+      const summaryStartIdx = result.output.indexOf(summaryStartMarker);
+      const summaryEndIdx = result.output.indexOf(summaryEndMarker);
+      let compileSummary: any = null;
+      if (summaryStartIdx !== -1 && summaryEndIdx !== -1 && summaryStartIdx < summaryEndIdx) {
+        try {
+          compileSummary = JSON.parse(
+            result.output.substring(summaryStartIdx + summaryStartMarker.length, summaryEndIdx).trim()
+          );
+        } catch {
+          compileSummary = null;
+        }
+      }
+
+      const countsValid = compileSummary !== null &&
+        Number.isInteger(compileSummary.errorCount) && compileSummary.errorCount >= 0 &&
+        Number.isInteger(compileSummary.warningCount) && compileSummary.warningCount >= 0 &&
+        Number.isInteger(compileSummary.messageCount) && compileSummary.messageCount >= 0 &&
+        Array.isArray(compileSummary.records) &&
+        compileSummary.records.length === compileSummary.messageCount &&
+        compileSummary.errorCount + compileSummary.warningCount === compileSummary.messageCount;
+      const freshContractValid = countsValid &&
+        compileSummary.contractVersion === 1 &&
+        compileSummary.producer === 'codesys-persistent.compile_project' &&
+        compileSummary.adapterPatchId === 'ctrlx-fresh-compile-v2' &&
+        compileSummary.buildInvocation === 'application.build' &&
+        compileSummary.fresh === true &&
+        compileSummary.dirtyPreflightVerified === true &&
+        compileSummary.expectedCategoryCoverageVerified === true &&
+        compileSummary.allExpectedCategoriesCleared === true &&
+        compileSummary.allExpectedCategoriesRead === true &&
+        compileSummary.explicitBuildSummaryVerified === true &&
+        compileSummary.patchPreflightVerified === true &&
+        compileSummary.verified === true &&
+        compileSummary.recordsComplete === true;
+      let message: string;
+      let isError: boolean;
+      if (!success || !countsValid) {
+        message = `Fresh compile summary unavailable for ${args.projectFilePath}.`;
+        isError = true;
+      } else {
+        const summaryJson = JSON.stringify(compileSummary);
+        message = `${summaryStartMarker}\n${summaryJson}\n${summaryEndMarker}\n`;
+        message += `Compilation complete for ${args.projectFilePath}.\n`;
+        message += `${compileSummary.errorCount} error(s), ${compileSummary.warningCount} warning(s).`;
+        if (!freshContractValid) {
+          message += '\nFresh compile contract rejected the result; it is diagnostic only.';
+        }
+        isError = !freshContractValid || compileSummary.errorCount > 0;
+      }
+      return { content: [{ type: 'text' as const, text: message }], isError };
+'@.Replace("`r`n", "`n").TrimEnd("`n")
+  } else {
+@'
+        // ctrlX fresh compile contract v2 (2026-08-27)
+        // The same compile_project call must return its own summary even for a
+        // clean 0/0 Build. Cached get_compile_messages output is not evidence.
+        const summaryStartMarker = '### COMPILE_SUMMARY_START ###';
+        const summaryEndMarker = '### COMPILE_SUMMARY_END ###';
+        const summaryStartIdx = result.output.indexOf(summaryStartMarker);
+        const summaryEndIdx = result.output.indexOf(summaryEndMarker);
+        let compileSummary = null;
+        if (summaryStartIdx !== -1 && summaryEndIdx !== -1 && summaryStartIdx < summaryEndIdx) {
+            try {
+                compileSummary = JSON.parse(result.output.substring(summaryStartIdx + summaryStartMarker.length, summaryEndIdx).trim());
+            }
+            catch {
+                compileSummary = null;
+            }
+        }
+        const countsValid = compileSummary !== null &&
+            Number.isInteger(compileSummary.errorCount) && compileSummary.errorCount >= 0 &&
+            Number.isInteger(compileSummary.warningCount) && compileSummary.warningCount >= 0 &&
+            Number.isInteger(compileSummary.messageCount) && compileSummary.messageCount >= 0 &&
+            Array.isArray(compileSummary.records) &&
+            compileSummary.records.length === compileSummary.messageCount &&
+            compileSummary.errorCount + compileSummary.warningCount === compileSummary.messageCount;
+        const freshContractValid = countsValid &&
+            compileSummary.contractVersion === 1 &&
+            compileSummary.producer === 'codesys-persistent.compile_project' &&
+            compileSummary.adapterPatchId === 'ctrlx-fresh-compile-v2' &&
+            compileSummary.buildInvocation === 'application.build' &&
+            compileSummary.fresh === true &&
+            compileSummary.dirtyPreflightVerified === true &&
+            compileSummary.expectedCategoryCoverageVerified === true &&
+            compileSummary.allExpectedCategoriesCleared === true &&
+            compileSummary.allExpectedCategoriesRead === true &&
+            compileSummary.explicitBuildSummaryVerified === true &&
+            compileSummary.patchPreflightVerified === true &&
+            compileSummary.verified === true &&
+            compileSummary.recordsComplete === true;
+        let message;
+        let isError;
+        if (!success || !countsValid) {
+            message = `Fresh compile summary unavailable for ${args.projectFilePath}.`;
+            isError = true;
+        }
+        else {
+            const summaryJson = JSON.stringify(compileSummary);
+            message = `${summaryStartMarker}\n${summaryJson}\n${summaryEndMarker}\n`;
+            message += `Compilation complete for ${args.projectFilePath}.\n`;
+            message += `${compileSummary.errorCount} error(s), ${compileSummary.warningCount} warning(s).`;
+            if (!freshContractValid) {
+                message += '\nFresh compile contract rejected the result; it is diagnostic only.';
+            }
+            isError = !freshContractValid || compileSummary.errorCount > 0;
+        }
+        return { content: [{ type: 'text', text: message }], isError };
+'@.Replace("`r`n", "`n").TrimEnd("`n")
+  }
+
+  $source = $source.Substring(0, $parseStart) + $replacement + $source.Substring($replaceEnd)
+  [System.IO.File]::WriteAllText($serverFile, $source, $utf8nobom)
+  Write-Host "patched fail-closed fresh compile response passthrough -> $serverFile"
 }
 
 function PatchGetCompileMessagesScript([string]$cachedFile) {
@@ -1177,6 +1748,17 @@ $launcherTargets = @(
 )
 PatchLauncherSource $launcherTargets[0]
 PatchLauncherDist $launcherTargets[1]
+PatchPleOwnershipLauncher $launcherTargets[0] $true
+PatchPleOwnershipLauncher $launcherTargets[1] $false
+
+$serverTargets = @(
+  (Join-Path $packageRoot "src\server.ts"),
+  (Join-Path $packageDistDir "server.js")
+)
+PatchPleOwnershipServer $serverTargets[0] $true
+PatchPleOwnershipServer $serverTargets[1] $false
+PatchFreshCompileServer $serverTargets[0] $true
+PatchFreshCompileServer $serverTargets[1] $false
 
 $mapTargets = @(
   (Join-Path $PackageScriptsDir "map_io_channel.py"),
@@ -1195,11 +1777,12 @@ foreach ($scriptRoot in $packageScriptRoots) {
   PatchFastMessageUtils (Join-Path $scriptRoot "_message_utils.py")
   PatchCompileProjectScript (Join-Path $scriptRoot "compile_project.py")
   PatchStrictCompileNoSaveGuard (Join-Path $scriptRoot "compile_project.py")
+  PatchFreshCompileContract (Join-Path $scriptRoot "compile_project.py")
   PatchGetCompileMessagesScript (Join-Path $scriptRoot "get_compile_messages.py")
 }
 
 # --- verify --------------------------------------------------------------------
-if (-not $Check) {
+if (-not $Check -and -not $SkipRuntimeSyntaxCheck) {
   $py = Get-Command python -ErrorAction SilentlyContinue
   if ($py) {
     & python -m py_compile $watcher
@@ -1230,8 +1813,15 @@ if (-not $Check) {
       & node --check $distLauncher
       if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] node --check launcher.js passed" } else { Write-Warning "node --check failed - inspect $distLauncher" }
     }
+    $distServer = Join-Path $packageDistDir "server.js"
+    if (Test-Path -LiteralPath $distServer) {
+      & node --check $distServer
+      if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] node --check server.js passed" } else { Write-Warning "node --check failed - inspect $distServer" }
+    }
   } else {
     Write-Host "node not found - skipped launcher.js syntax verification"
   }
   Write-Host "Done. Script-template changes apply on the next tool call; restart the MCP-managed IDE only when recovering an already-stuck call."
+} elseif (-not $Check) {
+  Write-Host "Runtime syntax checks skipped by explicit request. No package process was started."
 }

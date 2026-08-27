@@ -32,11 +32,11 @@ internal static class RunnerObservationFactory
             {
                 ["onlineOperationsUsed"] = false,
                 ["secondPleStarted"] = false,
-                ["projectLeaseAcquired"] = false,
-                ["projectLeaseReleased"] = true,
-                ["projectLeaseScope"] = "workflow-local",
+                ["actionProjectGateAcquired"] = false,
+                ["actionProjectGateReleased"] = true,
+                ["actionProjectGateKind"] = "none",
                 ["symbolLeaseHeld"] = false,
-                ["pleOrMcpStarted"] = false,
+                ["pleOrMcpStartedByAction"] = false,
                 ["directWatcherIpcUsed"] = false
             },
             ["result"] = new JsonObject

@@ -188,13 +188,13 @@ try {
             offlineOnly                     = $true
             onlineOperationsAllowed         = $false
             requireExistingPersistentSession = $true
-            prohibitStartPleOrMcp            = $true
+            prohibitPleOrMcpStartByAction    = $true
             prohibitDirectWatcherIpc         = $true
             requireExactProjectOpen          = $true
-            projectLeaseRequired             = $true
-            releaseLeaseAfterAction           = $true
+            actionProjectGateRequired        = $true
+            releaseActionProjectGateBeforeTerminalDelivery = $true
             symbolAccessSerialized            = $true
-            coordinationScope                 = 'workflow-local-until-runner-lease'
+            actionProjectGateKind             = 'broker-session-action-serialization'
         }
         changeSet      = @()
         instructions   = @('fixture')
@@ -202,7 +202,7 @@ try {
             schemaVersion                   = 1
             requireActionRequestSha256       = $true
             requireOfflineOnly               = $true
-            requireProjectLeaseReleased      = $true
+            requireActionProjectGateReleased = $true
             requireReadbackOnSuccess         = $true
             requireFreshBuildOnSuccess       = $true
             terminalFailureMayOmitBuild      = $true
@@ -224,25 +224,26 @@ try {
         actionRequestSha256 = $actionSha
         status              = 'succeeded'
         completedAtUtc      = $completedAt.ToString('o')
-        capabilitiesInvoked = @('get_codesys_status', 'compile_project', 'get_compile_messages')
+        capabilitiesInvoked = @('get_codesys_status', 'compile_project')
         session             = [ordered]@{
             state             = 'ready'
             mode              = 'persistent'
             sessionId         = 'fixture-session-0001'
             plePid            = 1234
+            mcpPid            = 2345
             profile           = 'ctrlX PLC 2.6.8'
             activeProjectPath = $plcProject
-            startedByRunner   = $false
+            pleOwnedByBroker  = $true
         }
         guardrails          = [ordered]@{
-            onlineOperationsUsed = $false
-            secondPleStarted     = $false
-            projectLeaseAcquired = $true
-            projectLeaseReleased = $true
-            projectLeaseScope    = 'workflow-local'
-            symbolLeaseHeld      = $false
-            pleOrMcpStarted      = $false
-            directWatcherIpcUsed = $false
+            onlineOperationsUsed      = $false
+            secondPleStarted          = $false
+            actionProjectGateAcquired = $true
+            actionProjectGateReleased = $true
+            actionProjectGateKind     = 'broker-session-action-serialization'
+            symbolLeaseHeld           = $false
+            pleOrMcpStartedByAction    = $false
+            directWatcherIpcUsed      = $false
         }
         result              = [ordered]@{
             verificationOk         = $true
@@ -277,7 +278,7 @@ try {
                 recoverableBaselineVerified  = $true
                 warningSignaturesReviewed    = $true
                 existingSessionReused        = $true
-                pleOrMcpStarted               = $false
+                pleOrMcpStartedByAction       = $false
                 directWatcherIpcUsed          = $false
                 symbolPostProcessingVerified = $true
             }
@@ -306,6 +307,9 @@ try {
     $actualWarningHashes = @($evidence.result.build.warningSignatures | ForEach-Object { [string]$_.sha256 } | Sort-Object)
     Assert-True -Condition (($actualWarningHashes -join '|') -eq ($expectedWarningHashes -join '|')) -Message 'Warning canonicalization hash contract changed unexpectedly.'
     Assert-True -Condition ($evidence.result.build.signatureAlgorithm -eq 'sha256:v1:normalized-warning-record') -Message 'Warning signature algorithm is not explicit.'
+    Assert-True -Condition ($evidence.guardrails.actionProjectGateAcquired -and $evidence.guardrails.actionProjectGateReleased) -Message 'Broker action project gate lifecycle was not retained.'
+    Assert-True -Condition ($evidence.guardrails.actionProjectGateKind -eq 'broker-session-action-serialization') -Message 'Broker action project gate kind was not retained.'
+    Assert-True -Condition (-not $evidence.guardrails.pleOrMcpStartedByAction) -Message 'Evidence claimed that this action started PLE/MCP.'
     $stationAfter = @(
         (Get-FileHash -LiteralPath $engineeringData -Algorithm SHA256).Hash,
         (Get-FileHash -LiteralPath $plcProject -Algorithm SHA256).Hash
@@ -339,14 +343,17 @@ try {
     $zeroWarningEvidence = Read-Utf8Json -Path $zeroWarningsEvidencePath
     Assert-True -Condition (@($zeroWarningEvidence.result.build.warningSignatures).Count -eq 0) -Message 'A zero-warning Build did not produce an empty complete signature set.'
 
-    $readOnlyAudit = Copy-JsonValue -Value $observation
-    $readOnlyAudit.capabilitiesInvoked = @('get_codesys_status', 'open_project', 'get_all_pou_code', 'compile_project', 'get_compile_messages')
-    $readOnlyAuditObservationPath = Join-Path $engineeringRoot 'data\observations\read-only-audit.json'
-    $readOnlyAuditEvidencePath = Join-Path $outputRoot 'read-only-audit.json'
-    Write-Utf8Json -Path $readOnlyAuditObservationPath -Value $readOnlyAudit
-    $null = Invoke-Producer -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $readOnlyAuditObservationPath -OutputPath $readOnlyAuditEvidencePath
-    $readOnlyAuditEvidence = Read-Utf8Json -Path $readOnlyAuditEvidencePath
-    Assert-True -Condition (@($readOnlyAuditEvidence.capabilitiesInvoked).Count -eq 5) -Message 'A safe read-only audit capability was not preserved.'
+    $legacyReadOnlyAudit = Copy-JsonValue -Value $observation
+    $legacyReadOnlyAudit.capabilitiesInvoked = @('get_codesys_status', 'open_project', 'get_all_pou_code', 'compile_project')
+    $legacyReadOnlyAuditObservationPath = Join-Path $engineeringRoot 'data\observations\legacy-read-only-audit.json'
+    Write-Utf8Json -Path $legacyReadOnlyAuditObservationPath -Value $legacyReadOnlyAudit
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $legacyReadOnlyAuditObservationPath -OutputPath (Join-Path $outputRoot 'legacy-read-only-audit.json') -Description 'Legacy broad read-only capability set'
+
+    $legacyCompileMessages = Copy-JsonValue -Value $observation
+    $legacyCompileMessages.capabilitiesInvoked = @('get_codesys_status', 'compile_project', 'get_compile_messages')
+    $legacyCompileMessagesObservationPath = Join-Path $engineeringRoot 'data\observations\legacy-compile-messages.json'
+    Write-Utf8Json -Path $legacyCompileMessagesObservationPath -Value $legacyCompileMessages
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $legacyCompileMessagesObservationPath -OutputPath (Join-Path $outputRoot 'legacy-compile-messages.json') -Description 'Legacy get_compile_messages capability'
 
     $whatIfDirectory = Join-Path $outputRoot 'whatif-new\nested'
     $whatIfPath = Join-Path $whatIfDirectory 'whatif.json'
@@ -362,7 +369,8 @@ try {
 
     $blocked = Copy-JsonValue -Value $observation
     $blocked.status = 'blocked'
-    $blocked.guardrails.projectLeaseAcquired = $false
+    $blocked.guardrails.actionProjectGateAcquired = $false
+    $blocked.guardrails.actionProjectGateKind = 'none'
     $blocked.result.verificationOk = $false
     $blocked.result.appliedReadbackOk = $false
     $blocked.result.PSObject.Properties.Remove('build')
@@ -432,20 +440,71 @@ try {
     Write-Utf8Json -Path $secondPleObservationPath -Value $secondPle
     $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $secondPleObservationPath -OutputPath (Join-Path $outputRoot 'second-ple.json') -Description 'Second PLE'
 
+    $actionStartedPle = Copy-JsonValue -Value $observation
+    $actionStartedPle.guardrails.pleOrMcpStartedByAction = $true
+    $actionStartedPleObservationPath = Join-Path $engineeringRoot 'data\observations\action-started-ple.json'
+    Write-Utf8Json -Path $actionStartedPleObservationPath -Value $actionStartedPle
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $actionStartedPleObservationPath -OutputPath (Join-Path $outputRoot 'action-started-ple.json') -Description 'Action-started PLE/MCP guardrail'
+
+    $acceptanceStartedPle = Copy-JsonValue -Value $observation
+    $acceptanceStartedPle.result.acceptance.pleOrMcpStartedByAction = $true
+    $acceptanceStartedPleObservationPath = Join-Path $engineeringRoot 'data\observations\acceptance-started-ple.json'
+    Write-Utf8Json -Path $acceptanceStartedPleObservationPath -Value $acceptanceStartedPle
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $acceptanceStartedPleObservationPath -OutputPath (Join-Path $outputRoot 'acceptance-started-ple.json') -Description 'Action-started PLE/MCP acceptance'
+
+    $notBrokerOwned = Copy-JsonValue -Value $observation
+    $notBrokerOwned.session.pleOwnedByBroker = $false
+    $notBrokerOwnedObservationPath = Join-Path $engineeringRoot 'data\observations\not-broker-owned.json'
+    $notBrokerOwnedEvidencePath = Join-Path $outputRoot 'not-broker-owned.json'
+    Write-Utf8Json -Path $notBrokerOwnedObservationPath -Value $notBrokerOwned
+    $null = Invoke-Producer -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $notBrokerOwnedObservationPath -OutputPath $notBrokerOwnedEvidencePath
+    $notBrokerOwnedEvidence = Read-Utf8Json -Path $notBrokerOwnedEvidencePath
+    Assert-True -Condition (-not $notBrokerOwnedEvidence.session.pleOwnedByBroker) -Message 'Evidence did not preserve a Broker-adopted PLE ownership fact.'
+
+    $missingPleOwnership = Copy-JsonValue -Value $observation
+    $missingPleOwnership.session.PSObject.Properties.Remove('pleOwnedByBroker')
+    $missingPleOwnershipObservationPath = Join-Path $engineeringRoot 'data\observations\missing-ple-ownership.json'
+    Write-Utf8Json -Path $missingPleOwnershipObservationPath -Value $missingPleOwnership
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $missingPleOwnershipObservationPath -OutputPath (Join-Path $outputRoot 'missing-ple-ownership.json') -Description 'Missing PLE ownership fact'
+
+    $invalidPleOwnership = Copy-JsonValue -Value $observation
+    $invalidPleOwnership.session.pleOwnedByBroker = 'false'
+    $invalidPleOwnershipObservationPath = Join-Path $engineeringRoot 'data\observations\invalid-ple-ownership.json'
+    Write-Utf8Json -Path $invalidPleOwnershipObservationPath -Value $invalidPleOwnership
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $invalidPleOwnershipObservationPath -OutputPath (Join-Path $outputRoot 'invalid-ple-ownership.json') -Description 'Non-Boolean PLE ownership fact'
+
+    $invalidMcpPid = Copy-JsonValue -Value $observation
+    $invalidMcpPid.session.mcpPid = 0
+    $invalidMcpPidObservationPath = Join-Path $engineeringRoot 'data\observations\invalid-mcp-pid.json'
+    Write-Utf8Json -Path $invalidMcpPidObservationPath -Value $invalidMcpPid
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $invalidMcpPidObservationPath -OutputPath (Join-Path $outputRoot 'invalid-mcp-pid.json') -Description 'Invalid Broker MCP PID'
+
     $directWatcher = Copy-JsonValue -Value $observation
     $directWatcher.guardrails.directWatcherIpcUsed = $true
     $directWatcherObservationPath = Join-Path $engineeringRoot 'data\observations\direct-watcher.json'
     Write-Utf8Json -Path $directWatcherObservationPath -Value $directWatcher
     $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $directWatcherObservationPath -OutputPath (Join-Path $outputRoot 'direct-watcher.json') -Description 'Direct watcher IPC'
 
-    $crossProcessLease = Copy-JsonValue -Value $observation
-    $crossProcessLease.guardrails.projectLeaseScope = 'cross-process'
-    $crossProcessObservationPath = Join-Path $engineeringRoot 'data\observations\cross-process-lease.json'
-    Write-Utf8Json -Path $crossProcessObservationPath -Value $crossProcessLease
-    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $crossProcessObservationPath -OutputPath (Join-Path $outputRoot 'cross-process-lease.json') -Description 'Unproven cross-process lease'
+    $unsupportedActionGate = Copy-JsonValue -Value $observation
+    $unsupportedActionGate.guardrails.actionProjectGateKind = 'workflow-local'
+    $unsupportedActionGateObservationPath = Join-Path $engineeringRoot 'data\observations\unsupported-action-gate.json'
+    Write-Utf8Json -Path $unsupportedActionGateObservationPath -Value $unsupportedActionGate
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $unsupportedActionGateObservationPath -OutputPath (Join-Path $outputRoot 'unsupported-action-gate.json') -Description 'Unsupported action project gate kind'
+
+    $unreleasedActionGate = Copy-JsonValue -Value $observation
+    $unreleasedActionGate.guardrails.actionProjectGateReleased = $false
+    $unreleasedActionGateObservationPath = Join-Path $engineeringRoot 'data\observations\unreleased-action-gate.json'
+    Write-Utf8Json -Path $unreleasedActionGateObservationPath -Value $unreleasedActionGate
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $unreleasedActionGateObservationPath -OutputPath (Join-Path $outputRoot 'unreleased-action-gate.json') -Description 'Unreleased action project gate'
+
+    $vacuousBrokerGate = Copy-JsonValue -Value $blocked
+    $vacuousBrokerGate.guardrails.actionProjectGateKind = 'broker-session-action-serialization'
+    $vacuousBrokerGateObservationPath = Join-Path $engineeringRoot 'data\observations\vacuous-broker-gate.json'
+    Write-Utf8Json -Path $vacuousBrokerGateObservationPath -Value $vacuousBrokerGate
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $vacuousBrokerGateObservationPath -OutputPath (Join-Path $outputRoot 'vacuous-broker-gate.json') -Description 'Broker gate kind without acquisition'
 
     $missingLease = Copy-JsonValue -Value $observation
-    $missingLease.guardrails.PSObject.Properties.Remove('projectLeaseReleased')
+    $missingLease.guardrails.PSObject.Properties.Remove('actionProjectGateReleased')
     $missingLeaseObservationPath = Join-Path $engineeringRoot 'data\observations\missing-lease.json'
     Write-Utf8Json -Path $missingLeaseObservationPath -Value $missingLease
     $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $missingLeaseObservationPath -OutputPath (Join-Path $outputRoot 'missing-lease.json') -Description 'Missing explicit lease release'
@@ -476,7 +535,7 @@ try {
     $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $wrongBuildObservationPath -OutputPath (Join-Path $outputRoot 'wrong-build-identity.json') -Description 'Wrong Build profile or SHA'
 
     $missingCompileCapability = Copy-JsonValue -Value $observation
-    $missingCompileCapability.capabilitiesInvoked = @('get_codesys_status', 'get_compile_messages')
+    $missingCompileCapability.capabilitiesInvoked = @('get_codesys_status')
     $missingCompileObservationPath = Join-Path $engineeringRoot 'data\observations\missing-compile-capability.json'
     Write-Utf8Json -Path $missingCompileObservationPath -Value $missingCompileCapability
     $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $missingCompileObservationPath -OutputPath (Join-Path $outputRoot 'missing-compile-capability.json') -Description 'Missing compile capability'
@@ -586,9 +645,8 @@ try {
     [System.IO.File]::WriteAllText($engineeringData, '<fixture />', (New-Object System.Text.UTF8Encoding $false))
     Assert-True -Condition ((Get-FileHash -LiteralPath $engineeringData -Algorithm SHA256).Hash -eq $fingerprints[0].sha256) -Message 'Export #2 fixture did not restore the original fingerprint.'
 
-    # An apply action is expected to change the PLC project. Its post-action
-    # evidence must keep Engineering_Data immutable but must not demand the old
-    # PLC fingerprint after exact readback/build.
+    # The typed Broker does not support apply_change_set_and_build. The evidence
+    # boundary rejects a claimed success and accepts only a local pre-call block.
     $applyAction = Copy-JsonValue -Value $action
     $applyCreatedAt = $createdAt.AddSeconds(60)
     $applyAction.actionId = 'fixture-operation-0003'
@@ -627,7 +685,7 @@ try {
     $applyObservation.actionId = $applyAction.actionId
     $applyObservation.actionKind = $applyAction.actionKind
     $applyObservation.actionRequestSha256 = $applyActionSha
-    $applyObservation.capabilitiesInvoked = @('get_codesys_status', 'get_all_pou_code', 'set_pou_code', 'compile_project', 'get_compile_messages')
+    $applyObservation.capabilitiesInvoked = @('get_codesys_status', 'compile_project')
     $applyBuildStarted = $applyCreatedAt.AddSeconds(1)
     $applyBuildCompleted = $applyBuildStarted.AddSeconds(1)
     $applyObservation.completedAtUtc = $applyBuildCompleted.AddSeconds(1).ToString('o')
@@ -656,12 +714,8 @@ try {
         }
     )
     $applyObservationPath = Join-Path $engineeringRoot 'data\observations\apply.json'
-    $applyEvidencePath = Join-Path $outputRoot 'apply.json'
     Write-Utf8Json -Path $applyObservationPath -Value $applyObservation
-    $null = Invoke-Producer -Producer $producer -ActionPath $applyActionPath -ActionSha $applyActionSha -ObservationPath $applyObservationPath -OutputPath $applyEvidencePath
-    $applyEvidence = Read-Utf8Json -Path $applyEvidencePath
-    Assert-True -Condition ($applyEvidence.actionKind -eq 'apply_change_set_and_build') -Message 'Apply evidence used the wrong action kind.'
-    Assert-True -Condition ($applyEvidence.result.build.projectSha256 -eq (Get-FileHash -LiteralPath $plcProject -Algorithm SHA256).Hash) -Message 'Apply evidence did not bind the changed PLC project.'
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $applyActionPath -ActionSha $applyActionSha -ObservationPath $applyObservationPath -OutputPath (Join-Path $outputRoot 'apply.json') -Description 'Unsupported successful apply action'
 
     $applyWithoutReadback = Copy-JsonValue -Value $applyObservation
     $applyWithoutReadback.result.appliedReadbackOk = $false
@@ -670,7 +724,7 @@ try {
     $null = Assert-ProducerRejected -Producer $producer -ActionPath $applyActionPath -ActionSha $applyActionSha -ObservationPath $applyWithoutReadbackObservationPath -OutputPath (Join-Path $outputRoot 'apply-without-readback.json') -Description 'Apply action without exact readback'
 
     $applyWithoutWriteCapability = Copy-JsonValue -Value $applyObservation
-    $applyWithoutWriteCapability.capabilitiesInvoked = @('get_codesys_status', 'get_all_pou_code', 'compile_project', 'get_compile_messages')
+    $applyWithoutWriteCapability.capabilitiesInvoked = @('get_codesys_status', 'compile_project')
     $applyWithoutWriteCapabilityObservationPath = Join-Path $engineeringRoot 'data\observations\apply-without-write-capability.json'
     Write-Utf8Json -Path $applyWithoutWriteCapabilityObservationPath -Value $applyWithoutWriteCapability
     $null = Assert-ProducerRejected -Producer $producer -ActionPath $applyActionPath -ActionSha $applyActionSha -ObservationPath $applyWithoutWriteCapabilityObservationPath -OutputPath (Join-Path $outputRoot 'apply-without-write-capability.json') -Description 'Apply action without a reported write capability'
@@ -678,7 +732,8 @@ try {
     $applyBlockedBeforeWrite = Copy-JsonValue -Value $applyObservation
     $applyBlockedBeforeWrite.status = 'blocked'
     $applyBlockedBeforeWrite.capabilitiesInvoked = [object[]]::new(0)
-    $applyBlockedBeforeWrite.guardrails.projectLeaseAcquired = $false
+    $applyBlockedBeforeWrite.guardrails.actionProjectGateAcquired = $false
+    $applyBlockedBeforeWrite.guardrails.actionProjectGateKind = 'none'
     $applyBlockedBeforeWrite.result.verificationOk = $false
     $applyBlockedBeforeWrite.result.appliedReadbackOk = $false
     $applyBlockedBeforeWrite.result.appliedChanges = @()
@@ -695,17 +750,16 @@ try {
 
     $applyPartialFailed = Copy-JsonValue -Value $applyBlockedBeforeWrite
     $applyPartialFailed.status = 'failed'
-    $applyPartialFailed.capabilitiesInvoked = @('get_codesys_status', 'get_all_pou_code', 'set_pou_code')
-    $applyPartialFailed.guardrails.projectLeaseAcquired = $true
+    $applyPartialFailed.capabilitiesInvoked = @('get_codesys_status')
+    $applyPartialFailed.guardrails.actionProjectGateAcquired = $true
+    $applyPartialFailed.guardrails.actionProjectGateKind = 'broker-session-action-serialization'
     $applyPartialFailed.result.appliedReadbackOk = $true
     $applyPartialFailed.result.appliedChanges = @($applyObservation.result.appliedChanges[0])
     $applyPartialFailed.result.failureStage = 'apply_change_set'
     $applyPartialFailed.result.reasonCode = 'PARTIAL_APPLY_FAILED'
     $applyPartialFailedObservationPath = Join-Path $engineeringRoot 'data\observations\apply-partial-failed.json'
-    $applyPartialFailedEvidencePath = Join-Path $outputRoot 'apply-partial-failed.json'
     Write-Utf8Json -Path $applyPartialFailedObservationPath -Value $applyPartialFailed
-    $null = Invoke-Producer -Producer $producer -ActionPath $applyActionPath -ActionSha $applyActionSha -ObservationPath $applyPartialFailedObservationPath -OutputPath $applyPartialFailedEvidencePath
-    Assert-True -Condition (@((Read-Utf8Json -Path $applyPartialFailedEvidencePath).result.appliedChanges).Count -eq 1) -Message 'Partial failed apply evidence lost its verified subset.'
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $applyActionPath -ActionSha $applyActionSha -ObservationPath $applyPartialFailedObservationPath -OutputPath (Join-Path $outputRoot 'apply-partial-failed.json') -Description 'Unsupported partial apply evidence'
 
     $applyUnknownFailed = Copy-JsonValue -Value $applyPartialFailed
     $applyUnknownFailed.result.appliedChanges[0].changeId = 'fixture-change-unknown'

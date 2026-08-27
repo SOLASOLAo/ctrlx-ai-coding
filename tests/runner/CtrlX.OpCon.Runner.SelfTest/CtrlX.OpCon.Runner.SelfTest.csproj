@@ -11,6 +11,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\runner\CtrlX.OpCon.Runner.Core\CtrlX.OpCon.Runner.Core.csproj" />
+    <!--
+      Infrastructure is linked directly so this offline harness can exercise the
+      durable stores without constructing (or starting) the interactive Broker
+      executable and its MCP child-session boundary.
+    -->
+    <Compile Include="..\..\..\src\runner\CtrlX.OpCon.Runner.Broker\Infrastructure\*.cs"
+             Link="BrokerInfrastructure\%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>
