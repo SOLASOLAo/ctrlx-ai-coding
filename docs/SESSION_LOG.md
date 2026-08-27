@@ -110,6 +110,13 @@
 - Export #2 使用可验证 anchor：只由 Export #1 的 fresh verified 0-error Build 和带时间戳 request 建立，可跨对象占用、次数纠正、Output 确认及 Build 前 Link I/O 继续；进入 Build 即消费，旧终态不能复活；无 request 时不生成不可关联 anchor。
 - 全局锁覆盖 anchor 选择到报告原子写入；竞争、权限、锁文件或锁目录异常均失败关闭且不落报告。根模板各 458 项离线断言、初始化器 65 项断言通过。真实生命周期 smoke test 因机器仍有既有 PLE/MCP owner 与 `.project.~u` 而按门禁延期，未强杀或手删锁。
 
+### 2026-08-27 · Controlled Runner P1.1
+
+- 产品顺序固定为 Runner → 项目/流程生成 → HMI 产品化 → 商业交付；当前只推进 Runner。
+- 模板新增 P1.1 单一入口：校验项目/profile/manifests，使用 OS 排他文件租约，串联已有 Stage 1 审计和 Stage 2 PlanOnly ledger，并写结构化 run manifest。
+- P1.1 不启动 PLE/MCP、不执行 immutable action，也没有任何在线或部署能力；当前项目和模板自测各 30 项断言，新项目初始化器 70 项回归通过。
+- stdio MCP 不能由独立 CLI 复用。P1.2 必须由交互用户会话中的唯一 Agent/Broker 独占 stdio 与 PLE；未来 Windows Service 只做队列、策略和证据，不从 Session 0 启动可见 PLE。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |
@@ -134,6 +141,7 @@
 | D21 | **新项目统一使用事务化 AI 旁车初始化器和版本化 Skill**；不复制 Station010 项目事实、`.project`、Std 或闭源资料 | 08-20 |
 | D22 | **Post-export hook 只发布独立请求**；离线消费者不启动 PLE/MCP，且请求 Station/PLC 必须与项目配置强一致 | 08-20 |
 | D23 | **Stage 2 先采用 PlanOnly operation ledger**；action/evidence 必须哈希绑定，协调器不启动 PLE/MCP/REST；live runner 与跨进程 MCP 租约后续实现 | 08-22 |
+| D24 | **Runner 分为控制面和唯一会话执行面**；P1.1 默认不启动 PLE/MCP，P1.2 由交互会话 Agent/Broker 独占 stdio/PLE，Windows Service 不从 Session 0 启动 PLE | 08-27 |
 
 ## 待办 / 下一步
 

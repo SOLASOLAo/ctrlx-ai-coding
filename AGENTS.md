@@ -63,11 +63,13 @@ AI 可以创建标准化的 AI 旁车目录，但不伪造 CpStudio 供应商模
 - 提交信息风格:`docs:` / `patches:` / `scripts:` / `config:` / `hmi:` 前缀 + 简述;中文正文可
 - 日期一律 ISO 格式(YYYY-MM-DD);新增决策追加到 SESSION_LOG 决策清单与基线红线章节
 
-## 7. 当前状态快照(2026-08-20)
+## 7. 当前状态快照(2026-08-27)
 
 - [x] 阶段 0:环境基线 + persistent 上线验证 + ctrlX 兼容补丁产品化（含编译超时修复）
 - [x] 通用 AI 旁车初始化器 + Post-export 离线审计队列 + `ctrlx-opcon-engineering` Skill
 - [x] MCP 分层产品化路线与验收标准：`docs/mcp_productization_roadmap.md`
+- [x] Controlled Runner P1.1：单一 CLI、OS 排他租约、项目预检、Stage 1/Stage 2 编排、结构化 run manifest；默认不启动 PLE/MCP
+- [ ] Controlled Runner P1.2：交互用户会话唯一 Agent/Broker + immutable action 执行/readback/fresh Build/evidence
 - [ ] 阶段 A(进行中):用户 CpStudio 骨架 → AI 填充逻辑(阶段 3)→ 仿真 → 真机
 - [ ] 阶段 B:路线② HMI 原型(OPC UA demo → hmi-framework,主画面 Avalonia 原生壳,Web 版远程备选)
 - [ ] 阶段 C:路线③ 标准 CODESYS + MCP 实测(先验证后买授权)

@@ -17,7 +17,8 @@
 - [ ] 运行 `tests/cpstudio/Test-PostExportEngineering.ps1`，验证 PlanOnly operation/action/evidence 与条件 Export #2 状态机；
 - [ ] 验证导出后 ownership/hooks/graphical、I/O Mapping 和 Symbol Configuration 审计；
 - [ ] 用真实 Stage 1 报告建立一次 Stage 2 ledger，并由既有唯一 persistent 会话提交 action evidence；
-- [ ] 记录导出批次、回读结果和编译证据。live runner 与跨进程 MCP 租约尚未实现。
+- [ ] 运行 `tests/runner/Test-CtrlXOpconRunner.ps1`，验证 P1.1 单 owner、项目预检、幂等消费和 run manifest；
+- [ ] 记录导出批次、回读结果和编译证据。P1.2 live executor 与唯一 session broker 尚未实现。
 
 ## P2：仿真与真机
 

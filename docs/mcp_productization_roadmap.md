@@ -1,5 +1,18 @@
 # ctrlX / CODESYS MCP 产品化路线图
 
+## 0. 与产品主路线的关系
+
+产品执行顺序以项目仓库的 `docs/productization_roadmap.md` 为准：
+
+1. 稳定受控 Runner；
+2. 项目目录与流程生成；
+3. HMI 产品化；
+4. 商业交付。
+
+本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。当前先交付 P1.1 Runner 控制面：统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单；它默认不启动 PLE/MCP。随后 P1.2 才接入唯一 persistent owner 的 immutable action 执行、readback、fresh Build 和 evidence。
+
+`codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2 必须由交互用户会话中的唯一 Agent/Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次运行都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
+
 ## 1. 目标
 
 把当前已验证的 `codesys-mcp-persistent` ctrlX 兼容能力，从“单机补丁 + 项目脚本”升级为可版本化、可测试、可在多个 OpCon/ctrlX 项目复用的工程工具链。

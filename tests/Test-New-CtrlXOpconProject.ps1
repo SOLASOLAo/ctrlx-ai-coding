@@ -136,11 +136,14 @@ try {
             'scripts\cpstudio\Invoke-OfflinePostExportCheck.ps1',
             'scripts\cpstudio\offline_mcp_build.cjs',
             'scripts\cpstudio\Run-OfflinePostExportCheck.cmd',
+            'scripts\runner\Invoke-CtrlXOpconRunner.ps1',
+            'scripts\runner\README.md',
             'scripts\git\Get-ReadOnlyGitAudit.ps1',
             'tests\cpstudio\Test-PostExportQueue.ps1',
             'tests\cpstudio\Test-PostExportEngineering.ps1',
             'tests\cpstudio\Test-PostExportRunnerEvidence.ps1',
             'tests\cpstudio\Test-OfflinePostExportCheck.ps1',
+            'tests\runner\Test-CtrlXOpconRunner.ps1',
             'tests\static\Test-ProjectFramework.ps1',
             'data\requests\.gitkeep',
             'docs\project_structure.md'
@@ -206,6 +209,11 @@ try {
     $offlineCheckerOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $offlineCheckerTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated offline checker test failed: " + ($offlineCheckerOutput -join ' '))
     Assert-True -Condition (($offlineCheckerOutput -join ' ') -match 'Offline post-export checker self-test OK') -Message 'Generated offline checker test did not report success.'
+
+    $controlledRunnerTest = Join-Path $outputPath 'tests\runner\Test-CtrlXOpconRunner.ps1'
+    $controlledRunnerOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $controlledRunnerTest 2>&1
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated controlled Runner test failed: " + ($controlledRunnerOutput -join ' '))
+    Assert-True -Condition (($controlledRunnerOutput -join ' ') -match 'Controlled Runner P1.1 self-test OK') -Message 'Generated controlled Runner test did not report success.'
 
     & $initializer `
         -ProjectId 'minimal-cell' `
