@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "kind": "ctrlx-opcon-engineering-semantic-scope",
+  "project": {
+    "plcProjectRelativePath": {{PLC_PROJECT_STATION_REL_JSON}},
+    "profile": {{PLC_ENGINEERING_PROFILE_JSON}}
+  },
+  "mappingScopes": [
+    {
+      "devicePath": {{SEMANTIC_MAPPING_DEVICE_PATH_JSON}},
+      "recursive": true,
+      "includeAllMappableChannels": true
+    }
+  ],
+  "symbolApplicationPath": "Device/Plc Logic/Application"
+}

@@ -11,6 +11,9 @@ public static class BrokerWireProtocol
 {
     public const int Version = 2;
     public const int MaximumMessageBytes = 1024 * 1024;
+    // Leave deterministic headroom for the query-reply envelope, session
+    // identity, and framing around a terminal observation.
+    public const int MaximumTerminalObservationBytes = 896 * 1024;
 
     public const string RegistrationKind = "ctrlx-opcon-runner-broker-registration";
     public const string SubmitKind = "ctrlx-opcon-runner-broker-submit";

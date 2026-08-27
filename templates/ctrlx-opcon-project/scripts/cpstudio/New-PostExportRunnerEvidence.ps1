@@ -83,6 +83,14 @@ function Get-Sha256ForText {
     return Get-Sha256ForBytes -Bytes ([System.Text.Encoding]::UTF8.GetBytes($Text))
 }
 
+function Test-JsonInt32 {
+    param([Parameter(Mandatory = $false)][AllowNull()][object]$Value)
+
+    return (($Value -is [int]) -or ($Value -is [long])) -and
+        ([long]$Value -ge [int]::MinValue) -and
+        ([long]$Value -le [int]::MaxValue)
+}
+
 function Read-JsonDocument {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -121,19 +129,39 @@ function Assert-JsonArrayProperty {
     )
 
     try {
-        Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
-        $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-        $rawRoot = $serializer.DeserializeObject($RawJson)
+        $desktopEdition = (-not $PSVersionTable.ContainsKey('PSEdition')) -or ($PSVersionTable.PSEdition -eq 'Desktop')
+        if ($desktopEdition) {
+            Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
+            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+            $serializer.MaxJsonLength = [int]::MaxValue
+            $serializer.RecursionLimit = 256
+            $rawRoot = $serializer.DeserializeObject($RawJson)
+        }
+        else {
+            $rawRoot = $RawJson | ConvertFrom-Json
+        }
     }
     catch {
         throw "$Context JSON shape could not be validated. $($_.Exception.Message)"
     }
     $rawValue = $rawRoot
     foreach ($propertyName in $PropertyPath) {
-        if (($rawValue -isnot [System.Collections.IDictionary]) -or (-not ($rawValue.Keys -contains $propertyName))) {
-            throw "$Context is missing $($PropertyPath -join '.')."
+        if ($desktopEdition) {
+            if (($rawValue -isnot [System.Collections.IDictionary]) -or (-not ($rawValue.Keys -contains $propertyName))) {
+                throw "$Context is missing $($PropertyPath -join '.')."
+            }
+            $rawValue = $rawValue[$propertyName]
         }
-        $rawValue = $rawValue[$propertyName]
+        else {
+            if ($null -eq $rawValue) {
+                throw "$Context is missing $($PropertyPath -join '.')."
+            }
+            $property = $rawValue.PSObject.Properties[$propertyName]
+            if ($null -eq $property) {
+                throw "$Context is missing $($PropertyPath -join '.')."
+            }
+            $rawValue = $property.Value
+        }
     }
     $displayPath = $PropertyPath -join '.'
     if ($null -eq $rawValue) {
@@ -161,24 +189,75 @@ function Assert-PathInsideRoot {
     return $candidate
 }
 
+function Test-ClearlyRedactedSensitiveValue {
+    param([Parameter(Mandatory = $false)][AllowNull()][object]$Value)
+
+    if ($null -eq $Value) { return $true }
+    if ($Value -isnot [string]) { return $false }
+    $text = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return $true }
+    if (($text.Length -ge 2) -and
+        ((($text[0] -eq '"') -and ($text[$text.Length - 1] -eq '"')) -or
+         (($text[0] -eq "'") -and ($text[$text.Length - 1] -eq "'")))) {
+        $text = $text.Substring(1, $text.Length - 2).Trim()
+    }
+    return $text -match '^(?i:<\s*(?:redacted|masked|removed|not[-_ ]?set)\s*>|\*{3,}|x{6,}|redacted|masked|removed|not[-_ ]?set|null|none|n/?a|\$\{[A-Za-z_][A-Za-z0-9_]*\}|%[A-Za-z_][A-Za-z0-9_]*%|\$env:[A-Za-z_][A-Za-z0-9_]*)$'
+}
+
+function Test-StringContainsSecretLikeValue {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
+
+    if ($Text -match '(?i)-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----') { return $true }
+
+    $assignmentPattern = '(?i)(?<![A-Za-z0-9_])(?:password|passwd|pwd|secret|client[_-]?secret|api[_-]?key|access[_-]?key(?:[_-]?id)?|secret[_-]?key|shared[_-]?access[_-]?key|shared[_-]?access[_-]?signature|account[_-]?key|access[_-]?token|refresh[_-]?token|auth(?:orization)?[_-]?token|bearer[_-]?token|sas[_-]?token|private[_-]?key|credential(?:s)?|token)\s*[:=]\s*(?<value>"[^"\r\n]{1,4096}"|''[^''\r\n]{1,4096}''|[^\s;,}\]\r\n]{1,4096})'
+    foreach ($match in [regex]::Matches($Text, $assignmentPattern)) {
+        if (-not (Test-ClearlyRedactedSensitiveValue -Value $match.Groups['value'].Value)) { return $true }
+    }
+
+    $connectionUriPattern = '(?i)\b[a-z][a-z0-9+.-]{1,20}://[^/\s:@]{1,256}:(?<value>[^/\s@]{1,4096})@'
+    foreach ($match in [regex]::Matches($Text, $connectionUriPattern)) {
+        if (-not (Test-ClearlyRedactedSensitiveValue -Value $match.Groups['value'].Value)) { return $true }
+    }
+
+    $bearerPattern = '(?i)(?<![A-Za-z0-9_-])Bearer[ \t]+(?<value>[A-Za-z0-9._~+/=%-]{12,8192})(?![A-Za-z0-9._~+/=%-])'
+    foreach ($match in [regex]::Matches($Text, $bearerPattern)) {
+        $token = $match.Groups['value'].Value
+        if (($token.Length -ge 24) -or ($token -match '[0-9._~+/=%-]')) { return $true }
+    }
+    return $false
+}
+
 function Assert-NoSensitiveFields {
     param(
         [Parameter(Mandatory = $false)][object]$Value,
-        [Parameter(Mandatory = $false)][string]$Path = '$'
+        [Parameter(Mandatory = $false)][string]$Path = '$',
+        [Parameter(Mandatory = $false)][int]$Depth = 0,
+        [Parameter(Mandatory = $false)][AllowNull()][object]$State = $null
     )
 
-    if ($null -eq $Value) {
+    if ($Depth -gt 128) { throw "Sensitive-value scan exceeded its maximum depth at $Path." }
+    if ($null -eq $State) {
+        $State = [pscustomobject]@{ nodes = [long]0; stringBytes = [long]0 }
+    }
+    $State.nodes = [long]$State.nodes + 1
+    if ([long]$State.nodes -gt 200000) { throw 'Sensitive-value scan exceeded its bounded node budget.' }
+    if ($null -eq $Value) { return }
+    if ($Value -is [string]) {
+        $byteCount = [System.Text.Encoding]::UTF8.GetByteCount([string]$Value)
+        $State.stringBytes = [long]$State.stringBytes + $byteCount
+        if (($byteCount -gt (64 * 1024)) -or ([long]$State.stringBytes -gt (8 * 1024 * 1024))) {
+            throw "Sensitive-value scan exceeded its bounded string budget at $Path."
+        }
+        if (Test-StringContainsSecretLikeValue -Text ([string]$Value)) {
+            throw "Secret-like string value is prohibited at $Path."
+        }
         return
     }
-    if (($Value -is [string]) -or ($Value -is [ValueType])) {
-        return
-    }
-    if (($Value -is [System.Collections.IEnumerable]) -and
-        ($Value -isnot [pscustomobject]) -and
-        ($Value -isnot [System.Collections.IDictionary])) {
+    if ($Value -is [ValueType]) { return }
+    if (($Value -is [System.Array]) -or ($Value -is [System.Collections.IList])) {
         $index = 0
         foreach ($item in $Value) {
-            Assert-NoSensitiveFields -Value $item -Path ($Path + '[' + $index + ']')
+            Assert-NoSensitiveFields -Value $item -Path ($Path + '[' + $index + ']') -Depth ($Depth + 1) -State $State
             $index++
         }
         return
@@ -186,18 +265,38 @@ function Assert-NoSensitiveFields {
     if ($Value -is [System.Collections.IDictionary]) {
         foreach ($key in $Value.Keys) {
             $name = [string]$key
-            if ($name -match '(?i)(password|passwd|secret|token|api[_-]?key|private[_-]?key|credential)') {
+            $nameBytes = [System.Text.Encoding]::UTF8.GetByteCount($name)
+            $State.stringBytes = [long]$State.stringBytes + $nameBytes
+            if (($nameBytes -gt 4096) -or ([long]$State.stringBytes -gt (8 * 1024 * 1024))) {
+                throw "Sensitive-value scan exceeded its bounded property-name budget at $Path."
+            }
+            if (Test-StringContainsSecretLikeValue -Text $name) {
+                throw "Secret-like content is prohibited in a property name below $Path."
+            }
+            $child = $Value[$key]
+            if (($name -match '^(?i:password|passwd|pwd|secret|client[_-]?secret|api[_-]?key|access[_-]?key|secret[_-]?key|shared[_-]?access[_-]?key|account[_-]?key|access[_-]?token|refresh[_-]?token|auth(?:orization)?[_-]?token|bearer[_-]?token|sas[_-]?token|private[_-]?key|credential|credentials)$') -and
+                (-not (Test-ClearlyRedactedSensitiveValue -Value $child))) {
                 throw "Runner observation contains a prohibited secret-bearing field: $Path.$name"
             }
-            Assert-NoSensitiveFields -Value $Value[$key] -Path ($Path + '.' + $name)
+            Assert-NoSensitiveFields -Value $child -Path ($Path + '.' + $name) -Depth ($Depth + 1) -State $State
         }
         return
     }
     foreach ($property in $Value.PSObject.Properties) {
-        if ($property.Name -match '(?i)(password|passwd|secret|token|api[_-]?key|private[_-]?key|credential)') {
+        $name = [string]$property.Name
+        $nameBytes = [System.Text.Encoding]::UTF8.GetByteCount($name)
+        $State.stringBytes = [long]$State.stringBytes + $nameBytes
+        if (($nameBytes -gt 4096) -or ([long]$State.stringBytes -gt (8 * 1024 * 1024))) {
+            throw "Sensitive-value scan exceeded its bounded property-name budget at $Path."
+        }
+        if (Test-StringContainsSecretLikeValue -Text $name) {
+            throw "Secret-like content is prohibited in a property name below $Path."
+        }
+        if (($name -match '^(?i:password|passwd|pwd|secret|client[_-]?secret|api[_-]?key|access[_-]?key|secret[_-]?key|shared[_-]?access[_-]?key|account[_-]?key|access[_-]?token|refresh[_-]?token|auth(?:orization)?[_-]?token|bearer[_-]?token|sas[_-]?token|private[_-]?key|credential|credentials)$') -and
+            (-not (Test-ClearlyRedactedSensitiveValue -Value $property.Value))) {
             throw "Runner observation contains a prohibited secret-bearing field: $Path.$($property.Name)"
         }
-        Assert-NoSensitiveFields -Value $property.Value -Path ($Path + '.' + $property.Name)
+        Assert-NoSensitiveFields -Value $property.Value -Path ($Path + '.' + $name) -Depth ($Depth + 1) -State $State
     }
 }
 
@@ -354,6 +453,52 @@ function Assert-ActionCurrent {
     }
 }
 
+function Add-CanonicalJsonString {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value,
+        [Parameter(Mandatory = $true)][System.Text.StringBuilder]$Builder
+    )
+
+    [void]$Builder.Append('"')
+    foreach ($character in $Value.ToCharArray()) {
+        switch ([int]$character) {
+            0x08 { [void]$Builder.Append('\b'); continue }
+            0x09 { [void]$Builder.Append('\t'); continue }
+            0x0A { [void]$Builder.Append('\n'); continue }
+            0x0C { [void]$Builder.Append('\f'); continue }
+            0x0D { [void]$Builder.Append('\r'); continue }
+            0x22 { [void]$Builder.Append('\"'); continue }
+            0x5C { [void]$Builder.Append('\\'); continue }
+        }
+        if ([int]$character -lt 0x20) {
+            [void]$Builder.Append(('\u{0:x4}' -f [int]$character))
+        }
+        else {
+            [void]$Builder.Append($character)
+        }
+    }
+    [void]$Builder.Append('"')
+}
+
+function ConvertTo-CanonicalWarningJson {
+    param([Parameter(Mandatory = $true)][object]$CanonicalRecord)
+
+    # ctrlx-semantic-canonical-json-v1: object keys are ordinal-sorted and
+    # strings retain literal Unicode before UTF-8 SHA-256 hashing.
+    $builder = [System.Text.StringBuilder]::new()
+    [void]$builder.Append('{')
+    $names = @('code', 'message', 'objectPath', 'position', 'source')
+    for ($index = 0; $index -lt $names.Count; $index++) {
+        if ($index -gt 0) { [void]$builder.Append(',') }
+        $name = $names[$index]
+        Add-CanonicalJsonString -Value $name -Builder $builder
+        [void]$builder.Append(':')
+        Add-CanonicalJsonString -Value ([string](Get-PropertyValue -Object $CanonicalRecord -Name $name -DefaultValue '')) -Builder $builder
+    }
+    [void]$builder.Append('}')
+    return $builder.ToString()
+}
+
 function ConvertTo-NormalizedWarningText {
     param([Parameter(Mandatory = $true)][object]$Record)
 
@@ -362,13 +507,13 @@ function ConvertTo-NormalizedWarningText {
         if ([string]::IsNullOrWhiteSpace($text)) {
             throw 'Warning records cannot be empty.'
         }
-        return ([ordered]@{
+        return ConvertTo-CanonicalWarningJson -CanonicalRecord ([ordered]@{
             code       = ''
             source     = ''
             objectPath = ''
             position   = ''
             message    = $text
-        } | ConvertTo-Json -Compress)
+        })
     }
     $objectPath = [string](Get-PropertyValue -Object $Record -Name 'objectPath')
     if ([string]::IsNullOrWhiteSpace($objectPath)) {
@@ -403,7 +548,27 @@ function ConvertTo-NormalizedWarningText {
         [string]::IsNullOrWhiteSpace([string]$canonical.message)) {
         throw 'A structured warning record needs code, source, object, position, or message.'
     }
-    return ($canonical | ConvertTo-Json -Compress)
+    return ConvertTo-CanonicalWarningJson -CanonicalRecord $canonical
+}
+
+function Test-PleWarningOutputTruncationSentinel {
+    param([Parameter(Mandatory = $true)][object]$Record)
+
+    if ($Record -is [string]) {
+        $message = [string]$Record
+    }
+    else {
+        $message = [string](Get-PropertyValue -Object $Record -Name 'message')
+        if ([string]::IsNullOrWhiteSpace($message)) {
+            $message = [string](Get-PropertyValue -Object $Record -Name 'description')
+        }
+        if ([string]::IsNullOrWhiteSpace($message)) {
+            $message = [string](Get-PropertyValue -Object $Record -Name 'text')
+        }
+    }
+
+    $normalized = ($message.Trim() -replace '\s+', ' ')
+    return $normalized -match '(?i)\AMore than [0-9]+ warnings occurr?ed: Skipping all further warning messages\z'
 }
 
 function Get-WarningSignatureMultiset {
@@ -420,6 +585,9 @@ function Get-WarningSignatureMultiset {
     }
     $counts = @{}
     foreach ($record in $Records) {
+        if (Test-PleWarningOutputTruncationSentinel -Record $record) {
+            throw 'PLE warning output is truncated; its sentinel cannot be sealed as a complete warning-signature comparison.'
+        }
         $signature = Get-Sha256ForText -Text (ConvertTo-NormalizedWarningText -Record $record)
         if ($counts.ContainsKey($signature)) {
             $counts[$signature] = [int]$counts[$signature] + 1
@@ -436,6 +604,150 @@ function Get-WarningSignatureMultiset {
         }
     }
     return @($result)
+}
+
+function ConvertTo-BlockedBuildEvidence {
+    param(
+        [Parameter(Mandatory = $true)][object]$Build,
+        [Parameter(Mandatory = $true)][string]$RawObservationJson,
+        [Parameter(Mandatory = $true)][object]$Identity,
+        [Parameter(Mandatory = $true)][DateTime]$ActionCreatedAt,
+        [Parameter(Mandatory = $true)][DateTime]$ObservationCompletedAt
+    )
+
+    Assert-ExactPropertySet -Object $Build -Allowed @(
+        'buildId',
+        'projectPath',
+        'profile',
+        'projectSha256',
+        'startedAtUtc',
+        'completedAtUtc',
+        'verified',
+        'errors',
+        'warnings',
+        'messageCount',
+        'typedRecordsVerified',
+        'diagnosticRowsComplete',
+        'warningRecordsSafeForReview',
+        'warningRecords',
+        'diagnosticRows',
+        'summarySource'
+    ) -Context 'Blocked fresh Build observation'
+    Assert-JsonArrayProperty -RawJson $RawObservationJson -PropertyPath @('result', 'build', 'warningRecords') -Context 'Blocked fresh Build observation'
+    Assert-JsonArrayProperty -RawJson $RawObservationJson -PropertyPath @('result', 'build', 'diagnosticRows') -Context 'Blocked fresh Build observation'
+
+    $buildStarted = [DateTime]::MinValue
+    $buildCompleted = [DateTime]::MinValue
+    if ((-not [DateTime]::TryParse((Get-RequiredString -Object $Build -Name 'startedAtUtc' -Context 'Blocked fresh Build'), [ref]$buildStarted)) -or
+        (-not [DateTime]::TryParse((Get-RequiredString -Object $Build -Name 'completedAtUtc' -Context 'Blocked fresh Build'), [ref]$buildCompleted)) -or
+        ($buildStarted.ToUniversalTime() -lt $ActionCreatedAt.ToUniversalTime()) -or
+        ($buildCompleted.ToUniversalTime() -lt $buildStarted.ToUniversalTime()) -or
+        ($buildCompleted.ToUniversalTime() -gt $ObservationCompletedAt.ToUniversalTime())) {
+        throw 'Blocked Build timestamps are not fresh for the immutable action.'
+    }
+
+    $errorsValue = Get-PropertyValue -Object $Build -Name 'errors'
+    $warningsValue = Get-PropertyValue -Object $Build -Name 'warnings'
+    $messageCountValue = Get-PropertyValue -Object $Build -Name 'messageCount'
+    if ((-not (Test-JsonInt32 -Value $errorsValue)) -or
+        (-not (Test-JsonInt32 -Value $warningsValue)) -or
+        (-not (Test-JsonInt32 -Value $messageCountValue))) {
+        throw 'Blocked fresh Build counts must be JSON integers.'
+    }
+    $errors = [int]$errorsValue
+    $warnings = [int]$warningsValue
+    $messageCount = [int]$messageCountValue
+    if (($errors -ne 0) -or ($warnings -lt 0) -or ($warnings -gt 2048) -or
+        ($messageCount -lt $warnings) -or ($messageCount -gt 2048)) {
+        throw 'Blocked fresh Build must be a zero-error bounded Build.'
+    }
+    if (-not (Get-RequiredBoolean -Object $Build -Name 'verified' -Context 'Blocked fresh Build')) {
+        throw 'Blocked fresh Build must be producer-verified.'
+    }
+    $typedRecordsVerified = Get-RequiredBoolean -Object $Build -Name 'typedRecordsVerified' -Context 'Blocked fresh Build'
+    $diagnosticRowsComplete = Get-RequiredBoolean -Object $Build -Name 'diagnosticRowsComplete' -Context 'Blocked fresh Build'
+    $warningRecordsSafeForReview = Get-RequiredBoolean -Object $Build -Name 'warningRecordsSafeForReview' -Context 'Blocked fresh Build'
+    if ($warningRecordsSafeForReview -and (-not $typedRecordsVerified)) {
+        throw 'Blocked fresh Build cannot mark untyped warning records safe for review.'
+    }
+    if ((Get-RequiredString -Object $Build -Name 'summarySource' -Context 'Blocked fresh Build') -ne 'codesys-persistent.compile_project') {
+        throw 'Blocked fresh Build summarySource is unsupported.'
+    }
+    $buildId = Get-RequiredString -Object $Build -Name 'buildId' -Context 'Blocked fresh Build'
+    if ($buildId -notmatch '^[A-Za-z0-9_.:-]{1,128}$') {
+        throw 'Blocked fresh Build buildId is invalid.'
+    }
+    $observedProjectPath = [System.IO.Path]::GetFullPath((Get-RequiredString -Object $Build -Name 'projectPath' -Context 'Blocked fresh Build'))
+    $observedProfile = Get-RequiredString -Object $Build -Name 'profile' -Context 'Blocked fresh Build'
+    $observedProjectSha = Get-RequiredString -Object $Build -Name 'projectSha256' -Context 'Blocked fresh Build'
+    $currentProjectSha = (Get-FileHash -LiteralPath ([string]$Identity.plcProject) -Algorithm SHA256).Hash
+    if ((-not $observedProjectPath.Equals([string]$Identity.plcProject, [System.StringComparison]::OrdinalIgnoreCase)) -or
+        ($observedProfile -ne [string]$Identity.profile) -or
+        (-not (Test-HexSha256 -Value $observedProjectSha)) -or
+        (-not $observedProjectSha.Equals($currentProjectSha, [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw 'Blocked fresh Build project/profile/SHA does not match the immutable action and current PLC project.'
+    }
+
+    $warningRecords = @(Get-PropertyValue -Object $Build -Name 'warningRecords' -DefaultValue @())
+    if (($typedRecordsVerified -and $warningRecordsSafeForReview -and ($warningRecords.Count -ne $warnings)) -or
+        ((-not $typedRecordsVerified) -and ($warningRecords.Count -ne 0)) -or
+        ($typedRecordsVerified -and (-not $warningRecordsSafeForReview) -and ($warningRecords.Count -ne 0)) -or
+        ($typedRecordsVerified -and ($messageCount -ne $warnings))) {
+        throw 'Blocked fresh Build warning record count/safety flags are inconsistent.'
+    }
+    $validatedWarningRecords = @()
+    $warningBytes = 0
+    foreach ($record in $warningRecords) {
+        if (($record -isnot [string]) -or [string]::IsNullOrWhiteSpace([string]$record)) {
+            throw 'Blocked fresh Build warningRecords must contain non-empty strings.'
+        }
+        $trimmed = ([string]$record).Trim()
+        $warningBytes += [System.Text.Encoding]::UTF8.GetByteCount($trimmed)
+        if (($warningBytes -gt (256 * 1024)) -or
+            ([System.Text.Encoding]::UTF8.GetByteCount($trimmed) -gt 4096)) {
+            throw 'Blocked fresh Build warningRecords exceed the bounded review budget.'
+        }
+        $validatedWarningRecords += $trimmed
+    }
+
+    $diagnosticRows = @(Get-PropertyValue -Object $Build -Name 'diagnosticRows' -DefaultValue @())
+    if (($diagnosticRows.Count -gt $messageCount) -or
+        ($diagnosticRowsComplete -and ($diagnosticRows.Count -ne $messageCount))) {
+        throw 'Blocked fresh Build diagnosticRows do not match their completeness flag.'
+    }
+    $validatedDiagnosticRows = @()
+    $diagnosticBytes = 0
+    foreach ($row in $diagnosticRows) {
+        if (($row -isnot [string]) -or [string]::IsNullOrWhiteSpace([string]$row)) {
+            throw 'Blocked fresh Build diagnosticRows must contain non-empty strings.'
+        }
+        $trimmed = ([string]$row).Trim()
+        $diagnosticBytes += [System.Text.Encoding]::UTF8.GetByteCount($trimmed)
+        if (($diagnosticBytes -gt (256 * 1024)) -or
+            ([System.Text.Encoding]::UTF8.GetByteCount($trimmed) -gt 4096)) {
+            throw 'Blocked fresh Build diagnosticRows exceed the bounded review budget.'
+        }
+        $validatedDiagnosticRows += $trimmed
+    }
+
+    return [ordered]@{
+        buildId                     = $buildId
+        projectPath                 = $observedProjectPath
+        profile                     = $observedProfile
+        projectSha256               = $observedProjectSha.ToUpperInvariant()
+        startedAtUtc                = $buildStarted.ToUniversalTime().ToString('o')
+        completedAtUtc              = $buildCompleted.ToUniversalTime().ToString('o')
+        verified                    = $true
+        errors                      = $errors
+        warnings                    = $warnings
+        messageCount                = $messageCount
+        typedRecordsVerified        = $typedRecordsVerified
+        diagnosticRowsComplete      = $diagnosticRowsComplete
+        warningRecordsSafeForReview = $warningRecordsSafeForReview
+        warningRecords              = @($validatedWarningRecords)
+        diagnosticRows              = @($validatedDiagnosticRows)
+        summarySource               = 'codesys-persistent.compile_project'
+    }
 }
 
 function Get-ObjectPropertyNames {
@@ -625,7 +937,8 @@ $capabilities = @($capabilityProperty.Value)
 $prohibitedCapability = '(?i)(connect[_-]?to[_-]?device|download[_-]?to[_-]?device|start[_-]?stop|write[_-]?variable|read[_-]?variable|monitor[_-]?variables|force|set[_-]?simulation|online|launch[_-]?(codesys|ple|mcp)|watcher[_-]?ipc)'
 $approvedOfflineCapabilities = @(
     'get_codesys_status',
-    'compile_project'
+    'compile_project',
+    'get_ctrlx_semantic_snapshot'
 )
 foreach ($capability in $capabilities) {
     if (([string]$capability -notmatch '^[A-Za-z0-9_.-]{1,96}$') -or
@@ -640,7 +953,7 @@ if ($status -eq 'succeeded') {
     if ($identity.actionKind -eq 'apply_change_set_and_build') {
         throw 'apply_change_set_and_build is not supported by the typed Broker and cannot produce successful evidence.'
     }
-    foreach ($requiredCapability in @('get_codesys_status', 'compile_project')) {
+    foreach ($requiredCapability in @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')) {
         if (@($capabilities | Where-Object { [string]$_ -eq $requiredCapability }).Count -ne 1) {
             throw "Successful runner observation must report capability '$requiredCapability' exactly once."
         }
@@ -689,14 +1002,20 @@ $observedResult = Get-PropertyValue -Object $observation -Name 'result'
 Assert-JsonArrayProperty -RawJson $observationDocument.raw -PropertyPath @('result', 'proposedChanges') -Context 'Runner observation'
 Assert-JsonArrayProperty -RawJson $observationDocument.raw -PropertyPath @('result', 'appliedChanges') -Context 'Runner observation'
 $terminalObservation = @('blocked', 'failed') -contains $status
+$blockedBuildObservation = $null
 if ($terminalObservation) {
     if ($null -ne $observation.PSObject.Properties['session']) {
         throw 'Blocked/failed runner observation must not contain a session object.'
     }
-    foreach ($name in @('build', 'acceptance')) {
-        if ($null -ne $observedResult.PSObject.Properties[$name]) {
-            throw "Blocked/failed runner observation must not contain result.$name."
+    if ($null -ne $observedResult.PSObject.Properties['acceptance']) {
+        throw 'Blocked/failed runner observation must not contain result.acceptance.'
+    }
+    $terminalBuildProperty = $observedResult.PSObject.Properties['build']
+    if ($null -ne $terminalBuildProperty) {
+        if ($status -ne 'blocked') {
+            throw 'Failed runner observation must not contain result.build.'
         }
+        $blockedBuildObservation = $terminalBuildProperty.Value
     }
 }
 $repairRequired = Get-RequiredBoolean -Object $observedResult -Name 'repairRequired' -Context 'Runner observation result'
@@ -782,6 +1101,74 @@ $evidenceResult = [ordered]@{
     requiresCpStudioChange = $requiresCpStudioChange
     proposedChanges        = @($proposedChanges)
     appliedChanges         = @($appliedChanges)
+}
+$semanticProofs = Get-PropertyValue -Object $observedResult -Name 'semanticProofs'
+if ($status -eq 'succeeded' -and $null -eq $semanticProofs) {
+    throw 'A successful runner observation must contain result.semanticProofs.'
+}
+$hasUnverifiedSemanticProof = $false
+if ($null -ne $semanticProofs) {
+    $proofNames = @('ownership', 'readback', 'recoverableBaseline', 'warnings', 'semanticBaseline', 'mapping', 'symbolPostProcessing')
+    Assert-ExactPropertySet -Object $semanticProofs -Allowed (@('contractVersion') + $proofNames) -Context 'Runner observation semanticProofs'
+    $proofContractVersion = Get-PropertyValue -Object $semanticProofs -Name 'contractVersion'
+    if ((-not (Test-JsonInt32 -Value $proofContractVersion)) -or ([int]$proofContractVersion -ne 1)) {
+        throw 'Runner observation semanticProofs contractVersion must be 1.'
+    }
+    foreach ($proofName in $proofNames) {
+        $proof = Get-PropertyValue -Object $semanticProofs -Name $proofName
+        if ($null -eq $proof) {
+            throw "Runner observation semanticProofs is missing '$proofName'."
+        }
+        $proofVersion = Get-PropertyValue -Object $proof -Name 'contractVersion'
+        if ((-not (Test-JsonInt32 -Value $proofVersion)) -or ([int]$proofVersion -ne 1)) {
+            throw "Runner observation semantic proof '$proofName' contractVersion must be 1."
+        }
+        $proofVerified = Get-RequiredBoolean -Object $proof -Name 'verified' -Context "Runner observation semantic proof '$proofName'"
+        if (($status -eq 'succeeded') -and (-not $proofVerified)) {
+            throw "A successful runner observation has incomplete semantic proof '$proofName'."
+        }
+        if (-not $proofVerified) {
+            $hasUnverifiedSemanticProof = $true
+        }
+    }
+    $evidenceResult['semanticProofs'] = $semanticProofs
+}
+$nextRoute = Get-PropertyValue -Object $observedResult -Name 'nextRoute'
+if ($null -ne $nextRoute) {
+    if ($status -eq 'succeeded') {
+        throw 'A successful runner observation cannot contain result.nextRoute.'
+    }
+    Assert-ExactPropertySet -Object $nextRoute -Allowed @('kind', 'reasonCode', 'automaticExecutionAllowed') -Context 'Runner observation nextRoute'
+    $null = Get-RequiredString -Object $nextRoute -Name 'kind' -Context 'Runner observation nextRoute'
+    $null = Get-RequiredString -Object $nextRoute -Name 'reasonCode' -Context 'Runner observation nextRoute'
+    if (Get-RequiredBoolean -Object $nextRoute -Name 'automaticExecutionAllowed' -Context 'Runner observation nextRoute') {
+        throw 'Runner observation nextRoute must require manual review.'
+    }
+    $evidenceResult['nextRoute'] = $nextRoute
+}
+if ($null -ne $blockedBuildObservation) {
+    $blockedFailureStage = Get-RequiredString -Object $observedResult -Name 'failureStage' -Context 'Blocked runner observation result'
+    if (($blockedFailureStage -ne 'semantic-acceptance') -or
+        ($identity.actionKind -notin @('inspect_and_build', 'verify_after_export_2')) -or
+        (-not $actionProjectGateAcquired) -or
+        ($null -eq $semanticProofs) -or
+        (-not $hasUnverifiedSemanticProof)) {
+        throw 'Only a semantic-acceptance BLOCKED observation after an acquired action gate may retain fresh Build evidence.'
+    }
+    foreach ($requiredCapability in @('get_codesys_status', 'compile_project')) {
+        if (@($capabilities | Where-Object { [string]$_ -eq $requiredCapability }).Count -ne 1) {
+            throw "Blocked fresh Build observation must report capability '$requiredCapability' exactly once."
+        }
+    }
+    if (@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot' }).Count -gt 1) {
+        throw 'Blocked fresh Build observation cannot report duplicate semantic snapshot calls.'
+    }
+    $evidenceResult['build'] = ConvertTo-BlockedBuildEvidence `
+        -Build $blockedBuildObservation `
+        -RawObservationJson $observationDocument.raw `
+        -Identity $identity `
+        -ActionCreatedAt $actionCreatedAt `
+        -ObservationCompletedAt $completedAt
 }
 $evidenceSession = $null
 

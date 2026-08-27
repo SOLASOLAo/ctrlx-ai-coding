@@ -35,7 +35,8 @@ public sealed record McpProcessOptions
         "shutdown_codesys",
         "get_codesys_status",
         "open_project",
-        "compile_project"
+        "compile_project",
+        "get_ctrlx_semantic_snapshot"
     ];
 
     internal void Validate()

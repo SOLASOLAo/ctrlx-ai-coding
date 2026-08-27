@@ -185,9 +185,42 @@
     --expected-sha256 '<64-hex-sha256>' --json
   ```
 
-  这些 `start` 命令只用于后续 acceptance。受控 adapter 通过验收后，只有 Broker
-  `start` 能显式启动/持有 MCP 与 PLE；当前已安装 adapter 下会在启动 PLE 前失败
-  关闭。完整 client run `status`/`verify` 示例见 `src/runner/README.md`。
+  以上是 2026-08-27 切片结束时的 acceptance 边界；2026-08-28 的真实通道结果见
+  下一节。完整 client run `status`/`verify` 示例见 `src/runner/README.md`。
+
+### 2026-08-28 · Controlled Runner real PLE channel acceptance
+
+- 受控 adapter 的 ownership、same-call fresh Build、fixed-category typed warning 与
+  recursive mapping/Symbol snapshot 已应用到本机，并通过 isolated readiness、全局
+  `-Check`、Python/Node 语义向量和 .NET 工程会话回归。
+- Station010 的新 immutable `inspect_and_build` action 通过唯一 interactive Broker
+  调用真实 PLE；能力账本恰好为 `get_codesys_status`、`compile_project`、
+  `get_ctrlx_semantic_snapshot`。没有第二个 PLE、工程写入或任何在线能力。
+- fresh Build 为 **0 errors / 101 条可见 warnings**，typed warning records 可审阅；semantic
+  snapshot 为 456 条 mapping facts，mapping SHA-256 `491B719C...A5086`，Symbol
+  SHA-256 `3FE32193...E686F`。PLC project 与结构哈希前后完全一致。
+- warning candidate 含 `PLE_WARNING_OUTPUT_TRUNCATED`，因此 101 条不证明完整告警全集，
+  正式 warning baseline 当前不可批准。安装资源与官方 REST v2 schema 的只读核对已确认
+  100 条是工程 `Compile Options` 的编译器生成上限，不是 MCP/ScriptEngine 的读取分页。
+  下一步只在隔离副本中验证 `CompileOptionsEditor.maxCompilerWarnings=<no limit>` 的
+  GET/PUT/readback/Build/回滚事务，再生成新 action/candidate。
+- 该 action 因缺少经人工审阅的 baseline 正确停在 bootstrap `BLOCKED`，不是 `DONE`。
+  候选只能进入 `pending-human-review`；不得自动晋升，正式 baseline 建立后必须用新的
+  immutable action 复验。
+
+### 2026-08-28 · Controlled Runner fail-closed review hardening
+
+- 独立审查发现并关闭了四类证据窗口：candidate/AI triage 冒充人审、review/baseline
+  hash 与解析内容的重复打开竞态、semantic 最终 REST 读取后的 dirty race，以及 REST
+  body 在 header 后失去 timeout/先整体缓冲再检查大小。
+- Stage 1/2 现在只接受 `docs/reviews/` 下单独的人审文档，并拒绝已知生成物及其改名
+  副本；review、scope、warning/semantic baseline 都以同一有界 bytes 完成校验、SHA
+  与解析。畸形请求及候选/evidence 敏感扫描不持久化或回显凭据。
+- semantic adapter 增加 traversal 前后 dirty 与最终第三次 ScriptEngine probe；REST
+  使用 30 s 全程 abort、8 MiB 流式上限。patcher 语法失败非零退出并恢复本轮写入。
+- 离线回归通过：Runner 196 assertions、Broker 13/13、Engineering 37/37、Release 0/0、
+  root/template PS5.1 tests、adapter readiness 与全局 `-Check`。没有启动 PLE/MCP，未触碰
+  Station010/PLC/CpStudio/Std。warning 截断和人审 baseline 仍是最终 P1.2 blocker。
 
 ## 关键决策清单
 
@@ -215,15 +248,19 @@
 | D23 | **Stage 2 先采用 PlanOnly operation ledger**；action/evidence 必须哈希绑定，协调器不启动 PLE/MCP/REST；live runner 与跨进程 MCP 租约后续实现 | 08-22 |
 | D24 | **Runner 分为控制面和唯一会话执行面**；P1.1 默认不启动 PLE/MCP，P1.2 由交互会话 Agent/Broker 独占 stdio/PLE，Windows Service 不从 Session 0 启动 PLE | 08-27 |
 | D25 | **P1.2b 使用显式 interactive Broker + protocol v2 current-user validated registration + durable submit/query**；同一 Windows 用户是当前信任边界；当前只允许 typed inspect/verify 和固定离线 Build，写工程/在线功能继续关闭，真实 PLE acceptance 单独执行 | 08-27 |
+| D26 | **工程 baseline 必须由人基于独立证据审阅**；Runner 只能生成 deterministic candidate，禁止自动晋升；正式 warning/semantic baseline 必须绑定 reviewer/evidence hash，并由新的 immutable action 复验 | 08-28 |
+| D27 | **截断的 PLE warning population 永不允许成为正式 baseline**；Broker、Stage 1、Stage 2 与 evidence sealer 均以 `PLE_WARNING_OUTPUT_TRUNCATED` 失败关闭 | 08-28 |
+| D28 | **所有可批准证据必须同字节校验并有界读取**；AI candidate/triage 不能充当独立人审，semantic snapshot 必须在最终 REST 读取后再次证明工程 clean/stable | 08-28 |
 
 ## 待办 / 下一步
 
 1. 新项目使用统一初始化器创建 AI 旁车；用户继续在 CpStudio 维护模型/标准对象/HMI，AI 维护 ownership 声明的 PLC 增量；
-2. 先把受控 ownership/fresh-Build adapter 与语义证据 producer 验收完，再在交互会话中执行 P1.2b 首次真实 PLE acceptance：显式启动 Broker，核对 validated registration/status，再用一个只读 `inspect_and_build` action 验证固定 Build/readback/evidence；验收前不扩展写工程 action；
-3. 配置真实 CpStudio Post-export hook，验证 Stage 1 报告和 Stage 2 ledger，再通过 protocol v2 客户端执行首个真实 action/evidence 闭环；
-4. 按 `docs/mcp_productization_roadmap.md` 继续通用健康检查、结构化编译和 change set；`apply_change_set_and_build` 在 payload/readback/恢复门禁完成前保持关闭；
-5. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；
-6. **路线④**:开发机已就绪,P0~P2 完成(继承 PreemptRt);执行转入 **FreePLCDemo**(v4 安装 → P4 集成);
+2. 当前 warning candidate 含 `PLE_WARNING_OUTPUT_TRUNCATED`；先在隔离工程副本中通过官方 REST 验证 `CompileOptionsEditor.maxCompilerWarnings=<no limit>` 的完整事务与失败回滚，再生成新 action/candidate；此前不得批准正式 warning baseline；
+3. 告警完整性门禁通过后，审阅 warning/semantic candidates，创建绑定独立审阅证据的正式 baseline，再生成新的 immutable action 复验；完成前不扩展写工程 action；
+4. 继续用已配置的真实 CpStudio Post-export hook 验证 Stage 1/Stage 2/Runner 闭环，任何 baseline 或 scope 漂移都必须新建 action；
+5. 按 `docs/mcp_productization_roadmap.md` 继续通用健康检查、结构化编译和 change set；`apply_change_set_and_build` 在 payload/readback/恢复门禁完成前保持关闭；
+6. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；
+7. **路线④**:开发机已就绪,P0~P2 完成(继承 PreemptRt);执行转入 **FreePLCDemo**(v4 安装 → P4 集成);
    交接见 `route4-rtpreempt-openplc/HANDOVER.md` §7。
 ## D17(2026-08-18 夜)PLE SymbolConfig 脚本极限实测 + Station010 GitHub 备份
 - 实测结论:SymbolConfig 条目对 ScriptEngine 树 API 完全不可见(find/get_children/export_xml 全空);可读形态仅 IDE 导出的 Symbolconfiguration XML。详见 docs/ple_symbolconfig_git_notes.md。

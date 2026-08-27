@@ -46,13 +46,48 @@ function Write-JsonFile {
 function Read-JsonFile {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    return ([System.IO.File]::ReadAllText($Path) | ConvertFrom-Json)
+    $json = [System.IO.File]::ReadAllText($Path)
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        return ConvertFrom-Json -InputObject $json -DateKind String
+    }
+    return ConvertFrom-Json -InputObject $json
 }
 
 function Get-Sha256 {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+}
+
+function Get-Sha256ForText {
+    param([Parameter(Mandatory = $true)][string]$Text)
+
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+        return ([System.BitConverter]::ToString($algorithm.ComputeHash($bytes))).Replace('-', '')
+    }
+    finally {
+        $algorithm.Dispose()
+    }
+}
+
+function Get-FixtureWarningSignatures {
+    $signatures = @()
+    for ($index = 1; $index -le 9; $index++) {
+        $canonical = [ordered]@{
+            code       = 'C0543'
+            message    = 'fixture warning'
+            objectPath = 'Fixture'
+            position   = 'Line ' + $index
+            source     = 'Build'
+        }
+        $signatures += [ordered]@{
+            sha256      = Get-Sha256ForText -Text ($canonical | ConvertTo-Json -Compress)
+            occurrences = 1
+        }
+    }
+    return @($signatures | Sort-Object -Property sha256)
 }
 
 function Get-PropertyValue {
@@ -156,6 +191,37 @@ function Assert-FingerprintMapsEqual {
     }
 }
 
+function Import-FunctionsFromScript {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string[]]$Names
+    )
+
+    $tokens = $null
+    $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -ne 0) { throw "Cannot import fixture helpers from $Path." }
+    foreach ($name in $Names) {
+        $definition = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true) | Select-Object -First 1
+        if ($null -eq $definition) { throw "Fixture helper '$name' is missing from $Path." }
+        Set-Item -Path ("Function:\script:{0}" -f $name) -Value $definition.Body.GetScriptBlock()
+    }
+}
+
+function New-SemanticProofs {
+    param([Parameter(Mandatory = $false)][bool]$Verified = $true)
+
+    $proofs = [ordered]@{ contractVersion = 1 }
+    foreach ($name in @('ownership', 'readback', 'recoverableBaseline', 'warnings', 'semanticBaseline', 'mapping', 'symbolPostProcessing')) {
+        $proofs[$name] = [ordered]@{
+            producer = 'stage2.fixture'
+            contractVersion = 1
+            verified = $Verified
+        }
+    }
+    return $proofs
+}
+
 function Get-FileFingerprint {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -194,7 +260,50 @@ function New-Stage1AuditReport {
         Get-FileFingerprint -Path $PlcProject -DisplayPath 'Plc/Demo_PLC.project'
         Get-FileFingerprint -Path $ioProject -DisplayPath 'Plc/Demo_IO.project'
     )
+    $warningBaselinePath = Join-Path $EngineeringRoot 'config\warning-signature-baseline.json'
+    $warningBaseline = if ([System.IO.File]::Exists($warningBaselinePath)) {
+        $baselineDocument = Read-JsonFile -Path $warningBaselinePath
+        $evidenceRelativePath = ([string]$baselineDocument.review.evidencePath).Replace('\', '/')
+        $evidencePath = Join-Path $EngineeringRoot $evidenceRelativePath
+        [ordered]@{
+            state          = 'reviewed'
+            path           = 'config/warning-signature-baseline.json'
+            sha256         = Get-Sha256 -Path $warningBaselinePath
+            reviewEvidence = [ordered]@{
+                path   = $evidenceRelativePath
+                sha256 = Get-Sha256 -Path $evidencePath
+            }
+        }
+    }
+    else {
+        [ordered]@{
+            state = 'missing-bootstrap'
+            path  = 'config/warning-signature-baseline.json'
+        }
+    }
 
+    $semanticScopePath = Join-Path $EngineeringRoot 'config\engineering-semantic-scope.json'
+    $semanticSnapshotRequest = [ordered]@{
+        path = 'config/engineering-semantic-scope.json'
+        sha256 = Get-Sha256 -Path $semanticScopePath
+    }
+    $semanticBaselinePath = Join-Path $EngineeringRoot 'config\engineering-semantic-baseline.json'
+    $semanticBaseline = if ([System.IO.File]::Exists($semanticBaselinePath)) {
+        $baselineDocument = Read-JsonFile -Path $semanticBaselinePath
+        $evidenceRelativePath = ([string]$baselineDocument.review.evidencePath).Replace('\', '/')
+        [ordered]@{
+            state = 'reviewed'
+            path = 'config/engineering-semantic-baseline.json'
+            sha256 = Get-Sha256 -Path $semanticBaselinePath
+            reviewEvidence = [ordered]@{
+                path = $evidenceRelativePath
+                sha256 = Get-Sha256 -Path (Join-Path $EngineeringRoot $evidenceRelativePath)
+            }
+        }
+    }
+    else {
+        [ordered]@{ state = 'missing-bootstrap'; path = 'config/engineering-semantic-baseline.json' }
+    }
     $report = [ordered]@{
         schemaVersion = 1
         auditedAtUtc  = $RequestedAtUtc.AddSeconds(1).ToString('o')
@@ -224,6 +333,9 @@ function New-Stage1AuditReport {
             changedPaths          = @('Engineering/Engineering_Data.xml')
         }
         manifests      = $manifests
+        warningBaseline = $warningBaseline
+        semanticSnapshotRequest = $semanticSnapshotRequest
+        semanticBaseline = $semanticBaseline
         fingerprints   = $fingerprints
         findings       = @()
         nextStage      = 'controlled post-export engineering'
@@ -373,6 +485,7 @@ function New-RunnerEvidence {
         [Parameter(Mandatory = $false)][bool]$SecondPleStarted = $false,
         [Parameter(Mandatory = $false)][bool]$ActionProjectGateReleased = $true,
         [Parameter(Mandatory = $false)][bool]$OmitBuild = $false,
+        [Parameter(Mandatory = $false)][bool]$WarningSignaturesReviewed = $true,
         [Parameter(Mandatory = $false)][string]$ActionRequestSha256
     )
 
@@ -380,11 +493,11 @@ function New-RunnerEvidence {
         $ActionRequestSha256 = $Action.sha256
     }
     if (-not $PSBoundParameters.ContainsKey('CapabilitiesInvoked')) {
-        $CapabilitiesInvoked = if ($ResultStatus -eq 'succeeded') {
-            @('get_codesys_status', 'compile_project')
+        if ($ResultStatus -eq 'succeeded') {
+            $CapabilitiesInvoked = [object[]]@('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
         }
         else {
-            @()
+            $CapabilitiesInvoked = [object[]]::new(0)
         }
     }
     $serializedCapabilities = [object[]]::new(0)
@@ -460,9 +573,7 @@ function New-RunnerEvidence {
                 signatureComplete = $true
                 signatureAlgorithm = 'sha256:v1:normalized-warning-record'
                 summarySource    = 'codesys-persistent.compile_project'
-                warningSignatures = @(
-                    [ordered]@{ sha256 = ('C' * 64); occurrences = 9 }
-                )
+                warningSignatures = @(Get-FixtureWarningSignatures)
             }
             verificationOk       = $VerificationOk
             appliedReadbackOk    = $AppliedReadbackOk
@@ -476,12 +587,13 @@ function New-RunnerEvidence {
                 mappingConsistent             = $true
                 readbackVerified              = $true
                 recoverableBaselineVerified   = $true
-                warningSignaturesReviewed     = $true
+                warningSignaturesReviewed     = $WarningSignaturesReviewed
                 existingSessionReused         = $true
                 pleOrMcpStartedByAction        = $false
                 directWatcherIpcUsed           = $false
                 symbolPostProcessingVerified  = (-not $RequiresSecondExport -and -not $RequiresCpStudioChange)
             }
+            semanticProofs = New-SemanticProofs -Verified $true
         }
     }
     if ($ResultStatus -eq 'succeeded') {
@@ -514,7 +626,8 @@ function New-ProducerBackedEvidence {
         [Parameter(Mandatory = $true)][string]$ProducerPath,
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$ObservationPath,
-        [Parameter(Mandatory = $true)][object]$Action
+        [Parameter(Mandatory = $true)][object]$Action,
+        [Parameter(Mandatory = $false)][bool]$WarningSignaturesReviewed = $true
     )
 
     $actionCreatedAt = [DateTime]::Parse([string]$Action.payload.createdAtUtc).ToUniversalTime()
@@ -542,7 +655,7 @@ function New-ProducerBackedEvidence {
         actionRequestSha256 = $Action.sha256
         status              = 'succeeded'
         completedAtUtc      = $completedAt.ToString('o')
-        capabilitiesInvoked = @('get_codesys_status', 'compile_project')
+        capabilitiesInvoked = @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
         session             = [ordered]@{
             state             = 'ready'
             mode              = 'persistent'
@@ -589,12 +702,13 @@ function New-ProducerBackedEvidence {
                 mappingConsistent            = $true
                 readbackVerified             = $true
                 recoverableBaselineVerified  = $true
-                warningSignaturesReviewed    = $true
+                warningSignaturesReviewed    = $WarningSignaturesReviewed
                 existingSessionReused        = $true
                 pleOrMcpStartedByAction       = $false
                 directWatcherIpcUsed          = $false
                 symbolPostProcessingVerified = $true
             }
+            semanticProofs = New-SemanticProofs -Verified $true
         }
     }
     Write-JsonFile -Path $ObservationPath -Value $observation
@@ -612,6 +726,45 @@ $consumer = Join-Path $repositoryRoot 'scripts\cpstudio\Invoke-PostExportEnginee
 $producer = Join-Path $repositoryRoot 'scripts\cpstudio\New-PostExportRunnerEvidence.ps1'
 Assert-True -Condition ([System.IO.File]::Exists($consumer)) -Message "Stage2 consumer is missing: $consumer"
 Assert-True -Condition ([System.IO.File]::Exists($producer)) -Message "Runner evidence producer is missing: $producer"
+$consumerSource = [System.IO.File]::ReadAllText($consumer)
+Assert-True -Condition $consumerSource.Contains('$evidenceText = $strictUtf8.GetString($evidenceBytes)') -Message 'Stage2 review evidence text is not decoded from the bounded byte snapshot.'
+Assert-True -Condition $consumerSource.Contains('$algorithm.ComputeHash($evidenceBytes)') -Message 'Stage2 review evidence SHA-256 is not computed from the validated byte snapshot.'
+$contractTokens = $null
+$contractErrors = $null
+$contractAst = [System.Management.Automation.Language.Parser]::ParseFile($consumer, [ref]$contractTokens, [ref]$contractErrors)
+foreach ($functionName in @('Assert-WarningBaselineReference', 'Assert-SemanticBaselineReference')) {
+    $contractFunction = $contractAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName }, $true) | Select-Object -First 1
+    Assert-True -Condition $contractFunction.Extent.Text.Contains('$actualEvidenceSha = Assert-IndependentHumanReviewEvidence') -Message "Stage2 $functionName does not bind the review evidence hash returned by the snapshot validator."
+    Assert-True -Condition (-not $contractFunction.Extent.Text.Contains('$actualEvidenceSha = (Get-FileHash -LiteralPath $evidencePath')) -Message "Stage2 $functionName re-reads review evidence after validating its byte snapshot."
+}
+Import-FunctionsFromScript -Path $consumer -Names @(
+    'ConvertFrom-JsonPreservingStrings',
+    'Assert-JsonArrayProperty',
+    'Add-CanonicalJsonString',
+    'Add-CanonicalJsonValue',
+    'Get-CanonicalJsonElementText',
+    'Get-CanonicalJsonElementSha256'
+)
+$vectorPath = Join-Path $repositoryRoot 'ctrlx-ai-coding\patches\codesys-mcp-persistent-crlf\semantic-canonical-vectors.json'
+if (-not [System.IO.File]::Exists($vectorPath)) {
+    $vectorPath = Join-Path $PSScriptRoot 'semantic-canonical-vectors.json'
+}
+$vectorDocument = Read-JsonFile -Path $vectorPath
+$vector = @($vectorDocument.vectors)[0]
+Assert-True -Condition ((Get-CanonicalJsonElementText -Element $vector.symbolPayloadInput) -eq [string]$vector.expectedSymbolPayloadCanonicalJson) -Message 'Stage2 canonical JSON differs from the shared Unicode/emoji vector.'
+Assert-True -Condition ((Get-CanonicalJsonElementSha256 -Element $vector.symbolPayloadInput) -eq [string]$vector.expectedSymbolPayloadSha256) -Message 'Stage2 canonical SHA-256 differs from the shared Unicode/emoji vector.'
+Assert-True -Condition ((Get-CanonicalJsonElementSha256 -Element $vector.canonicalFactsInput.mapping) -eq [string]$vector.expectedMappingSha256) -Message 'Stage2 mapping SHA-256 differs from the shared vector.'
+Assert-True -Condition ((Get-CanonicalJsonElementSha256 -Element $vector.canonicalFactsInput.symbolConfig) -eq [string]$vector.expectedSymbolConfigSha256) -Message 'Stage2 Symbol SHA-256 differs from the shared vector.'
+Assert-True -Condition ((Get-CanonicalJsonElementSha256 -Element $vector.canonicalFactsInput) -eq [string]$vector.expectedSnapshotSha256) -Message 'Stage2 snapshot SHA-256 differs from the shared vector.'
+foreach ($json in @('{"outer":{"probe":[]}}', '{"outer":{"probe":[1]}}', '{"outer":{"probe":[1,2]}}')) {
+    Assert-JsonArrayProperty -RawJson $json -PropertyPath @('outer', 'probe') -Context 'Stage2 array-shape vector'
+}
+foreach ($json in @('{"outer":{"probe":null}}', '{"outer":{"probe":{}}}')) {
+    $shapeRejected = $false
+    try { Assert-JsonArrayProperty -RawJson $json -PropertyPath @('outer', 'probe') -Context 'Stage2 array-shape vector' }
+    catch { $shapeRejected = $true }
+    Assert-True -Condition $shapeRejected -Message "Stage2 accepted a non-array JSON shape: $json"
+}
 
 $temporaryBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\', '/')
 $testRoot = Join-Path $temporaryBase ('mcp-cpstudio-stage2-selftest-' + [guid]::NewGuid().ToString('N'))
@@ -667,6 +820,88 @@ tools:
   plc_engineering_profile: 'ctrlX PLC 2.6.8'
 "@
 
+    $warningReviewPath = Join-Path $engineeringRoot 'docs\reviews\warning-baseline-review.md'
+    Write-Utf8NoBom -Path $warningReviewPath -Text "# Warning baseline review`n`nFixture warning signatures reviewed.`n"
+    $warningBaselinePath = Join-Path $engineeringRoot 'config\warning-signature-baseline.json'
+    $warningBaselineDocument = [ordered]@{
+        schemaVersion      = 1
+        kind               = 'ctrlx-opcon-warning-signature-baseline'
+        project            = [ordered]@{
+            plcProjectRelativePath = 'Plc/Demo_PLC.project'
+            profile                = 'ctrlX PLC 2.6.8'
+        }
+        signatureAlgorithm = 'sha256:v1:normalized-warning-record'
+        signatures         = @(Get-FixtureWarningSignatures)
+        review             = [ordered]@{
+            reviewId       = 'stage2-fixture-review-v1'
+            reviewer       = 'Stage2 Self Test'
+            reviewedAtUtc  = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')
+            evidencePath   = 'docs/reviews/warning-baseline-review.md'
+            evidenceSha256 = Get-Sha256 -Path $warningReviewPath
+        }
+    }
+    Write-JsonFile -Path $warningBaselinePath -Value $warningBaselineDocument
+
+    $semanticScopePath = Join-Path $engineeringRoot 'config\engineering-semantic-scope.json'
+    $semanticScopeDocument = [ordered]@{
+        schemaVersion = 1
+        kind = 'ctrlx-opcon-engineering-semantic-scope'
+        project = [ordered]@{ plcProjectRelativePath = 'Plc/Demo_PLC.project'; profile = 'ctrlX PLC 2.6.8' }
+        mappingScopes = @(
+            [ordered]@{ devicePath = 'Device/Realtime_Data/DemoMaster'; recursive = $true; includeAllMappableChannels = $true }
+        )
+        symbolApplicationPath = 'Device/Plc Logic/Application'
+    }
+    Write-JsonFile -Path $semanticScopePath -Value $semanticScopeDocument
+    $semanticReviewPath = Join-Path $engineeringRoot 'docs\reviews\engineering-semantic-review.md'
+    Write-Utf8NoBom -Path $semanticReviewPath -Text "# Engineering semantic review`n`nFixture semantic facts reviewed.`n"
+    $semanticRecords = @(
+        [ordered]@{
+            recordKind = 'scope-channel'; scopeIndex = 0; scopeDevicePath = 'Device/Realtime_Data/DemoMaster'; relativeDevicePath = 'A'
+            deviceIndexPath = '0/0'; deviceName = 'DemoA'; sourceKind = 'tree-channel'; channelIdentity = 'z-channel'
+            channelName = 'Input A'; bindingSource = 'connector'; actualVariable = 'Application.Peripherals.A'
+        },
+        [ordered]@{
+            recordKind = 'scope-channel'; scopeIndex = 0; scopeDevicePath = 'Device/Realtime_Data/DemoMaster'; relativeDevicePath = 'Z'
+            deviceIndexPath = '0/1'; deviceName = 'DemoZ'; sourceKind = 'tree-channel'; channelIdentity = 'a-channel'
+            channelName = 'Input Z'; bindingSource = 'connector'; actualVariable = 'Application.Peripherals.Z'
+        }
+    )
+    $semanticRecords[0].channelIdentity = 'same-channel'
+    $semanticRecords[1].channelIdentity = 'same-channel'
+    Assert-True -Condition ([System.StringComparer]::Ordinal.Compare((Get-CanonicalJsonElementText -Element $semanticRecords[0]), (Get-CanonicalJsonElementText -Element $semanticRecords[1])) -lt 0) -Message 'Semantic equal-identity fixture is not in canonical tie-break order.'
+    $semanticMapping = [ordered]@{
+        scopeCount = 1; explicitTargetCount = 0; recordCount = 2; recordLimit = 2048
+        scopes = @([ordered]@{ scopeIndex = 0; devicePath = 'Device/Realtime_Data/DemoMaster'; recursive = $true; rootName = 'DemoMaster'; recordCount = 2 })
+        records = $semanticRecords
+    }
+    $semanticSymbol = [ordered]@{
+        applicationPath = 'Device/Plc Logic/Application'
+        canonicalPayloadByteCount = 2
+        payloadSha256 = Get-Sha256ForText -Text '{}'
+        shapeSummary = [ordered]@{ rootKind = 'object'; topLevelKeys = [object[]]::new(0); objectCount = 1; arrayCount = 0; scalarCount = 0; nodeCount = 1; maxDepth = 0 }
+    }
+    $semanticCanonicalFacts = [ordered]@{ mapping = $semanticMapping; symbolConfig = $semanticSymbol }
+    $semanticBaselinePath = Join-Path $engineeringRoot 'config\engineering-semantic-baseline.json'
+    $semanticBaselineDocument = [ordered]@{
+        schemaVersion = 1
+        kind = 'ctrlx-opcon-engineering-semantic-baseline'
+        project = [ordered]@{ plcProjectRelativePath = 'Plc/Demo_PLC.project'; profile = 'ctrlX PLC 2.6.8' }
+        scopeSha256 = Get-Sha256 -Path $semanticScopePath
+        canonicalFacts = $semanticCanonicalFacts
+        hashes = [ordered]@{
+            algorithm = 'SHA-256'; canonicalization = 'ctrlx-semantic-canonical-json-v1'
+            mappingSha256 = Get-CanonicalJsonElementSha256 -Element $semanticMapping
+            symbolConfigSha256 = Get-CanonicalJsonElementSha256 -Element $semanticSymbol
+            snapshotSha256 = Get-CanonicalJsonElementSha256 -Element $semanticCanonicalFacts
+        }
+        review = [ordered]@{
+            reviewId = 'stage2-semantic-review-v1'; reviewer = 'Stage2 Self Test'; reviewedAtUtc = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')
+            evidencePath = 'docs/reviews/engineering-semantic-review.md'; evidenceSha256 = Get-Sha256 -Path $semanticReviewPath
+        }
+    }
+    Write-JsonFile -Path $semanticBaselinePath -Value $semanticBaselineDocument
+
     $stationBefore = Get-FileFingerprintMap -Root $stationRoot
     $baseTime = [DateTime]::UtcNow.AddMinutes(-10)
 
@@ -687,6 +922,56 @@ tools:
     }
     Assert-True -Condition (-not [string]::IsNullOrWhiteSpace([string]$whatIfResult.operationId)) -Message 'WhatIf did not compute an operationId.'
     Assert-True -Condition ((Get-FileFingerprintMap -Root $operationRoot).Count -eq 0) -Message 'WhatIf wrote an operation file.'
+
+    # Stage2 independently revalidates the review artifact instead of trusting
+    # a Stage1 hash reference. Generated candidates/AI triage stay invalid even
+    # after a neutral rename, and evidence must remain under docs/reviews.
+    $originalWarningReviewText = [System.IO.File]::ReadAllText($warningReviewPath)
+    $originalWarningEvidencePath = [string]$warningBaselineDocument.review.evidencePath
+    $originalWarningEvidenceSha = [string]$warningBaselineDocument.review.evidenceSha256
+    Write-Utf8NoBom -Path $warningReviewPath -Text '{"schemaVersion":1,"kind":"ctrlx-opcon-warning-signature-baseline-candidate","sourceEvidence":{"sha256":"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"}}'
+    $warningBaselineDocument.review.evidenceSha256 = Get-Sha256 -Path $warningReviewPath
+    Write-JsonFile -Path $warningBaselinePath -Value $warningBaselineDocument
+    $candidateReviewAudit = Join-Path $reportRoot 'renamed-candidate-review.json'
+    $null = New-Stage1AuditReport -Path $candidateReviewAudit -RequestId ('renamed-candidate-' + [guid]::NewGuid().ToString('N')) -RequestedAtUtc $baseTime.AddSeconds(1) -EngineeringRoot $engineeringRoot -StationRoot $stationRoot -PlcProject $plcProject
+    $candidateReviewRejected = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        AuditReport = $candidateReviewAudit; EngineeringRoot = $engineeringRoot; OperationRoot = $operationRoot
+    }
+    Assert-True -Condition ($candidateReviewRejected.rejected -and ([string]$candidateReviewRejected.message).Contains('generated baseline candidate or AI triage')) -Message 'Stage2 accepted a renamed baseline candidate as independent review evidence.'
+    Write-Utf8NoBom -Path $warningReviewPath -Text $originalWarningReviewText
+    $warningBaselineDocument.review.evidenceSha256 = $originalWarningEvidenceSha
+    Write-JsonFile -Path $warningBaselinePath -Value $warningBaselineDocument
+
+    $originalSemanticReviewText = [System.IO.File]::ReadAllText($semanticReviewPath)
+    $originalSemanticEvidencePath = [string]$semanticBaselineDocument.review.evidencePath
+    $originalSemanticEvidenceSha = [string]$semanticBaselineDocument.review.evidenceSha256
+    Write-Utf8NoBom -Path $semanticReviewPath -Text "# Engineering semantic review`n`n> AI-generated triage only. This is not independent human evidence.`n"
+    $semanticBaselineDocument.review.evidenceSha256 = Get-Sha256 -Path $semanticReviewPath
+    Write-JsonFile -Path $semanticBaselinePath -Value $semanticBaselineDocument
+    $triageReviewAudit = Join-Path $reportRoot 'renamed-triage-review.json'
+    $null = New-Stage1AuditReport -Path $triageReviewAudit -RequestId ('renamed-triage-' + [guid]::NewGuid().ToString('N')) -RequestedAtUtc $baseTime.AddSeconds(2) -EngineeringRoot $engineeringRoot -StationRoot $stationRoot -PlcProject $plcProject
+    $triageReviewRejected = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        AuditReport = $triageReviewAudit; EngineeringRoot = $engineeringRoot; OperationRoot = $operationRoot
+    }
+    Assert-True -Condition ($triageReviewRejected.rejected -and ([string]$triageReviewRejected.message).Contains('generated baseline candidate or AI triage')) -Message 'Stage2 accepted renamed AI triage as independent review evidence.'
+    Write-Utf8NoBom -Path $semanticReviewPath -Text $originalSemanticReviewText
+    $semanticBaselineDocument.review.evidenceSha256 = $originalSemanticEvidenceSha
+    Write-JsonFile -Path $semanticBaselinePath -Value $semanticBaselineDocument
+
+    $outsideReviewPath = Join-Path $engineeringRoot 'docs\warning-human-signoff.md'
+    Write-Utf8NoBom -Path $outsideReviewPath -Text "# Warning baseline review`n`nFixture warning signatures reviewed.`n"
+    $warningBaselineDocument.review.evidencePath = 'docs/warning-human-signoff.md'
+    $warningBaselineDocument.review.evidenceSha256 = Get-Sha256 -Path $outsideReviewPath
+    Write-JsonFile -Path $warningBaselinePath -Value $warningBaselineDocument
+    $outsideReviewAudit = Join-Path $reportRoot 'outside-reviews.json'
+    $null = New-Stage1AuditReport -Path $outsideReviewAudit -RequestId ('outside-reviews-' + [guid]::NewGuid().ToString('N')) -RequestedAtUtc $baseTime.AddSeconds(3) -EngineeringRoot $engineeringRoot -StationRoot $stationRoot -PlcProject $plcProject
+    $outsideReviewRejected = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        AuditReport = $outsideReviewAudit; EngineeringRoot = $engineeringRoot; OperationRoot = $operationRoot
+    }
+    Assert-True -Condition ($outsideReviewRejected.rejected -and ([string]$outsideReviewRejected.message).Contains('under docs/reviews')) -Message 'Stage2 accepted review evidence outside docs/reviews.'
+    $warningBaselineDocument.review.evidencePath = $originalWarningEvidencePath
+    $warningBaselineDocument.review.evidenceSha256 = $originalWarningEvidenceSha
+    Write-JsonFile -Path $warningBaselinePath -Value $warningBaselineDocument
 
     $pathEscape = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
         OperationId = '..'
@@ -718,6 +1003,15 @@ tools:
     Assert-True -Condition ((Get-FileHash -LiteralPath ([string]$idempotentStart.actionRequestPath) -Algorithm SHA256).Hash -eq [string]$idempotentStart.actionRequestSha256) -Message 'New operation result action hash does not match the immutable action file.'
     $idempotentAction = Get-ActionRequestInfo -Result $idempotentStart -OperationRoot $operationRoot -OperationId $idempotentStart.operationId
     Assert-True -Condition ($idempotentAction.kind -eq 'inspect_and_build') -Message 'Initial action kind is not inspect_and_build.'
+    Assert-True -Condition (@($idempotentAction.payload.preconditions.manifests).Count -eq 3) -Message 'Warning baseline was mixed into the ownership manifests.'
+    Assert-True -Condition ([string]$idempotentAction.payload.preconditions.warningBaseline.state -eq 'reviewed') -Message 'Initial action did not bind the reviewed warning baseline state.'
+    Assert-True -Condition ([string]$idempotentAction.payload.preconditions.warningBaseline.sha256 -eq (Get-Sha256 -Path $warningBaselinePath)) -Message 'Initial action did not bind the reviewed baseline SHA-256.'
+    Assert-True -Condition ([string]$idempotentAction.payload.preconditions.warningBaseline.reviewEvidence.sha256 -eq (Get-Sha256 -Path $warningReviewPath)) -Message 'Initial action did not bind the review evidence SHA-256.'
+    Assert-True -Condition ([string]$idempotentAction.payload.preconditions.semanticSnapshotRequest.path -eq 'config/engineering-semantic-scope.json') -Message 'Initial action did not bind the semantic scope path.'
+    Assert-True -Condition ([string]$idempotentAction.payload.preconditions.semanticSnapshotRequest.sha256 -eq (Get-Sha256 -Path $semanticScopePath)) -Message 'Initial action did not bind the semantic scope SHA-256.'
+    Assert-True -Condition ([string]$idempotentAction.payload.preconditions.semanticBaseline.state -eq 'reviewed') -Message 'Initial action did not bind the reviewed semantic baseline state.'
+    Assert-True -Condition ([string]$idempotentAction.payload.preconditions.semanticBaseline.sha256 -eq (Get-Sha256 -Path $semanticBaselinePath)) -Message 'Initial action did not bind the semantic baseline SHA-256.'
+    Assert-True -Condition ([string]$idempotentAction.payload.preconditions.semanticBaseline.reviewEvidence.sha256 -eq (Get-Sha256 -Path $semanticReviewPath)) -Message 'Initial action did not bind semantic review evidence SHA-256.'
     Assert-True -Condition ($idempotentAction.payload.guardrails.prohibitPleOrMcpStartByAction) -Message 'Action omitted the action-scoped PLE/MCP start prohibition.'
     Assert-True -Condition ($idempotentAction.payload.guardrails.actionProjectGateRequired) -Message 'Action omitted the Broker serialization gate requirement.'
     Assert-True -Condition ($idempotentAction.payload.guardrails.releaseActionProjectGateBeforeTerminalDelivery) -Message 'Action omitted the gate release-before-terminal contract.'
@@ -727,6 +1021,16 @@ tools:
         Assert-True -Condition ($null -eq $idempotentAction.payload.guardrails.PSObject.Properties[$legacyActionField]) -Message "Action retained legacy guardrail '$legacyActionField'."
     }
     Assert-True -Condition ($null -eq $idempotentAction.payload.evidenceContract.PSObject.Properties['requireProjectLeaseReleased']) -Message 'Action retained the legacy evidence lease field.'
+
+    $originalWarningReviewText = [System.IO.File]::ReadAllText($warningReviewPath)
+    Write-Utf8NoBom -Path $warningReviewPath -Text ($originalWarningReviewText + "drift`n")
+    $reviewEvidenceDrift = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        OperationId     = $idempotentStart.operationId
+        EngineeringRoot = $engineeringRoot
+        OperationRoot   = $operationRoot
+    }
+    Assert-True -Condition $reviewEvidenceDrift.rejected -Message 'Stage2 accepted drifted warning-baseline review evidence.'
+    Write-Utf8NoBom -Path $warningReviewPath -Text $originalWarningReviewText
     $operationFilesBeforeRepeat = Get-FileFingerprintMap -Root $operationRoot
     $idempotentRepeat = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
         AuditReport    = $idempotentAudit
@@ -1108,7 +1412,7 @@ tools:
     $cleanProducedEvidence = New-ProducerBackedEvidence -ProducerPath $producer -Path $cleanEvidencePath -ObservationPath $cleanObservationPath -Action $cleanAction
     Assert-True -Condition ([string]$cleanProducedEvidence.actionId -eq [string]$cleanAction.actionId) -Message 'Producer-backed E2E evidence lost the Stage2 action identity.'
     Assert-True -Condition ([string]$cleanProducedEvidence.session.state -eq 'ready') -Message 'Producer-backed E2E evidence lost the ready persistent session identity.'
-    Assert-True -Condition (@($cleanProducedEvidence.capabilitiesInvoked).Count -eq 2) -Message 'Producer-backed E2E evidence did not preserve the exact typed Broker capability set.'
+    Assert-True -Condition (@($cleanProducedEvidence.capabilitiesInvoked).Count -eq 3) -Message 'Producer-backed E2E evidence did not preserve the exact typed Broker capability set.'
     Assert-True -Condition (-not $cleanProducedEvidence.session.pleOwnedByBroker) -Message 'Producer-backed E2E evidence lost the Broker-adopted PLE ownership fact.'
     $cleanEvidenceText = [System.IO.File]::ReadAllText($cleanEvidencePath)
     $utf8WithBom = New-Object System.Text.UTF8Encoding $true
@@ -1593,8 +1897,88 @@ tools:
     }
     Assert-True -Condition (([string]$cpStudioWaiting.status).ToUpperInvariant() -eq 'WAITING_FOR_CPSTUDIO') -Message 'CpStudio-owned change did not enter WAITING_FOR_CPSTUDIO.'
 
+    # The semantic scope remains mandatory, but the first reviewed semantic
+    # baseline is bootstrapped from a real Build + semantic snapshot. Missing
+    # baseline review therefore permits the immutable runner action and then
+    # blocks before DONE.
+    [System.IO.File]::Delete($semanticBaselinePath)
+    $semanticBootstrapAudit = Join-Path $reportRoot 'semantic-bootstrap.json'
+    $null = New-Stage1AuditReport `
+        -Path $semanticBootstrapAudit `
+        -RequestId ('semantic-bootstrap-' + [guid]::NewGuid().ToString('N')) `
+        -RequestedAtUtc ([DateTime]::UtcNow.AddSeconds(-5)) `
+        -EngineeringRoot $engineeringRoot `
+        -StationRoot $stationRoot `
+        -PlcProject $plcProject
+    $semanticBootstrapStart = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+        AuditReport     = $semanticBootstrapAudit
+        EngineeringRoot = $engineeringRoot
+        OperationRoot   = $operationRoot
+    }
+    Assert-True -Condition (([string]$semanticBootstrapStart.status).ToUpperInvariant() -eq 'WAITING_FOR_RUNNER') -Message 'Missing semantic baseline was rejected before the Build/snapshot action.'
+    $semanticBootstrapAction = Get-ActionRequestInfo -Result $semanticBootstrapStart -OperationRoot $operationRoot -OperationId $semanticBootstrapStart.operationId
+    Assert-True -Condition ([string]$semanticBootstrapAction.payload.preconditions.semanticBaseline.state -eq 'missing-bootstrap') -Message 'Semantic bootstrap action did not bind missing-bootstrap state.'
+    Assert-True -Condition (@($semanticBootstrapAction.payload.preconditions.semanticBaseline.PSObject.Properties).Count -eq 2) -Message 'Semantic bootstrap action carried an unreviewed SHA or review-evidence claim.'
+    Assert-True -Condition ([string]$semanticBootstrapAction.payload.preconditions.semanticSnapshotRequest.sha256 -eq (Get-Sha256 -Path $semanticScopePath)) -Message 'Semantic bootstrap action did not bind the current required scope.'
+    $semanticBootstrapEvidencePath = Join-Path $evidenceRoot 'semantic-bootstrap.json'
+    $semanticBootstrapEvidence = New-RunnerEvidence `
+        -Path $semanticBootstrapEvidencePath `
+        -OperationId $semanticBootstrapStart.operationId `
+        -Action $semanticBootstrapAction
+    Assert-True -Condition (@($semanticBootstrapEvidence.capabilitiesInvoked) -contains 'get_ctrlx_semantic_snapshot') -Message 'Semantic bootstrap evidence did not invoke the typed semantic snapshot capability.'
+    $semanticBootstrapExpectedWarnings = @((Read-JsonFile -Path $warningBaselinePath).signatures | ForEach-Object { ([string]$_.sha256) + ':' + ([string]$_.occurrences) } | Sort-Object)
+    $semanticBootstrapActualWarnings = @((Read-JsonFile -Path $semanticBootstrapEvidencePath).result.build.warningSignatures | ForEach-Object { ([string]$_.sha256) + ':' + ([string]$_.occurrences) } | Sort-Object)
+    Assert-True -Condition (($semanticBootstrapExpectedWarnings -join '|') -eq ($semanticBootstrapActualWarnings -join '|')) -Message 'Semantic bootstrap fixture warning signatures drifted before Stage2 validation.'
+    $semanticBootstrapBlocked = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+        OperationId     = $semanticBootstrapStart.operationId
+        EvidencePath    = $semanticBootstrapEvidencePath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot   = $operationRoot
+    }
+    Assert-True -Condition (([string]$semanticBootstrapBlocked.status).ToUpperInvariant() -eq 'BLOCKED') -Message 'Semantic bootstrap Build reached DONE without a reviewed semantic baseline.'
+    $semanticBootstrapOperation = Read-JsonFile -Path (Get-OperationRecordPath -Result $semanticBootstrapBlocked -OperationRoot $operationRoot -OperationId $semanticBootstrapStart.operationId)
+    Assert-True -Condition ([string]$semanticBootstrapOperation.failure.code -eq 'SEMANTIC_BASELINE_REVIEW_REQUIRED') -Message 'Semantic bootstrap did not record the review blocker after Build/snapshot.'
+    Write-JsonFile -Path $semanticBaselinePath -Value $semanticBaselineDocument
+
+    # Bootstrap mode is deliberately executable so the first fresh Build can
+    # produce review material. It must still fail closed before DONE because no
+    # reviewed warning-signature baseline was bound to the immutable action.
+    [System.IO.File]::Delete($warningBaselinePath)
+    $bootstrapAudit = Join-Path $reportRoot 'warning-bootstrap.json'
+    $null = New-Stage1AuditReport `
+        -Path $bootstrapAudit `
+        -RequestId ('warning-bootstrap-' + [guid]::NewGuid().ToString('N')) `
+        -RequestedAtUtc ([DateTime]::UtcNow.AddSeconds(-5)) `
+        -EngineeringRoot $engineeringRoot `
+        -StationRoot $stationRoot `
+        -PlcProject $plcProject
+    $bootstrapStart = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+        AuditReport     = $bootstrapAudit
+        EngineeringRoot = $engineeringRoot
+        OperationRoot   = $operationRoot
+    }
+    Assert-True -Condition (([string]$bootstrapStart.status).ToUpperInvariant() -eq 'WAITING_FOR_RUNNER') -Message 'Missing warning baseline was rejected before the bootstrap Build action.'
+    $bootstrapAction = Get-ActionRequestInfo -Result $bootstrapStart -OperationRoot $operationRoot -OperationId $bootstrapStart.operationId
+    Assert-True -Condition ([string]$bootstrapAction.payload.preconditions.warningBaseline.state -eq 'missing-bootstrap') -Message 'Bootstrap action did not bind missing-bootstrap state.'
+    Assert-True -Condition (@($bootstrapAction.payload.preconditions.warningBaseline.PSObject.Properties).Count -eq 2) -Message 'Bootstrap action carried an unreviewed SHA or review-evidence claim.'
+    $bootstrapEvidencePath = Join-Path $evidenceRoot 'warning-bootstrap.json'
+    $null = New-RunnerEvidence `
+        -Path $bootstrapEvidencePath `
+        -OperationId $bootstrapStart.operationId `
+        -Action $bootstrapAction `
+        -WarningSignaturesReviewed $false
+    $bootstrapBlocked = Invoke-Stage2 -ScriptPath $consumer -Arguments @{
+        OperationId     = $bootstrapStart.operationId
+        EvidencePath    = $bootstrapEvidencePath
+        EngineeringRoot = $engineeringRoot
+        OperationRoot   = $operationRoot
+    }
+    Assert-True -Condition (([string]$bootstrapBlocked.status).ToUpperInvariant() -eq 'BLOCKED') -Message 'Bootstrap Build reached DONE without a reviewed warning baseline.'
+    $bootstrapOperation = Read-JsonFile -Path (Get-OperationRecordPath -Result $bootstrapBlocked -OperationRoot $operationRoot -OperationId $bootstrapStart.operationId)
+    Assert-True -Condition ([string]$bootstrapOperation.failure.code -eq 'WARNING_BASELINE_REVIEW_REQUIRED') -Message 'Bootstrap Build did not record the warning-baseline review blocker.'
+
     Assert-FingerprintMapsEqual -Expected $stationBefore -Actual (Get-FileFingerprintMap -Root $stationRoot) -Context 'Stage2 offline workflow Station'
-    Write-Output 'Post-export Stage2 self-test OK: WhatIf, deterministic operation, producer-contract evidence gate, session/capability/Build contract, producer-to-consumer DONE, manifest ownership, clean/repair/Export2/CpStudio paths, immutable evidence and unchanged Station.'
+    Write-Output 'Post-export Stage2 self-test OK: WhatIf, deterministic operation, immutable reviewed/bootstrap warning baselines, fail-closed review evidence, producer-contract evidence gate, session/capability/Build contract, producer-to-consumer DONE, manifest ownership, clean/repair/Export2/CpStudio paths, immutable evidence and unchanged Station.'
 }
 finally {
     $resolvedTestRoot = [System.IO.Path]::GetFullPath($testRoot)

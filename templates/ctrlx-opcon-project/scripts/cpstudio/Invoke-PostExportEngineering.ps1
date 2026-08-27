@@ -93,6 +93,14 @@ function Get-Sha256ForText {
     }
 }
 
+function Test-JsonInt32 {
+    param([Parameter(Mandatory = $false)][AllowNull()][object]$Value)
+
+    return (($Value -is [int]) -or ($Value -is [long])) -and
+        ([long]$Value -ge [int]::MinValue) -and
+        ([long]$Value -le [int]::MaxValue)
+}
+
 function Get-JsonText {
     param([Parameter(Mandatory = $true)][object]$Value)
 
@@ -103,6 +111,18 @@ function Get-JsonTextSha256 {
     param([Parameter(Mandatory = $true)][object]$Value)
 
     return Get-Sha256ForText -Text (Get-JsonText -Value $Value)
+}
+
+function ConvertFrom-JsonPreservingStrings {
+    param([Parameter(Mandatory = $true)][string]$Json)
+
+    # PowerShell 7.5+ otherwise converts ISO-8601 JSON strings to DateTime and
+    # a later string cast loses the UTC designator and fractional precision.
+    # Windows PowerShell has no DateKind parameter and preserves these strings.
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        return ConvertFrom-Json -InputObject $Json -DateKind String
+    }
+    return ConvertFrom-Json -InputObject $Json
 }
 
 function Read-JsonDocument {
@@ -122,7 +142,7 @@ function Read-JsonDocument {
         if (($raw.Length -gt 0) -and ($raw[0] -eq [char]0xFEFF)) {
             $raw = $raw.Substring(1)
         }
-        $payload = $raw | ConvertFrom-Json
+        $payload = ConvertFrom-JsonPreservingStrings -Json $raw
     }
     catch {
         throw "$Description is not valid JSON: $resolvedPath. $($_.Exception.Message)"
@@ -149,28 +169,160 @@ function Assert-JsonArrayProperty {
         [Parameter(Mandatory = $true)][string]$Context
     )
 
+    $displayPath = $PropertyPath -join '.'
     try {
-        Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
-        $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-        $rawRoot = $serializer.DeserializeObject($RawJson)
+        $desktopEdition = (-not $PSVersionTable.ContainsKey('PSEdition')) -or ($PSVersionTable.PSEdition -eq 'Desktop')
+        if ($desktopEdition) {
+            Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
+            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+            $serializer.MaxJsonLength = [int]::MaxValue
+            $serializer.RecursionLimit = 256
+            $rawValue = $serializer.DeserializeObject($RawJson)
+            foreach ($propertyName in $PropertyPath) {
+                if (($rawValue -isnot [System.Collections.IDictionary]) -or (-not ($rawValue.Keys -contains $propertyName))) {
+                    throw "$Context is missing $displayPath."
+                }
+                $rawValue = $rawValue[$propertyName]
+            }
+        }
+        else {
+            $rawValue = ConvertFrom-JsonPreservingStrings -Json $RawJson
+            foreach ($propertyName in $PropertyPath) {
+                if ($null -eq $rawValue) {
+                    throw "$Context is missing $displayPath."
+                }
+                $property = $rawValue.PSObject.Properties[$propertyName]
+                if ($null -eq $property) {
+                    throw "$Context is missing $displayPath."
+                }
+                $rawValue = $property.Value
+            }
+        }
+        if ($rawValue -isnot [System.Array]) {
+            throw "$Context $displayPath must be a JSON array, not null or an object."
+        }
     }
     catch {
         throw "$Context JSON shape could not be validated. $($_.Exception.Message)"
     }
-    $rawValue = $rawRoot
-    foreach ($propertyName in $PropertyPath) {
-        if (($rawValue -isnot [System.Collections.IDictionary]) -or (-not ($rawValue.Keys -contains $propertyName))) {
-            throw "$Context is missing $($PropertyPath -join '.')."
+}
+
+function Add-CanonicalJsonString {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value,
+        [Parameter(Mandatory = $true)][System.Text.StringBuilder]$Builder
+    )
+
+    [void]$Builder.Append('"')
+    foreach ($character in $Value.ToCharArray()) {
+        switch ([int]$character) {
+            8 { [void]$Builder.Append('\b'); continue }
+            9 { [void]$Builder.Append('\t'); continue }
+            10 { [void]$Builder.Append('\n'); continue }
+            12 { [void]$Builder.Append('\f'); continue }
+            13 { [void]$Builder.Append('\r'); continue }
+            34 { [void]$Builder.Append('\"'); continue }
+            92 { [void]$Builder.Append('\\'); continue }
         }
-        $rawValue = $rawValue[$propertyName]
+        $codeUnit = [int]$character
+        if ($codeUnit -lt 0x20) {
+            [void]$Builder.Append(('\u{0:x4}' -f $codeUnit))
+        }
+        else {
+            [void]$Builder.Append($character)
+        }
     }
-    $displayPath = $PropertyPath -join '.'
-    if ($null -eq $rawValue) {
-        throw "$Context $displayPath must be an array, not null."
+    [void]$Builder.Append('"')
+}
+
+function Add-CanonicalJsonValue {
+    param(
+        [Parameter(Mandatory = $false)][AllowNull()][AllowEmptyString()][object]$Value,
+        [Parameter(Mandatory = $true)][System.Text.StringBuilder]$Builder
+    )
+
+    if ($null -eq $Value) {
+        [void]$Builder.Append('null')
+        return
     }
-    if ($rawValue -isnot [System.Array]) {
-        throw "$Context $displayPath must be a JSON array."
+    if ($Value -is [string] -or $Value -is [char]) {
+        Add-CanonicalJsonString -Value ([string]$Value) -Builder $Builder
+        return
     }
+    if ($Value -is [bool]) {
+        [void]$Builder.Append($(if ([bool]$Value) { 'true' } else { 'false' }))
+        return
+    }
+    if ($Value -is [byte] -or $Value -is [sbyte] -or
+        $Value -is [int16] -or $Value -is [uint16] -or
+        $Value -is [int32] -or $Value -is [uint32] -or
+        $Value -is [int64] -or $Value -is [uint64]) {
+        [void]$Builder.Append(([System.Convert]::ToString($Value, [System.Globalization.CultureInfo]::InvariantCulture)))
+        return
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $names = [System.Collections.Generic.List[string]]::new()
+        foreach ($key in $Value.Keys) { $names.Add([string]$key) }
+        $names.Sort([System.StringComparer]::Ordinal)
+        [void]$Builder.Append('{')
+        for ($index = 0; $index -lt $names.Count; $index++) {
+            if ($index -gt 0) { [void]$Builder.Append(',') }
+            $name = $names[$index]
+            Add-CanonicalJsonString -Value $name -Builder $Builder
+            [void]$Builder.Append(':')
+            Add-CanonicalJsonValue -Value $Value[$name] -Builder $Builder
+        }
+        [void]$Builder.Append('}')
+        return
+    }
+    if ($Value -is [System.Array] -or
+        (($Value -is [System.Collections.IList]) -and ($Value -isnot [string]))) {
+        [void]$Builder.Append('[')
+        for ($index = 0; $index -lt $Value.Count; $index++) {
+            if ($index -gt 0) { [void]$Builder.Append(',') }
+            Add-CanonicalJsonValue -Value $Value[$index] -Builder $Builder
+        }
+        [void]$Builder.Append(']')
+        return
+    }
+    $properties = @($Value.PSObject.Properties | Where-Object { $_.MemberType -in @('NoteProperty', 'Property', 'AliasProperty') })
+    if ($properties.Count -gt 0) {
+        $propertyByName = @{}
+        $names = [System.Collections.Generic.List[string]]::new()
+        foreach ($property in $properties) {
+            if ($propertyByName.ContainsKey($property.Name)) {
+                throw "Canonical JSON object contains a duplicate property: $($property.Name)"
+            }
+            $propertyByName[$property.Name] = $property.Value
+            $names.Add($property.Name)
+        }
+        $names.Sort([System.StringComparer]::Ordinal)
+        [void]$Builder.Append('{')
+        for ($index = 0; $index -lt $names.Count; $index++) {
+            if ($index -gt 0) { [void]$Builder.Append(',') }
+            $name = $names[$index]
+            Add-CanonicalJsonString -Value $name -Builder $Builder
+            [void]$Builder.Append(':')
+            Add-CanonicalJsonValue -Value $propertyByName[$name] -Builder $Builder
+        }
+        [void]$Builder.Append('}')
+        return
+    }
+    throw "Canonical JSON contains unsupported value type: $($Value.GetType().FullName)"
+}
+
+function Get-CanonicalJsonElementText {
+    param([Parameter(Mandatory = $false)][AllowNull()][AllowEmptyString()][object]$Element)
+
+    $builder = [System.Text.StringBuilder]::new()
+    Add-CanonicalJsonValue -Value $Element -Builder $builder
+    return $builder.ToString()
+}
+
+function Get-CanonicalJsonElementSha256 {
+    param([Parameter(Mandatory = $false)][AllowNull()][AllowEmptyString()][object]$Element)
+
+    return Get-Sha256ForText -Text (Get-CanonicalJsonElementText -Element $Element)
 }
 
 function Get-PropertyValue {
@@ -265,6 +417,101 @@ function Test-HexSha256 {
     param([Parameter(Mandatory = $false)][string]$Value)
 
     return (-not [string]::IsNullOrWhiteSpace($Value)) -and ($Value -match '^[A-Fa-f0-9]{64}$')
+}
+
+function Assert-IndependentHumanReviewEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string]$EngineeringRoot,
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$AbsolutePath,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $normalizedRelativePath = $RelativePath.Replace('\', '/')
+    if (-not $normalizedRelativePath.StartsWith('docs/reviews/', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Context must be a separate independent human review artifact under docs/reviews."
+    }
+
+    $leafName = [System.IO.Path]::GetFileName($normalizedRelativePath)
+    if ([string]::IsNullOrWhiteSpace($leafName) -or
+        $leafName.Equals('README.md', [System.StringComparison]::OrdinalIgnoreCase) -or
+        ($leafName -match '(?i)(candidate|triage)')) {
+        throw "$Context must not point to a baseline candidate, AI triage or reviews index."
+    }
+
+    $maximumEvidenceBytes = 256 * 1024
+    try {
+        $stream = New-Object System.IO.FileStream(
+            $AbsolutePath,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::Read
+        )
+        try {
+            $buffer = New-Object byte[] ($maximumEvidenceBytes + 1)
+            $bytesRead = 0
+            while ($bytesRead -lt $buffer.Length) {
+                $count = $stream.Read($buffer, $bytesRead, ($buffer.Length - $bytesRead))
+                if ($count -eq 0) {
+                    break
+                }
+                $bytesRead += $count
+            }
+        }
+        finally {
+            $stream.Dispose()
+        }
+        if (($bytesRead -lt 1) -or ($bytesRead -gt $maximumEvidenceBytes)) {
+            throw "$Context must be a non-empty UTF-8 review artifact no larger than 256 KiB."
+        }
+        $evidenceBytes = New-Object byte[] $bytesRead
+        [System.Array]::Copy($buffer, 0, $evidenceBytes, 0, $bytesRead)
+        $strictUtf8 = New-Object System.Text.UTF8Encoding $false, $true
+        $evidenceText = $strictUtf8.GetString($evidenceBytes)
+    }
+    catch {
+        if ($_.Exception.Message -like "$Context must be a non-empty*") {
+            throw
+        }
+        throw "$Context must be a valid UTF-8 human review artifact."
+    }
+
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $evidenceSha = ([System.BitConverter]::ToString($algorithm.ComputeHash($evidenceBytes))).Replace('-', '')
+    }
+    finally {
+        $algorithm.Dispose()
+    }
+
+    $generatedArtifactPatterns = @(
+        '(?i)ctrlx-opcon-(?:warning-signature|engineering-semantic)-baseline-candidate',
+        '(?i)"state"\s*:\s*"pending-human-review"',
+        '(?i)"automaticPromotionAllowed"\s*:',
+        '(?i)"targetBaselinePath"\s*:',
+        '(?i)"sourceEvidence"\s*:',
+        '(?i)\bAI-generated\s+triage\b',
+        '(?i)\b(?:not|neither)\s+independent\s+human\s+evidence\b'
+    )
+    foreach ($pattern in $generatedArtifactPatterns) {
+        if ($evidenceText -match $pattern) {
+            throw "$Context is a generated baseline candidate or AI triage, not independent human review evidence."
+        }
+    }
+
+    $reviewsRoot = [System.IO.Path]::GetFullPath((Join-Path $EngineeringRoot 'docs\reviews'))
+    if ([System.IO.Directory]::Exists($reviewsRoot)) {
+        foreach ($knownGeneratedArtifact in Get-ChildItem -LiteralPath $reviewsRoot -File -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -match '(?i)(candidate|triage)'
+        }) {
+            if ((-not $knownGeneratedArtifact.FullName.Equals($AbsolutePath, [System.StringComparison]::OrdinalIgnoreCase)) -and
+                ((Get-FileHash -LiteralPath $knownGeneratedArtifact.FullName -Algorithm SHA256).Hash -eq $evidenceSha)) {
+                throw "$Context is a renamed copy of a generated baseline candidate or AI triage."
+            }
+        }
+    }
+
+    return $evidenceSha
 }
 
 function Write-AtomicJson {
@@ -466,7 +713,8 @@ function Assert-NoOnlineCapabilities {
     $prohibitedPattern = '(?i)(connect[_-]?to[_-]?device|download[_-]?to[_-]?device|start[_-]?stop|write[_-]?variable|read[_-]?variable|monitor[_-]?variables|force|set[_-]?simulation|online|launch[_-]?(codesys|ple|mcp)|watcher[_-]?ipc)'
     $approvedOfflineCapabilities = @(
         'get_codesys_status',
-        'compile_project'
+        'compile_project',
+        'get_ctrlx_semantic_snapshot'
     )
     foreach ($capability in @($capabilityProperty.Value)) {
         if ($null -eq $capability) {
@@ -480,6 +728,35 @@ function Assert-NoOnlineCapabilities {
         }
         if ($approvedOfflineCapabilities -notcontains [string]$capability) {
             throw "Runner evidence reports an unapproved offline capability: $capability"
+        }
+    }
+}
+
+function Assert-SemanticProofSet {
+    param(
+        [Parameter(Mandatory = $true)][object]$Proofs,
+        [Parameter(Mandatory = $true)][bool]$RequireVerified,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $proofNames = @('ownership', 'readback', 'recoverableBaseline', 'warnings', 'semanticBaseline', 'mapping', 'symbolPostProcessing')
+    Assert-ExactPropertySet -Object $Proofs -ExpectedNames (@('contractVersion') + $proofNames) -Context $Context
+    $contractVersion = Get-PropertyValue -Object $Proofs -Name 'contractVersion'
+    if ((-not (Test-JsonInt32 -Value $contractVersion)) -or ([int]$contractVersion -ne 1)) {
+        throw "$Context contractVersion must be 1."
+    }
+    foreach ($proofName in $proofNames) {
+        $proof = Get-PropertyValue -Object $Proofs -Name $proofName
+        if ($null -eq $proof) {
+            throw "$Context is missing '$proofName'."
+        }
+        $proofVersion = Get-PropertyValue -Object $proof -Name 'contractVersion'
+        if ((-not (Test-JsonInt32 -Value $proofVersion)) -or ([int]$proofVersion -ne 1)) {
+            throw "$Context '$proofName' contractVersion must be 1."
+        }
+        $verified = Get-BooleanValue -Object $proof -Name 'verified' -Required -Context "$Context '$proofName'"
+        if ($RequireVerified -and (-not $verified)) {
+            throw "$Context '$proofName' is not verified."
         }
     }
 }
@@ -552,12 +829,453 @@ function Assert-FingerprintRecordsCurrent {
     }
 }
 
+function Assert-WarningBaselineReference {
+    param(
+        [Parameter(Mandatory = $true)][object]$Reference,
+        [Parameter(Mandatory = $true)][string]$EngineeringRoot,
+        [Parameter(Mandatory = $true)][string]$StationRoot,
+        [Parameter(Mandatory = $true)][string]$PlcProject,
+        [Parameter(Mandatory = $true)][string]$Profile,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $state = Get-RequiredString -Object $Reference -Name 'state' -Context $Context
+    $relativeBaselinePath = (Get-RequiredString -Object $Reference -Name 'path' -Context $Context).Replace('\', '/')
+    if ($relativeBaselinePath -ne 'config/warning-signature-baseline.json') {
+        throw "$Context must use config/warning-signature-baseline.json."
+    }
+    $baselinePath = [System.IO.Path]::GetFullPath((Join-Path $EngineeringRoot $relativeBaselinePath))
+    $null = Assert-PathInsideRoot -Root $EngineeringRoot -Path $baselinePath -Description $Context
+
+    if ($state -eq 'missing-bootstrap') {
+        Assert-ExactPropertySet -Object $Reference -ExpectedNames @('state', 'path') -Context $Context
+        if ([System.IO.File]::Exists($baselinePath)) {
+            throw "$Context was bound as missing-bootstrap, but the warning baseline now exists. Create a new Stage1 report/action."
+        }
+        return
+    }
+    if ($state -ne 'reviewed') {
+        throw "$Context has an unsupported state: $state"
+    }
+
+    Assert-ExactPropertySet `
+        -Object $Reference `
+        -ExpectedNames @('state', 'path', 'sha256', 'reviewEvidence') `
+        -Context $Context
+    $expectedBaselineSha = Get-RequiredString -Object $Reference -Name 'sha256' -Context $Context
+    if (-not (Test-HexSha256 -Value $expectedBaselineSha)) {
+        throw "$Context has an invalid baseline SHA-256."
+    }
+    if (-not [System.IO.File]::Exists($baselinePath)) {
+        throw "$Context reviewed baseline file is missing: $relativeBaselinePath"
+    }
+    $baselineDocument = Read-JsonDocument -Path $baselinePath -Description 'Reviewed warning signature baseline'
+    if (-not $baselineDocument.sha256.Equals($expectedBaselineSha, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Context reviewed baseline SHA-256 changed."
+    }
+    $baseline = $baselineDocument.payload
+    Assert-NoSensitiveEvidence -Value $baseline -Path '$.warningBaseline'
+    Assert-ExactPropertySet `
+        -Object $baseline `
+        -ExpectedNames @('schemaVersion', 'kind', 'project', 'signatureAlgorithm', 'signatures', 'review') `
+        -Context 'Reviewed warning signature baseline'
+    if (([int](Get-PropertyValue -Object $baseline -Name 'schemaVersion' -DefaultValue 0) -ne 1) -or
+        ((Get-RequiredString -Object $baseline -Name 'kind' -Context 'Reviewed warning signature baseline') -ne 'ctrlx-opcon-warning-signature-baseline') -or
+        ((Get-RequiredString -Object $baseline -Name 'signatureAlgorithm' -Context 'Reviewed warning signature baseline') -ne 'sha256:v1:normalized-warning-record')) {
+        throw 'Reviewed warning signature baseline identity or signature algorithm is unsupported.'
+    }
+
+    $baselineProject = Get-PropertyValue -Object $baseline -Name 'project'
+    Assert-ExactPropertySet `
+        -Object $baselineProject `
+        -ExpectedNames @('plcProjectRelativePath', 'profile') `
+        -Context 'Reviewed warning signature baseline project'
+    $plcRelativePath = Get-RelativePathInsideRoot -Root $StationRoot -Path $PlcProject -Description 'Configured PLC project'
+    if (((Get-RequiredString -Object $baselineProject -Name 'plcProjectRelativePath' -Context 'Reviewed warning signature baseline project').Replace('\', '/') -ne $plcRelativePath) -or
+        ((Get-RequiredString -Object $baselineProject -Name 'profile' -Context 'Reviewed warning signature baseline project') -ne $Profile)) {
+        throw 'Reviewed warning signature baseline project/profile does not match this operation.'
+    }
+
+    Assert-JsonArrayProperty -RawJson $baselineDocument.raw -PropertyPath @('signatures') -Context 'Reviewed warning signature baseline'
+    $seenSignatures = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($signature in @(Get-PropertyValue -Object $baseline -Name 'signatures' -DefaultValue @())) {
+        Assert-ExactPropertySet -Object $signature -ExpectedNames @('sha256', 'occurrences') -Context 'Reviewed warning baseline signature'
+        $signatureSha = Get-RequiredString -Object $signature -Name 'sha256' -Context 'Reviewed warning baseline signature'
+        if (-not (Test-HexSha256 -Value $signatureSha)) {
+            throw 'Reviewed warning baseline contains an invalid warning signature SHA-256.'
+        }
+        if ($signatureSha.Equals('B801B38B18AAA422A0A34B3BDB867CD5F038C46AD5135A73E432AF0C58C86D9B', [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Reviewed warning baseline contains the PLE warning-output truncation sentinel and cannot represent a complete warning population.'
+        }
+        if (-not $seenSignatures.Add($signatureSha)) {
+            throw "Reviewed warning baseline contains a duplicate warning signature: $signatureSha"
+        }
+        $occurrencesValue = Get-PropertyValue -Object $signature -Name 'occurrences'
+        if (($occurrencesValue -isnot [int]) -and ($occurrencesValue -isnot [long])) {
+            throw 'Reviewed warning baseline signature occurrences must be an integer.'
+        }
+        if ([long]$occurrencesValue -lt 1) {
+            throw 'Reviewed warning baseline signature occurrences must be at least 1.'
+        }
+    }
+
+    $review = Get-PropertyValue -Object $baseline -Name 'review'
+    Assert-ExactPropertySet `
+        -Object $review `
+        -ExpectedNames @('reviewId', 'reviewer', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256') `
+        -Context 'Reviewed warning signature baseline review'
+    foreach ($requiredReviewString in @('reviewId', 'reviewer', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256')) {
+        $null = Get-RequiredString -Object $review -Name $requiredReviewString -Context 'Reviewed warning signature baseline review'
+    }
+    $reviewedAt = [DateTime]::MinValue
+    if ((-not [DateTime]::TryParse([string]$review.reviewedAtUtc, [ref]$reviewedAt)) -or
+        ($reviewedAt.ToUniversalTime() -gt [DateTime]::UtcNow.AddMinutes(5))) {
+        throw 'Reviewed warning signature baseline reviewedAtUtc is invalid or unreasonably far in the future.'
+    }
+
+    $reviewReference = Get-PropertyValue -Object $Reference -Name 'reviewEvidence'
+    Assert-ExactPropertySet -Object $reviewReference -ExpectedNames @('path', 'sha256') -Context "$Context reviewEvidence"
+    $evidenceRelativePath = (Get-RequiredString -Object $reviewReference -Name 'path' -Context "$Context reviewEvidence").Replace('\', '/')
+    $expectedEvidenceSha = Get-RequiredString -Object $reviewReference -Name 'sha256' -Context "$Context reviewEvidence"
+    if ([System.IO.Path]::IsPathRooted($evidenceRelativePath) -or (-not (Test-HexSha256 -Value $expectedEvidenceSha))) {
+        throw "$Context reviewEvidence path or SHA-256 is invalid."
+    }
+    $evidencePath = [System.IO.Path]::GetFullPath((Join-Path $EngineeringRoot $evidenceRelativePath))
+    $safeEvidenceRelativePath = Get-RelativePathInsideRoot -Root $EngineeringRoot -Path $evidencePath -Description "$Context reviewEvidence"
+    if (($safeEvidenceRelativePath -ne $evidenceRelativePath) -or ($safeEvidenceRelativePath -eq $relativeBaselinePath)) {
+        throw "$Context reviewEvidence path escapes EngineeringRoot, is not normalized, or points to the baseline itself."
+    }
+    if (-not [System.IO.File]::Exists($evidencePath)) {
+        throw "$Context review evidence file is missing: $evidenceRelativePath"
+    }
+    $actualEvidenceSha = Assert-IndependentHumanReviewEvidence `
+        -EngineeringRoot $EngineeringRoot `
+        -RelativePath $safeEvidenceRelativePath `
+        -AbsolutePath $evidencePath `
+        -Context "$Context review evidence"
+    if (-not $actualEvidenceSha.Equals($expectedEvidenceSha, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Context review evidence SHA-256 changed."
+    }
+    if ((([string]$review.evidencePath).Replace('\', '/') -ne $evidenceRelativePath) -or
+        (-not ([string]$review.evidenceSha256).Equals($expectedEvidenceSha, [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw "$Context reviewEvidence does not match the reviewed baseline document."
+    }
+}
+
+function Assert-WarningBaselineReferencesEqual {
+    param(
+        [Parameter(Mandatory = $true)][object]$Expected,
+        [Parameter(Mandatory = $true)][object]$Actual,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $expectedSha = Get-JsonTextSha256 -Value $Expected
+    $actualSha = Get-JsonTextSha256 -Value $Actual
+    if (-not $expectedSha.Equals($actualSha, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Context warning baseline binding changed. Start a new Stage1 operation."
+    }
+}
+
+function Assert-SemanticScopeReference {
+    param(
+        [Parameter(Mandatory = $true)][object]$Reference,
+        [Parameter(Mandatory = $true)][string]$EngineeringRoot,
+        [Parameter(Mandatory = $true)][string]$StationRoot,
+        [Parameter(Mandatory = $true)][string]$PlcProject,
+        [Parameter(Mandatory = $true)][string]$Profile,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    Assert-ExactPropertySet -Object $Reference -ExpectedNames @('path', 'sha256') -Context $Context
+    $relativePath = (Get-RequiredString -Object $Reference -Name 'path' -Context $Context).Replace('\', '/')
+    $expectedSha = Get-RequiredString -Object $Reference -Name 'sha256' -Context $Context
+    if (($relativePath -ne 'config/engineering-semantic-scope.json') -or
+        (-not (Test-HexSha256 -Value $expectedSha))) {
+        throw "$Context path/SHA-256 is invalid."
+    }
+    $path = [System.IO.Path]::GetFullPath((Join-Path $EngineeringRoot $relativePath))
+    $null = Assert-PathInsideRoot -Root $EngineeringRoot -Path $path -Description $Context
+    $document = Read-JsonDocument -Path $path -Description 'Engineering semantic scope'
+    if (-not $document.sha256.Equals($expectedSha, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Context SHA-256 changed. Create a new Stage1 report/action."
+    }
+    $scope = $document.payload
+    Assert-NoSensitiveEvidence -Value $scope -Path '$.semanticSnapshotRequest'
+    Assert-ExactPropertySet `
+        -Object $scope `
+        -ExpectedNames @('schemaVersion', 'kind', 'project', 'mappingScopes', 'symbolApplicationPath') `
+        -Context 'Engineering semantic scope'
+    if ((-not (Test-JsonInt32 -Value $scope.schemaVersion)) -or
+        ([int]$scope.schemaVersion -ne 1) -or
+        ((Get-RequiredString -Object $scope -Name 'kind' -Context 'Engineering semantic scope') -ne 'ctrlx-opcon-engineering-semantic-scope')) {
+        throw 'Engineering semantic scope identity is unsupported.'
+    }
+    $scopeProject = Get-PropertyValue -Object $scope -Name 'project'
+    Assert-ExactPropertySet -Object $scopeProject -ExpectedNames @('plcProjectRelativePath', 'profile') -Context 'Engineering semantic scope project'
+    $plcRelativePath = Get-RelativePathInsideRoot -Root $StationRoot -Path $PlcProject -Description 'Configured PLC project'
+    if (((Get-RequiredString -Object $scopeProject -Name 'plcProjectRelativePath' -Context 'Engineering semantic scope project').Replace('\', '/') -ne $plcRelativePath) -or
+        ((Get-RequiredString -Object $scopeProject -Name 'profile' -Context 'Engineering semantic scope project') -ne $Profile)) {
+        throw 'Engineering semantic scope project/profile does not match this operation.'
+    }
+    Assert-JsonArrayProperty -RawJson $document.raw -PropertyPath @('mappingScopes') -Context 'Engineering semantic scope'
+    $mappingScopes = @(Get-PropertyValue -Object $scope -Name 'mappingScopes' -DefaultValue @())
+    if (($mappingScopes.Count -lt 1) -or ($mappingScopes.Count -gt 64)) {
+        throw 'Engineering semantic scope must contain 1..64 mappingScopes entries.'
+    }
+    $seenDevicePaths = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::Ordinal)
+    foreach ($mappingScope in $mappingScopes) {
+        Assert-ExactPropertySet `
+            -Object $mappingScope `
+            -ExpectedNames @('devicePath', 'recursive', 'includeAllMappableChannels') `
+            -Context 'Engineering semantic mapping scope'
+        $devicePath = Get-RequiredString -Object $mappingScope -Name 'devicePath' -Context 'Engineering semantic mapping scope'
+        if (($devicePath.Length -gt 1024) -or
+            ($devicePath -match '[\x00-\x1F]') -or
+            (-not $seenDevicePaths.Add($devicePath)) -or
+            (-not (Get-BooleanValue -Object $mappingScope -Name 'recursive' -Required -Context 'Engineering semantic mapping scope')) -or
+            (-not (Get-BooleanValue -Object $mappingScope -Name 'includeAllMappableChannels' -Required -Context 'Engineering semantic mapping scope'))) {
+            throw 'Engineering semantic mapping scope is unsafe, duplicated or not recursive/all-channel.'
+        }
+    }
+    $symbolApplicationPath = Get-RequiredString -Object $scope -Name 'symbolApplicationPath' -Context 'Engineering semantic scope'
+    if (($symbolApplicationPath.Length -gt 1024) -or
+        ($symbolApplicationPath -match '[\x00-\x1F]') -or
+        @($symbolApplicationPath.Split('/') | Where-Object { $_ -in @('.', '..') }).Count -gt 0) {
+        throw 'Engineering semantic symbolApplicationPath is unsafe.'
+    }
+    return $scope
+}
+
+function Assert-SemanticBaselineReference {
+    param(
+        [Parameter(Mandatory = $true)][object]$Reference,
+        [Parameter(Mandatory = $true)][object]$ScopeReference,
+        [Parameter(Mandatory = $true)][string]$EngineeringRoot,
+        [Parameter(Mandatory = $true)][string]$StationRoot,
+        [Parameter(Mandatory = $true)][string]$PlcProject,
+        [Parameter(Mandatory = $true)][string]$Profile,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $state = Get-RequiredString -Object $Reference -Name 'state' -Context $Context
+    $relativePath = (Get-RequiredString -Object $Reference -Name 'path' -Context $Context).Replace('\', '/')
+    if ($relativePath -ne 'config/engineering-semantic-baseline.json') {
+        throw "$Context must use config/engineering-semantic-baseline.json."
+    }
+    $path = [System.IO.Path]::GetFullPath((Join-Path $EngineeringRoot $relativePath))
+    $null = Assert-PathInsideRoot -Root $EngineeringRoot -Path $path -Description $Context
+    if ($state -eq 'missing-bootstrap') {
+        Assert-ExactPropertySet -Object $Reference -ExpectedNames @('state', 'path') -Context $Context
+        if ([System.IO.File]::Exists($path)) {
+            throw "$Context was bound as missing-bootstrap, but the baseline now exists. Create a new Stage1 report/action."
+        }
+        return
+    }
+    if ($state -ne 'reviewed') {
+        throw "$Context has an unsupported state: $state"
+    }
+
+    Assert-ExactPropertySet -Object $Reference -ExpectedNames @('state', 'path', 'sha256', 'reviewEvidence') -Context $Context
+    $expectedSha = Get-RequiredString -Object $Reference -Name 'sha256' -Context $Context
+    if (-not (Test-HexSha256 -Value $expectedSha)) {
+        throw "$Context has an invalid SHA-256."
+    }
+    $document = Read-JsonDocument -Path $path -Description 'Reviewed engineering semantic baseline'
+    if (-not $document.sha256.Equals($expectedSha, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Context SHA-256 changed."
+    }
+    $baseline = $document.payload
+    Assert-NoSensitiveEvidence -Value $baseline -Path '$.semanticBaseline'
+    Assert-ExactPropertySet `
+        -Object $baseline `
+        -ExpectedNames @('schemaVersion', 'kind', 'project', 'scopeSha256', 'canonicalFacts', 'hashes', 'review') `
+        -Context 'Reviewed engineering semantic baseline'
+    if ((-not (Test-JsonInt32 -Value $baseline.schemaVersion)) -or
+        ([int]$baseline.schemaVersion -ne 1) -or
+        ((Get-RequiredString -Object $baseline -Name 'kind' -Context 'Reviewed engineering semantic baseline') -ne 'ctrlx-opcon-engineering-semantic-baseline')) {
+        throw 'Reviewed engineering semantic baseline identity is unsupported.'
+    }
+    $baselineProject = Get-PropertyValue -Object $baseline -Name 'project'
+    Assert-ExactPropertySet -Object $baselineProject -ExpectedNames @('plcProjectRelativePath', 'profile') -Context 'Reviewed engineering semantic baseline project'
+    $plcRelativePath = Get-RelativePathInsideRoot -Root $StationRoot -Path $PlcProject -Description 'Configured PLC project'
+    if (((Get-RequiredString -Object $baselineProject -Name 'plcProjectRelativePath' -Context 'Reviewed engineering semantic baseline project').Replace('\', '/') -ne $plcRelativePath) -or
+        ((Get-RequiredString -Object $baselineProject -Name 'profile' -Context 'Reviewed engineering semantic baseline project') -ne $Profile) -or
+        (-not (Get-RequiredString -Object $baseline -Name 'scopeSha256' -Context 'Reviewed engineering semantic baseline').Equals([string]$ScopeReference.sha256, [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw 'Reviewed engineering semantic baseline project/profile/scope binding does not match this operation.'
+    }
+
+    $canonicalFacts = Get-PropertyValue -Object $baseline -Name 'canonicalFacts'
+    Assert-ExactPropertySet -Object $canonicalFacts -ExpectedNames @('mapping', 'symbolConfig') -Context 'Reviewed engineering semantic canonical facts'
+    $mapping = Get-PropertyValue -Object $canonicalFacts -Name 'mapping'
+    Assert-ExactPropertySet `
+        -Object $mapping `
+        -ExpectedNames @('scopeCount', 'explicitTargetCount', 'recordCount', 'recordLimit', 'scopes', 'records') `
+        -Context 'Reviewed engineering semantic canonical mapping'
+    Assert-JsonArrayProperty -RawJson $document.raw -PropertyPath @('canonicalFacts', 'mapping', 'scopes') -Context 'Reviewed engineering semantic canonical mapping'
+    Assert-JsonArrayProperty -RawJson $document.raw -PropertyPath @('canonicalFacts', 'mapping', 'records') -Context 'Reviewed engineering semantic canonical mapping'
+    foreach ($countName in @('scopeCount', 'explicitTargetCount', 'recordCount', 'recordLimit')) {
+        $value = Get-PropertyValue -Object $mapping -Name $countName
+        if ((-not (Test-JsonInt32 -Value $value)) -or ([int]$value -lt 0)) {
+            throw "Reviewed engineering semantic canonical mapping $countName must be a non-negative integer."
+        }
+    }
+    $scope = Assert-SemanticScopeReference `
+        -Reference $ScopeReference `
+        -EngineeringRoot $EngineeringRoot `
+        -StationRoot $StationRoot `
+        -PlcProject $PlcProject `
+        -Profile $Profile `
+        -Context "$Context semanticSnapshotRequest"
+    $mappingScopes = @(Get-PropertyValue -Object $mapping -Name 'scopes' -DefaultValue @())
+    $mappingRecords = @(Get-PropertyValue -Object $mapping -Name 'records' -DefaultValue @())
+    if (([int]$mapping.recordLimit -ne 2048) -or
+        ([int]$mapping.scopeCount -ne $mappingScopes.Count) -or
+        ([int]$mapping.scopeCount -ne @($scope.mappingScopes).Count) -or
+        ([int]$mapping.explicitTargetCount -ne 0) -or
+        ([int]$mapping.recordCount -ne $mappingRecords.Count) -or
+        ($mappingRecords.Count -gt 2048)) {
+        throw 'Reviewed engineering semantic canonical mapping counters do not match the bounded scope/records.'
+    }
+    $scopeRecordTotal = 0
+    for ($index = 0; $index -lt $mappingScopes.Count; $index++) {
+        $mappingScope = $mappingScopes[$index]
+        Assert-ExactPropertySet -Object $mappingScope -ExpectedNames @('scopeIndex', 'devicePath', 'recursive', 'rootName', 'recordCount') -Context 'Reviewed engineering semantic canonical mapping scope'
+        if ((-not (Test-JsonInt32 -Value $mappingScope.scopeIndex)) -or
+            ([int]$mappingScope.scopeIndex -ne $index) -or
+            (-not (Test-JsonInt32 -Value $mappingScope.recordCount)) -or
+            ([int]$mappingScope.recordCount -lt 0) -or
+            (-not (Get-BooleanValue -Object $mappingScope -Name 'recursive' -Required -Context 'Reviewed engineering semantic canonical mapping scope')) -or
+            ([string]::IsNullOrWhiteSpace([string]$mappingScope.rootName)) -or
+            ([string]$mappingScope.devicePath -ne [string]$scope.mappingScopes[$index].devicePath)) {
+            throw 'Reviewed engineering semantic canonical mapping scope is invalid.'
+        }
+        $scopeRecordTotal += [int]$mappingScope.recordCount
+    }
+    if ($scopeRecordTotal -ne [int]$mapping.recordCount) {
+        throw 'Reviewed engineering semantic canonical mapping scope record counts do not equal recordCount.'
+    }
+
+    $baseRecordFields = @('recordKind', 'scopeIndex', 'scopeDevicePath', 'relativeDevicePath', 'deviceIndexPath', 'deviceName', 'sourceKind', 'channelIdentity', 'channelName', 'bindingSource', 'actualVariable')
+    $connectorFields = @('parameterSetKind', 'connectorIndex', 'parameterIndex', 'parameterId', 'parameterName')
+    $previousRecordKey = $null
+    for ($index = 0; $index -lt $mappingRecords.Count; $index++) {
+        $record = $mappingRecords[$index]
+        $sourceKind = [string]$record.sourceKind
+        $expectedFields = if ($sourceKind -eq 'connector-parameter') { $baseRecordFields + $connectorFields } else { $baseRecordFields }
+        Assert-ExactPropertySet -Object $record -ExpectedNames $expectedFields -Context 'Reviewed engineering semantic canonical mapping record'
+        if (([string]$record.recordKind -ne 'scope-channel') -or
+            (@('tree-channel', 'connector-parameter') -notcontains $sourceKind) -or
+            (-not (Test-JsonInt32 -Value $record.scopeIndex)) -or
+            ([int]$record.scopeIndex -lt 0) -or
+            ([int]$record.scopeIndex -ge $mappingScopes.Count) -or
+            ([string]::IsNullOrWhiteSpace([string]$record.channelIdentity)) -or
+            ($record.actualVariable -isnot [string])) {
+            throw 'Reviewed engineering semantic canonical mapping record is invalid.'
+        }
+        $recordKey = [string]$record.channelIdentity + "`n" + (Get-CanonicalJsonElementText -Element $record)
+        if (($null -ne $previousRecordKey) -and ([System.StringComparer]::Ordinal.Compare($previousRecordKey, $recordKey) -gt 0)) {
+            throw 'Reviewed engineering semantic canonical mapping records are not in canonical order.'
+        }
+        $previousRecordKey = $recordKey
+    }
+
+    $symbol = Get-PropertyValue -Object $canonicalFacts -Name 'symbolConfig'
+    Assert-ExactPropertySet -Object $symbol -ExpectedNames @('applicationPath', 'canonicalPayloadByteCount', 'payloadSha256', 'shapeSummary') -Context 'Reviewed engineering semantic canonical Symbol facts'
+    $symbolApplicationPath = Get-RequiredString -Object $symbol -Name 'applicationPath' -Context 'Reviewed engineering semantic canonical Symbol facts'
+    if (($symbolApplicationPath -ne [string]$scope.symbolApplicationPath) -or
+        (-not (Test-JsonInt32 -Value $symbol.canonicalPayloadByteCount)) -or
+        ([int]$symbol.canonicalPayloadByteCount -lt 0) -or
+        (-not (Test-HexSha256 -Value ([string]$symbol.payloadSha256)))) {
+        throw 'Reviewed engineering semantic canonical Symbol facts are invalid.'
+    }
+    $shape = Get-PropertyValue -Object $symbol -Name 'shapeSummary'
+    Assert-ExactPropertySet -Object $shape -ExpectedNames @('rootKind', 'topLevelKeys', 'objectCount', 'arrayCount', 'scalarCount', 'nodeCount', 'maxDepth') -Context 'Reviewed engineering semantic Symbol shape summary'
+    Assert-JsonArrayProperty -RawJson $document.raw -PropertyPath @('canonicalFacts', 'symbolConfig', 'shapeSummary', 'topLevelKeys') -Context 'Reviewed engineering semantic Symbol shape summary'
+    foreach ($countName in @('objectCount', 'arrayCount', 'scalarCount', 'nodeCount', 'maxDepth')) {
+        $value = Get-PropertyValue -Object $shape -Name $countName
+        if ((-not (Test-JsonInt32 -Value $value)) -or ([int]$value -lt 0)) {
+            throw "Reviewed engineering semantic Symbol shapeSummary.$countName must be a non-negative integer."
+        }
+    }
+    if (([string]::IsNullOrWhiteSpace([string]$shape.rootKind)) -or
+        (@($shape.topLevelKeys | Where-Object { $_ -isnot [string] }).Count -gt 0)) {
+        throw 'Reviewed engineering semantic Symbol shape summary is invalid.'
+    }
+
+    $hashes = Get-PropertyValue -Object $baseline -Name 'hashes'
+    Assert-ExactPropertySet -Object $hashes -ExpectedNames @('algorithm', 'canonicalization', 'mappingSha256', 'symbolConfigSha256', 'snapshotSha256') -Context 'Reviewed engineering semantic baseline hashes'
+    if (((Get-RequiredString -Object $hashes -Name 'algorithm' -Context 'Reviewed engineering semantic baseline hashes') -ne 'SHA-256') -or
+        ((Get-RequiredString -Object $hashes -Name 'canonicalization' -Context 'Reviewed engineering semantic baseline hashes') -ne 'ctrlx-semantic-canonical-json-v1')) {
+        throw 'Reviewed engineering semantic baseline hash contract is unsupported.'
+    }
+    $expectedHashes = @{
+        mappingSha256      = Get-CanonicalJsonElementSha256 -Element $mapping
+        symbolConfigSha256 = Get-CanonicalJsonElementSha256 -Element $symbol
+        snapshotSha256     = Get-CanonicalJsonElementSha256 -Element $canonicalFacts
+    }
+    foreach ($hashName in $expectedHashes.Keys) {
+        $reportedHash = Get-RequiredString -Object $hashes -Name $hashName -Context 'Reviewed engineering semantic baseline hashes'
+        if ((-not (Test-HexSha256 -Value $reportedHash)) -or
+            (-not $reportedHash.Equals([string]$expectedHashes[$hashName], [System.StringComparison]::OrdinalIgnoreCase))) {
+            throw "Reviewed engineering semantic baseline $hashName does not match its canonical facts."
+        }
+    }
+
+    $review = Get-PropertyValue -Object $baseline -Name 'review'
+    Assert-ExactPropertySet -Object $review -ExpectedNames @('reviewId', 'reviewer', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256') -Context 'Reviewed engineering semantic baseline review'
+    foreach ($name in @('reviewId', 'reviewer', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256')) {
+        $null = Get-RequiredString -Object $review -Name $name -Context 'Reviewed engineering semantic baseline review'
+    }
+    $reviewedAt = [DateTime]::MinValue
+    if ((-not [DateTime]::TryParse([string]$review.reviewedAtUtc, [ref]$reviewedAt)) -or
+        ($reviewedAt.ToUniversalTime() -gt [DateTime]::UtcNow.AddMinutes(5))) {
+        throw 'Reviewed engineering semantic baseline review timestamp is invalid.'
+    }
+    $reviewReference = Get-PropertyValue -Object $Reference -Name 'reviewEvidence'
+    Assert-ExactPropertySet -Object $reviewReference -ExpectedNames @('path', 'sha256') -Context "$Context reviewEvidence"
+    $evidenceRelativePath = (Get-RequiredString -Object $reviewReference -Name 'path' -Context "$Context reviewEvidence").Replace('\', '/')
+    $expectedEvidenceSha = Get-RequiredString -Object $reviewReference -Name 'sha256' -Context "$Context reviewEvidence"
+    if ([System.IO.Path]::IsPathRooted($evidenceRelativePath) -or (-not (Test-HexSha256 -Value $expectedEvidenceSha))) {
+        throw "$Context reviewEvidence path/SHA-256 is invalid."
+    }
+    $evidencePath = [System.IO.Path]::GetFullPath((Join-Path $EngineeringRoot $evidenceRelativePath))
+    $safeEvidenceRelativePath = Get-RelativePathInsideRoot -Root $EngineeringRoot -Path $evidencePath -Description "$Context reviewEvidence"
+    if (($safeEvidenceRelativePath -ne $evidenceRelativePath) -or
+        ($safeEvidenceRelativePath -in @($relativePath, [string]$ScopeReference.path)) -or
+        (-not [System.IO.File]::Exists($evidencePath))) {
+        throw "$Context review evidence is missing, unsafe or not independent."
+    }
+    $actualEvidenceSha = Assert-IndependentHumanReviewEvidence `
+        -EngineeringRoot $EngineeringRoot `
+        -RelativePath $safeEvidenceRelativePath `
+        -AbsolutePath $evidencePath `
+        -Context "$Context review evidence"
+    if ((-not $actualEvidenceSha.Equals($expectedEvidenceSha, [System.StringComparison]::OrdinalIgnoreCase)) -or
+        (([string]$review.evidencePath).Replace('\', '/') -ne $evidenceRelativePath) -or
+        (-not ([string]$review.evidenceSha256).Equals($expectedEvidenceSha, [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw "$Context review evidence does not match the baseline provenance."
+    }
+}
+
+function Assert-SemanticReferencesEqual {
+    param(
+        [Parameter(Mandatory = $true)][object]$Expected,
+        [Parameter(Mandatory = $true)][object]$Actual,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    if (-not (Get-JsonTextSha256 -Value $Expected).Equals((Get-JsonTextSha256 -Value $Actual), [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Context semantic binding changed. Start a new Stage1 operation."
+    }
+}
+
 function Read-AndValidateAuditReport {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$ExpectedEngineeringRoot,
         [Parameter(Mandatory = $true)][string]$ExpectedStationRoot,
-        [Parameter(Mandatory = $true)][string]$ExpectedPlcProject
+        [Parameter(Mandatory = $true)][string]$ExpectedPlcProject,
+        [Parameter(Mandatory = $true)][string]$ExpectedProfile
     )
 
     $document = Read-JsonDocument -Path $Path -Description 'Stage1 audit report'
@@ -642,6 +1360,42 @@ function Read-AndValidateAuditReport {
         -Records $manifestRecords `
         -RequiredPaths $requiredManifestPaths `
         -Context 'Stage1 ownership manifest'
+
+    $warningBaseline = Get-PropertyValue -Object $report -Name 'warningBaseline'
+    if ($null -eq $warningBaseline) {
+        throw 'Stage1 audit report has no warningBaseline object.'
+    }
+    Assert-WarningBaselineReference `
+        -Reference $warningBaseline `
+        -EngineeringRoot $ExpectedEngineeringRoot `
+        -StationRoot $ExpectedStationRoot `
+        -PlcProject $ExpectedPlcProject `
+        -Profile $ExpectedProfile `
+        -Context 'Stage1 warning baseline'
+
+    $semanticSnapshotRequest = Get-PropertyValue -Object $report -Name 'semanticSnapshotRequest'
+    if ($null -eq $semanticSnapshotRequest) {
+        throw 'Stage1 audit report has no semanticSnapshotRequest object.'
+    }
+    $null = Assert-SemanticScopeReference `
+        -Reference $semanticSnapshotRequest `
+        -EngineeringRoot $ExpectedEngineeringRoot `
+        -StationRoot $ExpectedStationRoot `
+        -PlcProject $ExpectedPlcProject `
+        -Profile $ExpectedProfile `
+        -Context 'Stage1 semantic snapshot request'
+    $semanticBaseline = Get-PropertyValue -Object $report -Name 'semanticBaseline'
+    if ($null -eq $semanticBaseline) {
+        throw 'Stage1 audit report has no semanticBaseline object.'
+    }
+    Assert-SemanticBaselineReference `
+        -Reference $semanticBaseline `
+        -ScopeReference $semanticSnapshotRequest `
+        -EngineeringRoot $ExpectedEngineeringRoot `
+        -StationRoot $ExpectedStationRoot `
+        -PlcProject $ExpectedPlcProject `
+        -Profile $ExpectedProfile `
+        -Context 'Stage1 semantic baseline'
 
     $fingerprintRecords = @(Get-PropertyValue -Object $report -Name 'fingerprints' -DefaultValue @())
     if ($fingerprintRecords.Count -lt 2) {
@@ -730,6 +1484,28 @@ function Assert-OperationSourcesCurrent {
             throw "Ownership manifest changed during the Stage2 operation: $($manifest.path)"
         }
     }
+    Assert-WarningBaselineReference `
+        -Reference $Operation.baseline.warningBaseline `
+        -EngineeringRoot ([string]$Operation.identity.engineeringRoot) `
+        -StationRoot ([string]$Operation.identity.stationRoot) `
+        -PlcProject ([string]$Operation.identity.plcProject) `
+        -Profile ([string]$Operation.identity.profile) `
+        -Context 'Operation warning baseline'
+    $null = Assert-SemanticScopeReference `
+        -Reference $Operation.baseline.semanticSnapshotRequest `
+        -EngineeringRoot ([string]$Operation.identity.engineeringRoot) `
+        -StationRoot ([string]$Operation.identity.stationRoot) `
+        -PlcProject ([string]$Operation.identity.plcProject) `
+        -Profile ([string]$Operation.identity.profile) `
+        -Context 'Operation semantic snapshot request'
+    Assert-SemanticBaselineReference `
+        -Reference $Operation.baseline.semanticBaseline `
+        -ScopeReference $Operation.baseline.semanticSnapshotRequest `
+        -EngineeringRoot ([string]$Operation.identity.engineeringRoot) `
+        -StationRoot ([string]$Operation.identity.stationRoot) `
+        -PlcProject ([string]$Operation.identity.plcProject) `
+        -Profile ([string]$Operation.identity.profile) `
+        -Context 'Operation semantic baseline'
     if (-not $SkipStationFingerprints) {
         $fingerprints = @($Operation.baseline.fingerprints)
         if (($Operation.currentAction) -and
@@ -798,6 +1574,28 @@ function Assert-OperationLedgerIntegrity {
         (Get-BooleanValue -Object $Operation.coordination -Name 'symbolLeaseHeld' -Required -Context 'Operation coordination')) {
         throw 'Persisted operations must not retain a project or Symbol lease.'
     }
+    Assert-WarningBaselineReference `
+        -Reference $Operation.baseline.warningBaseline `
+        -EngineeringRoot ([string]$Operation.identity.engineeringRoot) `
+        -StationRoot ([string]$Operation.identity.stationRoot) `
+        -PlcProject ([string]$Operation.identity.plcProject) `
+        -Profile ([string]$Operation.identity.profile) `
+        -Context 'Operation warning baseline'
+    $null = Assert-SemanticScopeReference `
+        -Reference $Operation.baseline.semanticSnapshotRequest `
+        -EngineeringRoot ([string]$Operation.identity.engineeringRoot) `
+        -StationRoot ([string]$Operation.identity.stationRoot) `
+        -PlcProject ([string]$Operation.identity.plcProject) `
+        -Profile ([string]$Operation.identity.profile) `
+        -Context 'Operation semantic snapshot request'
+    Assert-SemanticBaselineReference `
+        -Reference $Operation.baseline.semanticBaseline `
+        -ScopeReference $Operation.baseline.semanticSnapshotRequest `
+        -EngineeringRoot ([string]$Operation.identity.engineeringRoot) `
+        -StationRoot ([string]$Operation.identity.stationRoot) `
+        -PlcProject ([string]$Operation.identity.plcProject) `
+        -Profile ([string]$Operation.identity.profile) `
+        -Context 'Operation semantic baseline'
 
     $expectsAction = ([string]$Operation.status -eq 'WAITING_FOR_RUNNER')
     if ($expectsAction -ne ($null -ne $Operation.currentAction)) {
@@ -835,6 +1633,18 @@ function Assert-OperationLedgerIntegrity {
             ([string]$action.preconditions.idempotencyKey -ne [string]$Operation.idempotency.key)) {
             throw 'The current runner action identity does not match the operation ledger.'
         }
+        Assert-WarningBaselineReferencesEqual `
+            -Expected $Operation.baseline.warningBaseline `
+            -Actual $action.preconditions.warningBaseline `
+            -Context 'Runner action'
+        Assert-SemanticReferencesEqual `
+            -Expected $Operation.baseline.semanticSnapshotRequest `
+            -Actual $action.preconditions.semanticSnapshotRequest `
+            -Context 'Runner action semanticSnapshotRequest'
+        Assert-SemanticReferencesEqual `
+            -Expected $Operation.baseline.semanticBaseline `
+            -Actual $action.preconditions.semanticBaseline `
+            -Context 'Runner action semanticBaseline'
     }
 
     $seenEvidenceActions = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
@@ -981,6 +1791,9 @@ function New-RunnerAction {
             workflowRevision = $Operation.workflowRevision
             idempotencyKey   = $Operation.idempotency.key
             manifests        = $Operation.baseline.manifests
+            warningBaseline  = $Operation.baseline.warningBaseline
+            semanticSnapshotRequest = $Operation.baseline.semanticSnapshotRequest
+            semanticBaseline = $Operation.baseline.semanticBaseline
             fingerprints     = $Operation.baseline.fingerprints
         }
         guardrails    = [ordered]@{
@@ -1130,7 +1943,13 @@ function Save-Operation {
     Write-AtomicText -Path (Join-Path $OperationDirectory 'summary.md') -Text (Convert-OperationToMarkdown -Operation $Operation)
 
     if (@('DONE', 'BLOCKED', 'FAILED') -contains [string]$Operation.status) {
-        $final = New-FinalRecord -Operation $Operation
+        # Build the immutable terminal record from the just-persisted ledger.
+        # PowerShell 7 rehydrates ISO-8601 strings as DateTime values and then
+        # serializes them without insignificant fractional zeros. Deriving from
+        # operation.json here makes the first write and every later integrity
+        # check use the same representation.
+        $persistedOperation = (Read-JsonDocument -Path $operationPath -Description 'Persisted operation ledger').payload
+        $final = New-FinalRecord -Operation $persistedOperation
         $null = Write-ImmutableJson -Path (Join-Path $OperationDirectory 'final.json') -Value $final
     }
     return $operationPath
@@ -1599,24 +2418,53 @@ function Read-AndValidateEvidence {
     )
     if ($terminalRunnerResult) {
         $expectedResultProperties += @('failureStage', 'reasonCode')
+        if ($null -ne $result.PSObject.Properties['semanticProofs']) {
+            $expectedResultProperties += 'semanticProofs'
+        }
+        if ($null -ne $result.PSObject.Properties['nextRoute']) {
+            $expectedResultProperties += 'nextRoute'
+        }
+        if ($null -ne $result.PSObject.Properties['build']) {
+            if ($resultStatus -ne 'blocked') {
+                throw 'Failed producer evidence must not contain result.build.'
+            }
+            $expectedResultProperties += 'build'
+        }
     }
     else {
         $expectedTopLevelProperties += 'session'
-        $expectedResultProperties += @('build', 'acceptance')
+        $expectedResultProperties += @('build', 'acceptance', 'semanticProofs')
     }
     Assert-ExactPropertySet -Object $evidence -ExpectedNames $expectedTopLevelProperties -Context 'Runner evidence'
     Assert-ExactPropertySet -Object $result -ExpectedNames $expectedResultProperties -Context 'Runner result'
     foreach ($name in @('verificationOk', 'appliedReadbackOk', 'repairRequired', 'requiresSecondExport', 'requiresCpStudioChange')) {
         $null = Get-BooleanValue -Object $result -Name $name -Required -Context 'Runner result'
     }
+    $semanticProofs = Get-PropertyValue -Object $result -Name 'semanticProofs'
+    if ((-not $terminalRunnerResult) -and ($null -eq $semanticProofs)) {
+        throw 'Successful runner evidence must contain result.semanticProofs.'
+    }
+    if ($null -ne $semanticProofs) {
+        Assert-SemanticProofSet -Proofs $semanticProofs -RequireVerified (-not $terminalRunnerResult) -Context 'Runner semantic proofs'
+    }
+    $nextRoute = Get-PropertyValue -Object $result -Name 'nextRoute'
+    if ($null -ne $nextRoute) {
+        if (-not $terminalRunnerResult) {
+            throw 'Successful runner evidence cannot contain result.nextRoute.'
+        }
+        Assert-ExactPropertySet -Object $nextRoute -ExpectedNames @('kind', 'reasonCode', 'automaticExecutionAllowed') -Context 'Runner nextRoute'
+        $null = Get-RequiredString -Object $nextRoute -Name 'kind' -Context 'Runner nextRoute'
+        $null = Get-RequiredString -Object $nextRoute -Name 'reasonCode' -Context 'Runner nextRoute'
+        if (Get-BooleanValue -Object $nextRoute -Name 'automaticExecutionAllowed' -Required -Context 'Runner nextRoute') {
+            throw 'Runner nextRoute must require manual review.'
+        }
+    }
     if ($terminalRunnerResult) {
         if ($null -ne $evidence.PSObject.Properties['session']) {
             throw 'Blocked/failed producer evidence must not contain a session object.'
         }
-        foreach ($name in @('build', 'acceptance')) {
-            if ($null -ne $result.PSObject.Properties[$name]) {
-                throw "Blocked/failed producer evidence must not contain result.$name."
-            }
+        if ($null -ne $result.PSObject.Properties['acceptance']) {
+            throw 'Blocked/failed producer evidence must not contain result.acceptance.'
         }
         foreach ($name in @('repairRequired', 'requiresSecondExport', 'requiresCpStudioChange')) {
             if (Get-BooleanValue -Object $result -Name $name -Required -Context 'Runner result') {
@@ -1631,6 +2479,33 @@ function Read-AndValidateEvidence {
         }
         if (@(Get-PropertyValue -Object $result -Name 'proposedChanges' -DefaultValue @()).Count -ne 0) {
             throw 'Blocked/failed producer evidence must not contain proposed changes.'
+        }
+        if ($null -ne $result.PSObject.Properties['build']) {
+            if (($failureStage -ne 'semantic-acceptance') -or
+                (-not $actionProjectGateAcquired) -or
+                ($null -eq $semanticProofs)) {
+                throw 'Only semantic-acceptance BLOCKED evidence may contain a fresh Build.'
+            }
+            $hasUnverifiedProof = $false
+            foreach ($proofName in @('ownership', 'readback', 'recoverableBaseline', 'warnings', 'semanticBaseline', 'mapping', 'symbolPostProcessing')) {
+                $proof = Get-PropertyValue -Object $semanticProofs -Name $proofName
+                if (-not (Get-BooleanValue -Object $proof -Name 'verified' -Required -Context "Runner semantic proof '$proofName'")) {
+                    $hasUnverifiedProof = $true
+                }
+            }
+            if (-not $hasUnverifiedProof) {
+                throw 'A BLOCKED fresh Build must retain at least one unverified semantic proof.'
+            }
+            foreach ($requiredCapability in @('get_codesys_status', 'compile_project')) {
+                if (@($capabilities | Where-Object { [string]$_ -eq $requiredCapability }).Count -ne 1) {
+                    throw "Blocked fresh Build evidence must report capability '$requiredCapability' exactly once."
+                }
+            }
+            Assert-BlockedBuildEvidence `
+                -Result $result `
+                -Operation $Operation `
+                -EvidenceCompletedAtUtc (Get-RequiredString -Object $evidence -Name 'completedAtUtc' -Context 'Runner evidence') `
+                -RawEvidenceJson $document.raw
         }
     }
     Assert-AppliedChangesMatchAction `
@@ -1650,7 +2525,7 @@ function Read-AndValidateEvidence {
             throw 'apply_change_set_and_build is not supported by the typed Broker and cannot produce successful evidence.'
         }
 
-        $requiredCapabilities = @('get_codesys_status', 'compile_project')
+        $requiredCapabilities = @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
         foreach ($requiredCapability in $requiredCapabilities) {
             if (@($capabilities | Where-Object { [string]$_ -eq $requiredCapability }).Count -ne 1) {
                 throw "Successful runner evidence must report capability '$requiredCapability' exactly once."
@@ -1740,6 +2615,106 @@ function Read-AndValidateEvidence {
         resultStatus   = $resultStatus
         actionId       = $actionIdValue
         completedAtUtc = $completedAt.ToUniversalTime().ToString('o')
+    }
+}
+
+function Assert-BlockedBuildEvidence {
+    param(
+        [Parameter(Mandatory = $true)][object]$Result,
+        [Parameter(Mandatory = $true)][object]$Operation,
+        [Parameter(Mandatory = $true)][string]$EvidenceCompletedAtUtc,
+        [Parameter(Mandatory = $true)][string]$RawEvidenceJson
+    )
+
+    $build = Get-PropertyValue -Object $Result -Name 'build'
+    Assert-ExactPropertySet -Object $build -ExpectedNames @(
+        'buildId',
+        'projectPath',
+        'profile',
+        'projectSha256',
+        'startedAtUtc',
+        'completedAtUtc',
+        'verified',
+        'errors',
+        'warnings',
+        'messageCount',
+        'typedRecordsVerified',
+        'diagnosticRowsComplete',
+        'warningRecordsSafeForReview',
+        'warningRecords',
+        'diagnosticRows',
+        'summarySource'
+    ) -Context 'Blocked fresh Build evidence'
+    Assert-JsonArrayProperty -RawJson $RawEvidenceJson -PropertyPath @('result', 'build', 'warningRecords') -Context 'Blocked fresh Build evidence'
+    Assert-JsonArrayProperty -RawJson $RawEvidenceJson -PropertyPath @('result', 'build', 'diagnosticRows') -Context 'Blocked fresh Build evidence'
+
+    $buildId = Get-RequiredString -Object $build -Name 'buildId' -Context 'Blocked fresh Build evidence'
+    if ($buildId -notmatch '^[A-Za-z0-9_.:-]{1,128}$') {
+        throw 'Blocked fresh Build evidence buildId is invalid.'
+    }
+    Assert-SamePath -Expected ([string]$Operation.identity.plcProject) -Actual (Get-RequiredString -Object $build -Name 'projectPath' -Context 'Blocked fresh Build evidence') -Description 'Blocked Build PLC project'
+    if ((Get-RequiredString -Object $build -Name 'profile' -Context 'Blocked fresh Build evidence') -ne [string]$Operation.identity.profile) {
+        throw 'Blocked fresh Build profile does not match the immutable action.'
+    }
+    $reportedProjectSha = Get-RequiredString -Object $build -Name 'projectSha256' -Context 'Blocked fresh Build evidence'
+    if ((-not (Test-HexSha256 -Value $reportedProjectSha)) -or
+        (-not [System.IO.File]::Exists([string]$Operation.identity.plcProject)) -or
+        (-not ((Get-FileHash -LiteralPath ([string]$Operation.identity.plcProject) -Algorithm SHA256).Hash.Equals($reportedProjectSha, [System.StringComparison]::OrdinalIgnoreCase)))) {
+        throw 'Blocked fresh Build PLC project SHA-256 does not match the current project.'
+    }
+    if ((Get-RequiredString -Object $build -Name 'summarySource' -Context 'Blocked fresh Build evidence') -ne 'codesys-persistent.compile_project') {
+        throw 'Blocked fresh Build summarySource is unsupported.'
+    }
+
+    $buildStarted = [DateTime]::MinValue
+    $buildCompleted = [DateTime]::MinValue
+    $actionCreated = [DateTime]::MinValue
+    $evidenceCompleted = [DateTime]::MinValue
+    if ((-not [DateTime]::TryParse((Get-RequiredString -Object $build -Name 'startedAtUtc' -Context 'Blocked fresh Build evidence'), [ref]$buildStarted)) -or
+        (-not [DateTime]::TryParse((Get-RequiredString -Object $build -Name 'completedAtUtc' -Context 'Blocked fresh Build evidence'), [ref]$buildCompleted)) -or
+        (-not [DateTime]::TryParse([string]$Operation.currentAction.createdAtUtc, [ref]$actionCreated)) -or
+        (-not [DateTime]::TryParse($EvidenceCompletedAtUtc, [ref]$evidenceCompleted)) -or
+        ($buildStarted.ToUniversalTime() -lt $actionCreated.ToUniversalTime()) -or
+        ($buildCompleted.ToUniversalTime() -lt $buildStarted.ToUniversalTime()) -or
+        ($buildCompleted.ToUniversalTime() -gt $evidenceCompleted.ToUniversalTime())) {
+        throw 'Blocked Build evidence is not fresh for the current immutable action.'
+    }
+
+    $errorsValue = Get-PropertyValue -Object $build -Name 'errors'
+    $warningsValue = Get-PropertyValue -Object $build -Name 'warnings'
+    $messageCountValue = Get-PropertyValue -Object $build -Name 'messageCount'
+    if ((-not (Test-JsonInt32 -Value $errorsValue)) -or
+        (-not (Test-JsonInt32 -Value $warningsValue)) -or
+        (-not (Test-JsonInt32 -Value $messageCountValue)) -or
+        ([int]$errorsValue -ne 0) -or
+        ([int]$warningsValue -lt 0) -or
+        ([int]$warningsValue -gt 2048) -or
+        ([int]$messageCountValue -lt [int]$warningsValue) -or
+        ([int]$messageCountValue -gt 2048) -or
+        (-not (Get-BooleanValue -Object $build -Name 'verified' -Required -Context 'Blocked fresh Build evidence'))) {
+        throw 'Blocked fresh Build evidence must be verified, zero-error, and bounded.'
+    }
+    $warnings = [int]$warningsValue
+    $messageCount = [int]$messageCountValue
+    $typedRecordsVerified = Get-BooleanValue -Object $build -Name 'typedRecordsVerified' -Required -Context 'Blocked fresh Build evidence'
+    $diagnosticRowsComplete = Get-BooleanValue -Object $build -Name 'diagnosticRowsComplete' -Required -Context 'Blocked fresh Build evidence'
+    $warningRecordsSafeForReview = Get-BooleanValue -Object $build -Name 'warningRecordsSafeForReview' -Required -Context 'Blocked fresh Build evidence'
+    $warningRecords = @(Get-PropertyValue -Object $build -Name 'warningRecords' -DefaultValue @())
+    $diagnosticRows = @(Get-PropertyValue -Object $build -Name 'diagnosticRows' -DefaultValue @())
+    if (($warningRecordsSafeForReview -and (-not $typedRecordsVerified)) -or
+        ($typedRecordsVerified -and $warningRecordsSafeForReview -and ($warningRecords.Count -ne $warnings)) -or
+        ((-not $typedRecordsVerified) -and ($warningRecords.Count -ne 0)) -or
+        ($typedRecordsVerified -and (-not $warningRecordsSafeForReview) -and ($warningRecords.Count -ne 0)) -or
+        ($typedRecordsVerified -and ($messageCount -ne $warnings)) -or
+        ($diagnosticRows.Count -gt $messageCount) -or
+        ($diagnosticRowsComplete -and ($diagnosticRows.Count -ne $messageCount))) {
+        throw 'Blocked fresh Build record arrays do not match their producer flags/counts.'
+    }
+    foreach ($record in @($warningRecords) + @($diagnosticRows)) {
+        if (($record -isnot [string]) -or [string]::IsNullOrWhiteSpace([string]$record) -or
+            ([System.Text.Encoding]::UTF8.GetByteCount(([string]$record).Trim()) -gt 4096)) {
+            throw 'Blocked fresh Build record arrays contain an invalid row.'
+        }
     }
 }
 
@@ -1848,10 +2823,38 @@ function Assert-StructuredAcceptance {
     if ($null -eq $acceptance) {
         throw 'Runner result has no structured acceptance object.'
     }
-    foreach ($name in @('ownershipVerified', 'mappingConsistent', 'readbackVerified', 'recoverableBaselineVerified', 'warningSignaturesReviewed', 'existingSessionReused')) {
+    foreach ($name in @('ownershipVerified', 'mappingConsistent', 'readbackVerified', 'recoverableBaselineVerified', 'existingSessionReused')) {
         if (-not (Get-BooleanValue -Object $acceptance -Name $name -Required -Context 'Runner acceptance')) {
             throw "Runner acceptance did not prove '$name'."
         }
+    }
+    $warningSignaturesReviewed = Get-BooleanValue -Object $acceptance -Name 'warningSignaturesReviewed' -Required -Context 'Runner acceptance'
+    $warningBaselineState = Get-RequiredString -Object $Operation.baseline.warningBaseline -Name 'state' -Context 'Operation warning baseline'
+    if ($warningBaselineState -eq 'missing-bootstrap') {
+        if ($warningSignaturesReviewed) {
+            throw 'Runner acceptance cannot claim reviewed warnings while the immutable action is in missing-bootstrap state.'
+        }
+    }
+    elseif ($warningBaselineState -eq 'reviewed') {
+        if (-not $warningSignaturesReviewed) {
+            throw 'Runner acceptance did not prove warningSignaturesReviewed against the bound reviewed baseline.'
+        }
+        $baselinePath = Join-Path ([string]$Operation.identity.engineeringRoot) ([string]$Operation.baseline.warningBaseline.path)
+        $baseline = (Read-JsonDocument -Path $baselinePath -Description 'Reviewed warning signature baseline').payload
+        $expectedSignatures = @($baseline.signatures | Sort-Object -Property sha256)
+        $actualSignatures = @((Get-PropertyValue -Object (Get-PropertyValue -Object $Result -Name 'build') -Name 'warningSignatures' -DefaultValue @()) | Sort-Object -Property sha256)
+        if ($expectedSignatures.Count -ne $actualSignatures.Count) {
+            throw 'Build warning signatures do not match the reviewed warning baseline.'
+        }
+        for ($index = 0; $index -lt $expectedSignatures.Count; $index++) {
+            if ((-not ([string]$expectedSignatures[$index].sha256).Equals([string]$actualSignatures[$index].sha256, [System.StringComparison]::OrdinalIgnoreCase)) -or
+                ([long]$expectedSignatures[$index].occurrences -ne [long]$actualSignatures[$index].occurrences)) {
+                throw 'Build warning signatures do not match the reviewed warning baseline.'
+            }
+        }
+    }
+    else {
+        throw "Operation warning baseline has an unsupported state: $warningBaselineState"
     }
     foreach ($name in @('pleOrMcpStartedByAction', 'directWatcherIpcUsed')) {
         if (Get-BooleanValue -Object $acceptance -Name $name -Required -Context 'Runner acceptance') {
@@ -1991,8 +2994,11 @@ function Start-NewOperation {
             profile         = $Profile
         }
         baseline         = [ordered]@{
-            manifests    = @($Audit.report.manifests)
-            fingerprints = @($Audit.report.fingerprints)
+            manifests       = @($Audit.report.manifests)
+            warningBaseline = $Audit.report.warningBaseline
+            semanticSnapshotRequest = $Audit.report.semanticSnapshotRequest
+            semanticBaseline = $Audit.report.semanticBaseline
+            fingerprints    = @($Audit.report.fingerprints)
         }
         guardrails       = [ordered]@{
             offlineOnly              = $true
@@ -2178,8 +3184,23 @@ function Advance-WithEvidence {
         $nextOutcome = 'NEEDS_EXPORT_2'
     }
     elseif (($buildEvidence.errors -eq 0) -and $buildEvidence.verified -and $verificationOk) {
-        $nextStatus = 'DONE'
-        $nextOutcome = 'DONE'
+        if (([string]$Operation.baseline.warningBaseline.state -eq 'reviewed') -and
+            ([string]$Operation.baseline.semanticBaseline.state -eq 'reviewed')) {
+            $nextStatus = 'DONE'
+            $nextOutcome = 'DONE'
+        }
+        elseif ([string]$Operation.baseline.warningBaseline.state -ne 'reviewed') {
+            $nextStatus = 'BLOCKED'
+            $nextOutcome = 'NEEDS_REVIEW'
+            $blockCode = 'WARNING_BASELINE_REVIEW_REQUIRED'
+            $blockMessage = 'Fresh Build evidence was collected, but no reviewed warning-signature baseline was bound to this immutable action.'
+        }
+        else {
+            $nextStatus = 'BLOCKED'
+            $nextOutcome = 'NEEDS_REVIEW'
+            $blockCode = 'SEMANTIC_BASELINE_REVIEW_REQUIRED'
+            $blockMessage = 'Fresh Build and semantic snapshot evidence were collected, but no reviewed engineering semantic baseline was bound to this immutable action.'
+        }
     }
     else {
         $nextStatus = 'BLOCKED'
@@ -2283,6 +3304,18 @@ function Bind-SecondExport {
     }
     Assert-OperationSourcesCurrent -Operation $Operation -SkipStationFingerprints
     Assert-ManifestSetsEqual -Expected @($Operation.baseline.manifests) -Actual @($Audit.report.manifests)
+    Assert-WarningBaselineReferencesEqual `
+        -Expected $Operation.baseline.warningBaseline `
+        -Actual $Audit.report.warningBaseline `
+        -Context 'Export #2 Stage1 report'
+    Assert-SemanticReferencesEqual `
+        -Expected $Operation.baseline.semanticSnapshotRequest `
+        -Actual $Audit.report.semanticSnapshotRequest `
+        -Context 'Export #2 semanticSnapshotRequest'
+    Assert-SemanticReferencesEqual `
+        -Expected $Operation.baseline.semanticBaseline `
+        -Actual $Audit.report.semanticBaseline `
+        -Context 'Export #2 semanticBaseline'
     if ($Audit.requestId -eq $Operation.source.initialAudit.requestId) {
         throw 'Export #2 must have a new Stage1 requestId.'
     }
@@ -2384,7 +3417,8 @@ try {
             -Path $resolvedAuditPath `
             -ExpectedEngineeringRoot $resolvedEngineeringRoot `
             -ExpectedStationRoot $resolvedStationRoot `
-            -ExpectedPlcProject $resolvedPlcProject
+            -ExpectedPlcProject $resolvedPlcProject `
+            -ExpectedProfile $profile
         Start-NewOperation `
             -Audit $audit `
             -ResolvedEngineeringRoot $resolvedEngineeringRoot `
@@ -2429,7 +3463,8 @@ try {
             -Path $resolvedSecondAuditPath `
             -ExpectedEngineeringRoot $resolvedEngineeringRoot `
             -ExpectedStationRoot $resolvedStationRoot `
-            -ExpectedPlcProject $resolvedPlcProject
+            -ExpectedPlcProject $resolvedPlcProject `
+            -ExpectedProfile $profile
         Bind-SecondExport -Operation $operation -OperationDirectory $operationDirectory -OperationPath $operationPath -Audit $secondAudit
         return
     }

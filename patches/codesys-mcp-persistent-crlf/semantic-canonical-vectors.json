@@ -1,0 +1,76 @@
+{
+  "contractId": "ctrlx-semantic-snapshot-v1",
+  "canonicalization": "ctrlx-semantic-canonical-json-v1",
+  "encoding": "UTF-8 without BOM; literal Unicode JSON output; object keys ordinal-sorted; arrays preserved",
+  "vectors": [
+    {
+      "name": "unicode-and-shuffled-object-keys",
+      "symbolPayloadInput": {
+        "中文": "维修门",
+        "z": [
+          {
+            "β": "Ω",
+            "a": "位移"
+          },
+          2,
+          true,
+          null
+        ],
+        "emoji": "🔧"
+      },
+      "expectedSymbolPayloadCanonicalJson": "{\"emoji\":\"🔧\",\"z\":[{\"a\":\"位移\",\"β\":\"Ω\"},2,true,null],\"中文\":\"维修门\"}",
+      "expectedSymbolPayloadUtf8Bytes": 80,
+      "expectedSymbolPayloadSha256": "44b0c1e2a5cb2d9d1fceda23076c6ea3d17d1a353d7119fe803ff273036f26b8",
+      "canonicalFactsInput": {
+        "symbolConfig": {
+          "shapeSummary": {
+            "topLevelKeys": [
+              "emoji",
+              "z",
+              "中文"
+            ],
+            "scalarCount": 7,
+            "rootKind": "object",
+            "objectCount": 2,
+            "nodeCount": 10,
+            "maxDepth": 3,
+            "arrayCount": 1
+          },
+          "payloadSha256": "44b0c1e2a5cb2d9d1fceda23076c6ea3d17d1a353d7119fe803ff273036f26b8",
+          "canonicalPayloadByteCount": 80,
+          "applicationPath": "Device/Plc Logic/Application"
+        },
+        "mapping": {
+          "records": [
+            {
+              "parameterName": "通道β",
+              "channelIdentity": "scope:000000:0/0:connector-000000:p6:000000",
+              "actualVariable": "Application.Peripherals.输入Ω"
+            },
+            {
+              "channelIdentity": "scope:000000:0/0:connector-000000:p7:000001",
+              "actualVariable": ""
+            }
+          ],
+          "scopes": [
+            {
+              "scopeIndex": 0,
+              "rootName": "实时数据",
+              "recursive": true,
+              "recordCount": 2,
+              "devicePath": "Device/Realtime_Data/主站"
+            }
+          ],
+          "scopeCount": 1,
+          "recordLimit": 2048,
+          "recordCount": 2,
+          "explicitTargetCount": 0
+        }
+      },
+      "expectedCanonicalFactsJson": "{\"mapping\":{\"explicitTargetCount\":0,\"recordCount\":2,\"recordLimit\":2048,\"records\":[{\"actualVariable\":\"Application.Peripherals.输入Ω\",\"channelIdentity\":\"scope:000000:0/0:connector-000000:p6:000000\",\"parameterName\":\"通道β\"},{\"actualVariable\":\"\",\"channelIdentity\":\"scope:000000:0/0:connector-000000:p7:000001\"}],\"scopeCount\":1,\"scopes\":[{\"devicePath\":\"Device/Realtime_Data/主站\",\"recordCount\":2,\"recursive\":true,\"rootName\":\"实时数据\",\"scopeIndex\":0}]},\"symbolConfig\":{\"applicationPath\":\"Device/Plc Logic/Application\",\"canonicalPayloadByteCount\":80,\"payloadSha256\":\"44b0c1e2a5cb2d9d1fceda23076c6ea3d17d1a353d7119fe803ff273036f26b8\",\"shapeSummary\":{\"arrayCount\":1,\"maxDepth\":3,\"nodeCount\":10,\"objectCount\":2,\"rootKind\":\"object\",\"scalarCount\":7,\"topLevelKeys\":[\"emoji\",\"z\",\"中文\"]}}}",
+      "expectedMappingSha256": "d65cefd4f58d6dbddc12524cfdc8234bd654a0cde65932c39d26ec6d606439f8",
+      "expectedSymbolConfigSha256": "3559142bf274cb9d3cab60b0bd515c19508ee3b679a0d095dddb8ef20fe14763",
+      "expectedSnapshotSha256": "5f94b43d8823cf501ce9406187f51a51a7e95b4fb53ec3fcff7c04039aa0e0ab"
+    }
+  ]
+}

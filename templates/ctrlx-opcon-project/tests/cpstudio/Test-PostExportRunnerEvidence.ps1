@@ -60,6 +60,54 @@ function Copy-JsonValue {
     return (($Value | ConvertTo-Json -Depth 64) | ConvertFrom-Json)
 }
 
+function Import-FunctionFromScript {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $tokens = $null
+    $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -ne 0) { throw "Cannot import fixture helper from $Path." }
+    $definition = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Name }, $true) | Select-Object -First 1
+    if ($null -eq $definition) { throw "Fixture helper '$Name' is missing from $Path." }
+    Set-Item -Path ("Function:\script:{0}" -f $Name) -Value $definition.Body.GetScriptBlock()
+}
+
+function Assert-SecretScanRejectsWithoutEcho {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Scan,
+        [Parameter(Mandatory = $true)][object]$Value,
+        [Parameter(Mandatory = $true)][string]$SecretMarker,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $rejected = $false
+    try { & $Scan $Value }
+    catch {
+        $rejected = $true
+        if ($_.Exception.Message.Contains($SecretMarker)) {
+            throw "$Description exposed matched secret content in its error."
+        }
+    }
+    if (-not $rejected) { throw "$Description was accepted." }
+}
+
+function New-SemanticProofs {
+    param([Parameter(Mandatory = $false)][bool]$Verified = $true)
+
+    $proofs = [ordered]@{ contractVersion = 1 }
+    foreach ($name in @('ownership', 'readback', 'recoverableBaseline', 'warnings', 'semanticBaseline', 'mapping', 'symbolPostProcessing')) {
+        $proofs[$name] = [ordered]@{
+            producer        = 'runner-evidence.fixture'
+            contractVersion = 1
+            verified        = $Verified
+        }
+    }
+    return $proofs
+}
+
 function Invoke-Producer {
     param(
         [Parameter(Mandatory = $true)][string]$Producer,
@@ -122,6 +170,42 @@ function Assert-ProducerRejected {
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $producer = Join-Path $repositoryRoot 'scripts\cpstudio\New-PostExportRunnerEvidence.ps1'
 Assert-True -Condition ([System.IO.File]::Exists($producer)) -Message 'Runner evidence producer is missing.'
+foreach ($name in @('Assert-JsonArrayProperty', 'Test-ClearlyRedactedSensitiveValue', 'Test-StringContainsSecretLikeValue', 'Assert-NoSensitiveFields')) {
+    Import-FunctionFromScript -Path $producer -Name $name
+}
+foreach ($json in @('{"outer":{"probe":[]}}', '{"outer":{"probe":[1]}}', '{"outer":{"probe":[1,2]}}')) {
+    Assert-JsonArrayProperty -RawJson $json -PropertyPath @('outer', 'probe') -Context 'Evidence array-shape vector'
+}
+foreach ($json in @('{"outer":{"probe":null}}', '{"outer":{"probe":{}}}')) {
+    $shapeRejected = $false
+    try { Assert-JsonArrayProperty -RawJson $json -PropertyPath @('outer', 'probe') -Context 'Evidence array-shape vector' }
+    catch { $shapeRejected = $true }
+    Assert-True -Condition $shapeRejected -Message "Evidence sealer accepted a non-array JSON shape: $json"
+}
+
+$safeSensitiveScanVector = [pscustomobject]@{
+    note                  = 'The password field and Bearer authentication are documented without credential values.'
+    TokenRequest          = 'Mode ownership request identifier.'
+    privateKeyFingerprint = 'SHA256 fingerprint only.'
+    password              = '<redacted>'
+    access_token          = '${ACCESS_TOKEN}'
+}
+Assert-NoSensitiveFields -Value $safeSensitiveScanVector
+$secretScanVectors = @(
+    [pscustomobject]@{ description = 'Credential assignment'; marker = 'pA55w0rd-Focus-01'; value = 'database password = pA55w0rd-Focus-01' },
+    [pscustomobject]@{ description = 'Connection string'; marker = 'pA55w0rd-Focus-02'; value = 'Server=db01;User Id=svc;Pwd=pA55w0rd-Focus-02;Encrypt=true' },
+    [pscustomobject]@{ description = 'Bearer token'; marker = 'AbcdEFGHijklmN0123456789.Focus03'; value = 'Authorization: Bearer AbcdEFGHijklmN0123456789.Focus03' },
+    [pscustomobject]@{ description = 'Credential URI'; marker = 'pA55w0rd-Focus-04'; value = 'opc.tcp://svc:pA55w0rd-Focus-04@controller.invalid:4840' },
+    [pscustomobject]@{ description = 'Private key'; marker = 'OPENSSH'; value = "-----BEGIN OPENSSH PRIVATE KEY-----`nprivate-material" }
+)
+foreach ($vector in $secretScanVectors) {
+    Assert-SecretScanRejectsWithoutEcho -Scan { param($candidate) Assert-NoSensitiveFields -Value ([pscustomobject]@{ note = $candidate }) } `
+        -Value $vector.value -SecretMarker $vector.marker -Description $vector.description
+}
+Assert-SecretScanRejectsWithoutEcho -Scan { param($candidate) Assert-NoSensitiveFields -Value $candidate } `
+    -Value ([pscustomobject]@{ clientSecret = 'pA55w0rd-Focus-05' }) -SecretMarker 'pA55w0rd-Focus-05' -Description 'Secret-bearing field value'
+Assert-SecretScanRejectsWithoutEcho -Scan { param($candidate) Assert-NoSensitiveFields -Value $candidate } `
+    -Value ('Z' * ((64 * 1024) + 1)) -SecretMarker ('Z' * 32) -Description 'Oversized scan string'
 
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('ctrlx-runner-evidence-' + [guid]::NewGuid().ToString('N'))
 $sidecarSuffix = [string]([char[]]@(0x65C1, 0x8F66))
@@ -216,6 +300,12 @@ try {
     $buildStarted = $createdAt.AddSeconds(10)
     $buildCompleted = $buildStarted.AddSeconds(2)
     $completedAt = $buildCompleted.AddSeconds(1)
+    # Keep this PS5.1 fixture source ASCII-only; construct Unicode/astral text
+    # explicitly so Windows PowerShell does not depend on a source-file BOM.
+    $unicodeWarningSource = -join ([char[]]@(0x7F16, 0x8BD1, 0x5668))
+    $unicodeWarningObject = 'Application/' + (-join ([char[]]@(0x5DE5, 0x4F4D, 0xD83D, 0xDE00)))
+    $unicodeWarningPosition = (-join ([char[]]@(0x884C))) + ' 22'
+    $unicodeWarningMessage = (-join ([char[]]@(0x6E29, 0x5EA6))) + '  ' + (-join ([char[]]@(0x8FC7, 0x9AD8))) + ' ' + (-join ([char[]]@(0xD83D, 0xDE80)))
     $observation = [ordered]@{
         schemaVersion       = 1
         operationId         = $action.operationId
@@ -224,7 +314,7 @@ try {
         actionRequestSha256 = $actionSha
         status              = 'succeeded'
         completedAtUtc      = $completedAt.ToString('o')
-        capabilitiesInvoked = @('get_codesys_status', 'compile_project')
+        capabilitiesInvoked = @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
         session             = [ordered]@{
             state             = 'ready'
             mode              = 'persistent'
@@ -262,13 +352,14 @@ try {
                 completedAtUtc  = $buildCompleted.ToString('o')
                 verified        = $true
                 errors          = 0
-                warnings        = 4
+                warnings        = 5
                 summarySource   = 'codesys-persistent.compile_project'
                 warningRecords  = @(
                     [ordered]@{ code = 'C0543'; objectPath = 'Fixture'; position = 'Line 10'; message = 'reserved keyword' },
                     [ordered]@{ code = 'C0543'; objectPath = 'Fixture'; position = 'Line 10'; message = 'reserved   keyword' },
                     [ordered]@{ code = 'C0373'; objectPath = 'Fixture'; position = 'Line 20'; message = 'plausibility check' },
-                    [ordered]@{ code = 'C0373'; objectPath = 'Fixture'; position = 'Line 21'; message = 'plausibility check' }
+                    [ordered]@{ code = 'C0373'; objectPath = 'Fixture'; position = 'Line 21'; message = 'plausibility check' },
+                    [ordered]@{ code = 'C9001'; source = $unicodeWarningSource; objectPath = $unicodeWarningObject; position = $unicodeWarningPosition; message = $unicodeWarningMessage }
                 )
             }
             acceptance             = [ordered]@{
@@ -282,6 +373,7 @@ try {
                 directWatcherIpcUsed          = $false
                 symbolPostProcessingVerified = $true
             }
+            semanticProofs = New-SemanticProofs -Verified $true
         }
     }
     $observationPath = Join-Path $engineeringRoot 'data\observations\success-bom.json'
@@ -297,16 +389,19 @@ try {
     Assert-True -Condition ($evidence.actionRequestSha256 -eq $actionSha) -Message 'Evidence did not bind the exact action SHA.'
     Assert-True -Condition ($evidence.project.plcProject -eq $plcProject) -Message "Evidence reported the wrong PLC project. Expected '$plcProject', got '$($evidence.project.plcProject)'."
     Assert-True -Condition ($evidence.result.build.projectSha256 -eq (Get-FileHash -LiteralPath $plcProject -Algorithm SHA256).Hash) -Message 'Evidence PLC hash is not current.'
-    Assert-True -Condition ($evidence.result.build.warningSignatures.Count -eq 3) -Message 'Duplicate warning signatures were not grouped or positions were ignored.'
-    Assert-True -Condition ((($evidence.result.build.warningSignatures | Measure-Object -Property occurrences -Sum).Sum) -eq 4) -Message 'Warning signature multiset lost occurrences.'
+    Assert-True -Condition ($evidence.result.build.warningSignatures.Count -eq 4) -Message 'Duplicate warning signatures were not grouped or positions were ignored.'
+    Assert-True -Condition ((($evidence.result.build.warningSignatures | Measure-Object -Property occurrences -Sum).Sum) -eq 5) -Message 'Warning signature multiset lost occurrences.'
     $expectedWarningHashes = @(
-        '0C9C99BF556D6FD82A32D3D54BD3B08D65D4FAAA6C4C6447DB06F73D10A40326',
-        '5DF6075D9EF87EAE7982C7D9DCEC5EA11BFAB44CF632801C210077BFD171E063',
-        'DCEF480D8AC6D70976EDE3521AC2E95C6EA25A86764D0081F3EB4611FFF7DBA7'
+        '5B59FD8899682BFA744FABA2CF480D046F9740E9F2E4CE93933E9A95E3594684',
+        '7EBE2961F7D562D53519A0331B8032B7A6F93B444C37D7163368D0163A332D89',
+        '7F47FA28CC13BF9B3405BA3091F44ADB1FDDCBDA88544E39AEAAD06C70357421',
+        'F1C679AB237A7105FEEDD2376C596BE8B2C29C03BFC94CE4874FB14119F41955'
     )
     $actualWarningHashes = @($evidence.result.build.warningSignatures | ForEach-Object { [string]$_.sha256 } | Sort-Object)
     Assert-True -Condition (($actualWarningHashes -join '|') -eq ($expectedWarningHashes -join '|')) -Message 'Warning canonicalization hash contract changed unexpectedly.'
     Assert-True -Condition ($evidence.result.build.signatureAlgorithm -eq 'sha256:v1:normalized-warning-record') -Message 'Warning signature algorithm is not explicit.'
+    Assert-True -Condition ($evidence.result.semanticProofs.contractVersion -eq 1) -Message 'Semantic proof envelope was not preserved.'
+    Assert-True -Condition ($evidence.result.semanticProofs.mapping.verified) -Message 'Verified mapping proof was not preserved.'
     Assert-True -Condition ($evidence.guardrails.actionProjectGateAcquired -and $evidence.guardrails.actionProjectGateReleased) -Message 'Broker action project gate lifecycle was not retained.'
     Assert-True -Condition ($evidence.guardrails.actionProjectGateKind -eq 'broker-session-action-serialization') -Message 'Broker action project gate kind was not retained.'
     Assert-True -Condition (-not $evidence.guardrails.pleOrMcpStartedByAction) -Message 'Evidence claimed that this action started PLE/MCP.'
@@ -316,12 +411,31 @@ try {
     )
     Assert-True -Condition (($stationBefore -join '|') -eq ($stationAfter -join '|')) -Message 'Evidence producer changed Station files.'
 
+    $missingSemanticProofs = Copy-JsonValue -Value $observation
+    $missingSemanticProofs.result.PSObject.Properties.Remove('semanticProofs')
+    $missingSemanticProofsPath = Join-Path $engineeringRoot 'data\observations\missing-semantic-proofs.json'
+    Write-Utf8Json -Path $missingSemanticProofsPath -Value $missingSemanticProofs
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $missingSemanticProofsPath -OutputPath (Join-Path $outputRoot 'missing-semantic-proofs.json') -Description 'Successful observation without semantic proofs'
+
+    $incompleteSemanticProofs = Copy-JsonValue -Value $observation
+    $incompleteSemanticProofs.result.semanticProofs.PSObject.Properties.Remove('mapping')
+    $incompleteSemanticProofsPath = Join-Path $engineeringRoot 'data\observations\incomplete-semantic-proofs.json'
+    Write-Utf8Json -Path $incompleteSemanticProofsPath -Value $incompleteSemanticProofs
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $incompleteSemanticProofsPath -OutputPath (Join-Path $outputRoot 'incomplete-semantic-proofs.json') -Description 'Successful observation with incomplete semantic proofs'
+
+    $unverifiedSemanticProofs = Copy-JsonValue -Value $observation
+    $unverifiedSemanticProofs.result.semanticProofs.mapping.verified = $false
+    $unverifiedSemanticProofsPath = Join-Path $engineeringRoot 'data\observations\unverified-semantic-proofs.json'
+    Write-Utf8Json -Path $unverifiedSemanticProofsPath -Value $unverifiedSemanticProofs
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $unverifiedSemanticProofsPath -OutputPath (Join-Path $outputRoot 'unverified-semantic-proofs.json') -Description 'Successful observation with an unverified semantic proof'
+
     $firstEvidenceSha = (Get-FileHash -LiteralPath $evidencePath -Algorithm SHA256).Hash
     $null = Invoke-Producer -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $observationPath -OutputPath $evidencePath
     Assert-True -Condition ((Get-FileHash -LiteralPath $evidencePath -Algorithm SHA256).Hash -eq $firstEvidenceSha) -Message 'Idempotent evidence changed bytes.'
 
     $reordered = Copy-JsonValue -Value $observation
     $reordered.result.build.warningRecords = @(
+        $reordered.result.build.warningRecords[4],
         $reordered.result.build.warningRecords[3],
         $reordered.result.build.warningRecords[1],
         $reordered.result.build.warningRecords[2],
@@ -342,6 +456,12 @@ try {
     $null = Invoke-Producer -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $zeroWarningsObservationPath -OutputPath $zeroWarningsEvidencePath
     $zeroWarningEvidence = Read-Utf8Json -Path $zeroWarningsEvidencePath
     Assert-True -Condition (@($zeroWarningEvidence.result.build.warningSignatures).Count -eq 0) -Message 'A zero-warning Build did not produce an empty complete signature set.'
+
+    $truncatedWarnings = Copy-JsonValue -Value $observation
+    $truncatedWarnings.result.build.warningRecords[0] = 'More than 100 warnings occured: Skipping all further warning messages'
+    $truncatedWarningsObservationPath = Join-Path $engineeringRoot 'data\observations\truncated-warnings.json'
+    Write-Utf8Json -Path $truncatedWarningsObservationPath -Value $truncatedWarnings
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $truncatedWarningsObservationPath -OutputPath (Join-Path $outputRoot 'truncated-warnings.json') -Description 'PLE warning-output truncation sentinel'
 
     $legacyReadOnlyAudit = Copy-JsonValue -Value $observation
     $legacyReadOnlyAudit.capabilitiesInvoked = @('get_codesys_status', 'open_project', 'get_all_pou_code', 'compile_project')
@@ -376,8 +496,14 @@ try {
     $blocked.result.PSObject.Properties.Remove('build')
     $blocked.result.PSObject.Properties.Remove('acceptance')
     $blocked.PSObject.Properties.Remove('session')
+    $blocked.result.semanticProofs = New-SemanticProofs -Verified $false
     $blocked.result | Add-Member -NotePropertyName failureStage -NotePropertyValue 'session_health'
     $blocked.result | Add-Member -NotePropertyName reasonCode -NotePropertyValue 'PERSISTENT_SESSION_UNHEALTHY'
+    $blocked.result | Add-Member -NotePropertyName nextRoute -NotePropertyValue ([pscustomobject]@{
+        kind = 'manual_review'
+        reasonCode = 'PERSISTENT_SESSION_UNHEALTHY'
+        automaticExecutionAllowed = $false
+    })
     $blockedObservationPath = Join-Path $engineeringRoot 'data\observations\blocked.json'
     $blockedEvidencePath = Join-Path $outputRoot 'blocked.json'
     Write-Utf8Json -Path $blockedObservationPath -Value $blocked
@@ -385,6 +511,74 @@ try {
     $blockedEvidence = Read-Utf8Json -Path $blockedEvidencePath
     Assert-True -Condition ($blockedEvidence.result.status -eq 'blocked') -Message 'Blocked evidence lost its terminal status.'
     Assert-True -Condition ($null -eq $blockedEvidence.result.PSObject.Properties['build']) -Message 'Blocked evidence fabricated a Build.'
+    Assert-True -Condition (-not $blockedEvidence.result.semanticProofs.mapping.verified) -Message 'Blocked evidence did not preserve unverified semantic proofs.'
+    Assert-True -Condition (($blockedEvidence.result.nextRoute.kind -eq 'manual_review') -and (-not $blockedEvidence.result.nextRoute.automaticExecutionAllowed)) -Message 'Blocked evidence did not preserve the manual-only next route.'
+
+    $blockedAfterBuild = Copy-JsonValue -Value $observation
+    $blockedAfterBuild.status = 'blocked'
+    $blockedAfterBuild.PSObject.Properties.Remove('session')
+    $blockedAfterBuild.result.verificationOk = $false
+    $blockedAfterBuild.result.appliedReadbackOk = $false
+    $blockedAfterBuild.result.PSObject.Properties.Remove('acceptance')
+    $blockedAfterBuild.result.semanticProofs = New-SemanticProofs -Verified $false
+    $blockedAfterBuild.result | Add-Member -NotePropertyName failureStage -NotePropertyValue 'semantic-acceptance'
+    $blockedAfterBuild.result | Add-Member -NotePropertyName reasonCode -NotePropertyValue 'WARNING_RECORDS_UNTYPED'
+    $blockedAfterBuild.result | Add-Member -NotePropertyName nextRoute -NotePropertyValue ([pscustomobject]@{
+        kind = 'review-warning-baseline'
+        reasonCode = 'WARNING_RECORDS_UNTYPED'
+        automaticExecutionAllowed = $false
+    })
+    $blockedAfterBuild.result.build = [ordered]@{
+        buildId                     = 'fixture-build-blocked-0001'
+        projectPath                 = $plcProject
+        profile                     = 'ctrlX PLC 2.6.8'
+        projectSha256               = (Get-FileHash -LiteralPath $plcProject -Algorithm SHA256).Hash
+        startedAtUtc                = $buildStarted.ToString('o')
+        completedAtUtc              = $buildCompleted.ToString('o')
+        verified                    = $true
+        errors                      = 0
+        warnings                    = 1
+        messageCount                = 2
+        typedRecordsVerified        = $false
+        diagnosticRowsComplete      = $true
+        warningRecordsSafeForReview = $false
+        warningRecords              = @()
+        diagnosticRows              = @('C0543: fixture warning', 'Generate code complete')
+        summarySource               = 'codesys-persistent.compile_project'
+    }
+    $blockedAfterBuildObservationPath = Join-Path $engineeringRoot 'data\observations\blocked-after-build.json'
+    $blockedAfterBuildEvidencePath = Join-Path $outputRoot 'blocked-after-build.json'
+    Write-Utf8Json -Path $blockedAfterBuildObservationPath -Value $blockedAfterBuild
+    $null = Invoke-Producer -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $blockedAfterBuildObservationPath -OutputPath $blockedAfterBuildEvidencePath
+    $blockedAfterBuildEvidence = Read-Utf8Json -Path $blockedAfterBuildEvidencePath
+    Assert-True -Condition ($blockedAfterBuildEvidence.result.build.projectSha256 -eq (Get-FileHash -LiteralPath $plcProject -Algorithm SHA256).Hash) -Message 'Blocked fresh Build did not bind the current PLC identity hash.'
+    Assert-True -Condition ((-not $blockedAfterBuildEvidence.result.build.typedRecordsVerified) -and $blockedAfterBuildEvidence.result.build.diagnosticRowsComplete) -Message 'Blocked fresh Build lost typed/diagnostic completeness flags.'
+    Assert-True -Condition (($blockedAfterBuildEvidence.result.build.messageCount -eq 2) -and (@($blockedAfterBuildEvidence.result.build.diagnosticRows).Count -eq 2)) -Message 'Blocked fresh Build lost informational diagnostic rows.'
+    Assert-True -Condition ((@($blockedAfterBuildEvidence.result.build.warningRecords).Count -eq 0) -and (-not $blockedAfterBuildEvidence.result.build.warningRecordsSafeForReview)) -Message 'Blocked fresh Build fabricated warning records.'
+
+    $failedAfterBuild = Copy-JsonValue -Value $blockedAfterBuild
+    $failedAfterBuild.status = 'failed'
+    $failedAfterBuildObservationPath = Join-Path $engineeringRoot 'data\observations\failed-after-build.json'
+    Write-Utf8Json -Path $failedAfterBuildObservationPath -Value $failedAfterBuild
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $failedAfterBuildObservationPath -OutputPath (Join-Path $outputRoot 'failed-after-build.json') -Description 'FAILED observation carrying Build evidence'
+
+    $nonSemanticBlockedBuild = Copy-JsonValue -Value $blockedAfterBuild
+    $nonSemanticBlockedBuild.result.failureStage = 'session-health'
+    $nonSemanticBlockedBuildObservationPath = Join-Path $engineeringRoot 'data\observations\non-semantic-blocked-build.json'
+    Write-Utf8Json -Path $nonSemanticBlockedBuildObservationPath -Value $nonSemanticBlockedBuild
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $nonSemanticBlockedBuildObservationPath -OutputPath (Join-Path $outputRoot 'non-semantic-blocked-build.json') -Description 'Non-semantic BLOCKED observation carrying Build evidence'
+
+    $incompleteBlockedDiagnostics = Copy-JsonValue -Value $blockedAfterBuild
+    $incompleteBlockedDiagnostics.result.build.diagnosticRows = @('C0543: fixture warning')
+    $incompleteBlockedDiagnosticsObservationPath = Join-Path $engineeringRoot 'data\observations\incomplete-blocked-diagnostics.json'
+    Write-Utf8Json -Path $incompleteBlockedDiagnosticsObservationPath -Value $incompleteBlockedDiagnostics
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $incompleteBlockedDiagnosticsObservationPath -OutputPath (Join-Path $outputRoot 'incomplete-blocked-diagnostics.json') -Description 'Complete blocked Build with missing diagnostic rows'
+
+    $unknownBlockedBuildField = Copy-JsonValue -Value $blockedAfterBuild
+    $unknownBlockedBuildField.result.build | Add-Member -NotePropertyName untrusted -NotePropertyValue $true
+    $unknownBlockedBuildFieldObservationPath = Join-Path $engineeringRoot 'data\observations\unknown-blocked-build-field.json'
+    Write-Utf8Json -Path $unknownBlockedBuildFieldObservationPath -Value $unknownBlockedBuildField
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $unknownBlockedBuildFieldObservationPath -OutputPath (Join-Path $outputRoot 'unknown-blocked-build-field.json') -Description 'Blocked Build with an unknown field'
 
     $nullCapabilities = Copy-JsonValue -Value $blocked
     $nullCapabilities.capabilitiesInvoked = $null

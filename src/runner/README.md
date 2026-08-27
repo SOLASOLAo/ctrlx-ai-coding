@@ -33,16 +33,21 @@ exact open project; capture project file/structure fingerprints; call
 correlation token, timestamps, dirty/patch preflight proof and complete 0/0
 records); verify the same session/project again; and confirm the project
 fingerprints stayed stable. Cached `get_compile_messages` output is never used
-to decide fresh Build success. Until the independent semantic acceptance
-producers are implemented, the action terminates as
-`BLOCKED_CAPABILITY_NOT_IMPLEMENTED`, not as a fabricated success. The sequence
-contains no connect, download, runtime start/stop, variable write or FORCE
-operation.
+to decide fresh Build success. The controlled adapter now provides recursive
+I/O mapping and Symbol Configuration semantic facts, a final clean/stability
+probe after all reads, a 30-second full-response timeout and an 8 MiB streaming
+REST limit. Reviewed warning/scope/baseline artifacts are size-bounded and use
+one byte buffer for SHA-256 plus JSON parsing. Missing or incomplete proof,
+including PLE warning truncation, terminates as a stable `BLOCKED` reason rather
+than a fabricated success. The sequence contains no connect, download, runtime
+start/stop, variable write or FORCE operation.
 
-As of 2026-08-27 the repository contains the controlled adapter patch, but the
-globally installed npm adapter has not received the new ownership/fresh-build
-contract. Production Broker startup therefore fails closed before
-`launch_codesys`; no real action is accepted as successful in that state.
+As of 2026-08-28 the globally installed adapter matches the controlled patch
+and a real Station010 offline action has exercised the technical channel. It
+returned 0 errors, 101 visible warnings and 456 mapping facts without changing
+the project. Because the warning stream contains PLE's `>100 warnings`
+truncation sentinel and no formal human-reviewed semantic baseline exists, the
+action correctly remains bootstrap `BLOCKED`; this is not production acceptance.
 
 ## Build and offline tests
 
@@ -56,9 +61,8 @@ dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Broker.SelfTest\CtrlX.OpC
 
 The SelfTests use local fixtures, fake engineering sessions and local named
 pipes. They do not start PLE, MCP or any other engineering tool. Verified run
-on 2026-08-27: Runner 24 cases / 196 assertions (three consecutive runs),
-Engineering 9/9 and Broker 12/12 (three consecutive Broker runs); all Release
-builds were 0/0. The Runner stress cases use a deterministic submit/query
+on 2026-08-28: Runner 24 cases / 196 assertions, Engineering 37/37 and Broker
+13/13; Broker Release build was 0 warnings / 0 errors. The Runner stress cases use a deterministic submit/query
 handshake rather than a 250 ms scheduling assumption. Atomic Broker JSON
 renames retry only the bounded Windows access/sharing/lock violations and still
 fail closed after about 230 ms; immutable create races retain the stable
@@ -66,10 +70,10 @@ fail closed after about 230 ms; immutable create races retain the stable
 
 ## Explicit interactive acceptance commands
 
-These commands are reserved for the later real-PLE acceptance after the
-controlled adapter and semantic evidence producers pass review. They are not
-offline-test commands. With the currently installed adapter, `start` fails
-closed before launching PLE.
+These commands are reserved for an explicitly supervised real-PLE acceptance.
+They are not offline-test commands. The installed adapter now passes its
+controlled `-Check`, but every action still fails closed unless its current
+scope and independently human-reviewed baselines are hash-bound and complete.
 
 ```powershell
 $engineeringRoot = 'C:\path\to\ctrlx-ai-coding'
@@ -116,6 +120,8 @@ dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
 ## Acceptance status
 
 The code, protocol, persistence, ACL/identity gates and fixed Build sequence
-have passed offline tests without starting engineering tools. Acceptance with a
-real ctrlX PLE project and persistent MCP session has **not** yet been executed.
-No real-PLE, simulation, download or physical-PLC acceptance is claimed here.
+have passed offline tests. A real ctrlX PLE/persistent-MCP action has verified
+the read-only technical channel, project stability, fresh Build and semantic
+capture. It stopped at `SEMANTIC_BASELINE_BOOTSTRAP_REQUIRED`; truncated warning
+output also prevents formal warning-baseline approval. No simulation, download,
+runtime control, variable write, FORCE or physical-PLC acceptance is claimed.

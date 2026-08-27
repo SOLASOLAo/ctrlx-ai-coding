@@ -235,6 +235,33 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
             freshCapabilityFailure = exception.ReasonCode;
         }
 
+        BrokerSemanticSnapshotPlan? semanticPlan = null;
+        McpToolCallResult? semanticSnapshot = null;
+        var capabilities = new List<string> { "get_codesys_status", "compile_project" };
+        if (freshBuild is not null)
+        {
+            if (compile.IsError != (freshBuild.Errors > 0))
+            {
+                throw new BrokerEngineeringUncertainException(
+                    "BUILD_TOOL_STATUS_MISMATCH",
+                    "compile_project isError does not match its same-call fresh summary.");
+            }
+
+            if (freshBuild.Errors == 0)
+            {
+                semanticPlan = BrokerSemanticAcceptance.PrepareSnapshotPlan(action);
+                if (semanticPlan.CanInvoke)
+                {
+                    semanticSnapshot = await mcp.CallToolAsync(
+                        "get_ctrlx_semantic_snapshot",
+                        semanticPlan.Arguments,
+                        options.StatusTimeout + TimeSpan.FromMinutes(2),
+                        cancellationToken).ConfigureAwait(false);
+                    capabilities.Add("get_ctrlx_semantic_snapshot");
+                }
+            }
+        }
+
         var afterSession = await VerifyReadyAsync(action, cancellationToken).ConfigureAwait(false);
         if (afterSession != expectedSession)
         {
@@ -257,65 +284,146 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
 
         if (freshBuild is null)
         {
-            return new BrokerEngineeringOutcome(
+            var observation = BrokerObservationBuilder.BlockedAfterEngineering(
+                action,
+                "fresh-build",
+                "BLOCKED_CAPABILITY_NOT_IMPLEMENTED",
+                capabilities,
+                completedAt,
+                [
+                    "Action reused the Broker pre-established persistent session; it did not launch PLE or open a project.",
+                    $"Fresh compile evidence contract unavailable: {freshCapabilityFailure ?? "BUILD_FRESH_SUMMARY_UNAVAILABLE"}."
+                ]);
+            return BoundedOutcome(
+                action,
                 "BLOCKED",
                 "BLOCKED_CAPABILITY_NOT_IMPLEMENTED",
-                BrokerObservationBuilder.BlockedAfterEngineering(
-                    action,
-                    "fresh-build",
-                    "BLOCKED_CAPABILITY_NOT_IMPLEMENTED",
-                    ["get_codesys_status", "compile_project"],
-                    completedAt,
-                    [
-                        "Action reused the Broker pre-established persistent session; it did not launch PLE or open a project.",
-                        $"Fresh compile evidence contract unavailable: {freshCapabilityFailure ?? "BUILD_FRESH_SUMMARY_UNAVAILABLE"}."
-                    ]));
-        }
-
-        if (compile.IsError != (freshBuild.Errors > 0))
-        {
-            throw new BrokerEngineeringUncertainException(
-                "BUILD_TOOL_STATUS_MISMATCH",
-                "compile_project isError does not match its same-call fresh summary.");
+                observation,
+                capabilities,
+                completedAt);
         }
 
         if (freshBuild.Errors > 0)
         {
-            return new BrokerEngineeringOutcome(
+            var diagnosticRows = BrokerSemanticAcceptance.ObservationDiagnosticRows(freshBuild.DiagnosticRows);
+            var observation = BrokerObservationBuilder.Failed(
+                action,
+                "fresh-build",
+                "BUILD_ERRORS_PRESENT",
+                capabilities,
+                completedAt,
+                diagnosticRows.Select(row => row?.GetValue<string>() ?? string.Empty).ToArray());
+            return BoundedOutcome(
+                action,
                 "FAILED",
                 "BUILD_ERRORS_PRESENT",
-                BrokerObservationBuilder.Failed(
-                    action,
-                    "fresh-build",
-                    "BUILD_ERRORS_PRESENT",
-                    ["get_codesys_status", "compile_project"],
-                    completedAt,
-                    freshBuild.Records
-                        .Where(record => record.Severity == "error")
-                        .Select(record => record.Text)
-                        .ToArray()));
+                observation,
+                capabilities,
+                completedAt);
         }
 
-        // A clean Build is necessary but not sufficient for either allowlisted
-        // action. Ownership, mapping, readback, recoverable-baseline and Symbol
-        // post-processing all need independent auditable producers. Until those
-        // producers exist, the Broker must not synthesize a successful result.
-        return new BrokerEngineeringOutcome(
-            "BLOCKED",
-            "BLOCKED_CAPABILITY_NOT_IMPLEMENTED",
-            BrokerObservationBuilder.BlockedAfterEngineering(
+        semanticPlan ??= BrokerSemanticAcceptance.PrepareSnapshotPlan(action);
+        var buildProof = new BrokerCompileProofState(
+            freshBuild.BuildToken,
+            freshBuild.StartedAtUtc,
+            freshBuild.CompletedAtUtc,
+            freshBuild.Errors,
+            freshBuild.Warnings,
+            freshBuild.MessageCount,
+            freshBuild.TypedRecordsVerified,
+            freshBuild.DiagnosticRowsComplete,
+            freshBuild.Records
+                .Select(record => new BrokerCompileProofRecord(record.Severity, record.Text))
+                .ToArray(),
+            freshBuild.DiagnosticRows);
+        var semantic = await BrokerSemanticAcceptance.ProduceAsync(
+            action,
+            new BrokerProjectProofState(
+                before.ProjectSha256,
+                before.Length,
+                before.LastWriteTimeUtc,
+                before.StructureSha256),
+            new BrokerProjectProofState(
+                after.ProjectSha256,
+                after.Length,
+                after.LastWriteTimeUtc,
+                after.StructureSha256),
+            buildProof,
+            semanticPlan,
+            semanticSnapshot is null ? null : JoinText(semanticSnapshot.TextContent),
+            semanticSnapshot?.IsError ?? false,
+            completedAt,
+            cancellationToken).ConfigureAwait(false);
+        if (!semantic.Verified)
+        {
+            var observation = BrokerObservationBuilder.BlockedAfterEngineering(
                 action,
                 "semantic-acceptance",
-                "BLOCKED_CAPABILITY_NOT_IMPLEMENTED",
-                ["get_codesys_status", "compile_project"],
+                semantic.ReasonCode,
+                capabilities,
                 completedAt,
-                [
-                    "Action reused the Broker pre-established persistent session; it did not launch PLE or open a project.",
-                    "Semantic acceptance producers for ownership, mapping, readback and recoverable baseline are not implemented.",
-                    action.ActionKind == "verify_after_export_2"
-                        ? "Symbol Configuration post-processing was not independently verified."
-                        : "Second-export requirement was not inferred from action name alone."
-                ]));
+                new[]
+                {
+                    "Action reused the Broker pre-established persistent session; it did not launch PLE or open a project."
+                }.Concat(semantic.Diagnostics).ToArray(),
+                semantic.Proofs,
+                semantic.NextRoute,
+                buildProof,
+                new BrokerProjectProofState(
+                    after.ProjectSha256,
+                    after.Length,
+                    after.LastWriteTimeUtc,
+                    after.StructureSha256),
+                semantic.WarningRecords,
+                semantic.DiagnosticRows,
+                semantic.WarningRecordsSafeForReview);
+            return BoundedOutcome(
+                action,
+                "BLOCKED",
+                semantic.ReasonCode,
+                observation,
+                capabilities,
+                completedAt);
+        }
+
+        var succeeded = BrokerObservationBuilder.Succeeded(
+            action,
+            expectedSession,
+            buildProof,
+            new BrokerProjectProofState(
+                after.ProjectSha256,
+                after.Length,
+                after.LastWriteTimeUtc,
+                after.StructureSha256),
+            semantic,
+            capabilities,
+            completedAt);
+        return BoundedOutcome(
+            action,
+            "SUCCEEDED",
+            "BUILD_AND_SEMANTICS_VERIFIED",
+            succeeded,
+            capabilities,
+            completedAt);
+    }
+
+    private static BrokerEngineeringOutcome BoundedOutcome(
+        ValidatedRunnerAction action,
+        string terminalState,
+        string reasonCode,
+        JsonObject observation,
+        IReadOnlyList<string> capabilities,
+        DateTimeOffset completedAtUtc)
+    {
+        var bounded = BrokerObservationBuilder.EnforceTerminalObservationBudget(
+            action,
+            observation,
+            capabilities,
+            completedAtUtc,
+            out var replaced);
+        return replaced
+            ? new BrokerEngineeringOutcome("BLOCKED", "TERMINAL_OBSERVATION_TOO_LARGE", bounded)
+            : new BrokerEngineeringOutcome(terminalState, reasonCode, bounded);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
@@ -599,9 +707,11 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
         var errors = RequiredJson<int>(summary, "errorCount");
         var warnings = RequiredJson<int>(summary, "warningCount");
         var messageCount = RequiredJson<int>(summary, "messageCount");
+        var typedRecordsVerified = RequiredJson<bool>(summary, "typedRecordsVerified");
+        var diagnosticRowsComplete = RequiredJson<bool>(summary, "diagnosticRowsComplete");
         if (!SamePath(project, expectedProject) || !IsSafeIdentifier(token) || token.Length < 16 ||
             errors < 0 || warnings < 0 || messageCount < 0 ||
-            errors > 1_000_000 || warnings > 1_000_000)
+            errors > 1_000_000 || warnings > 1_000_000 || messageCount > 2048)
         {
             throw new BrokerEngineeringException(
                 "BUILD_FRESH_SUMMARY_INVALID",
@@ -653,13 +763,42 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
             records.Add(new CompileRecord(severity, recordText));
         }
 
-        if (records.Count != messageCount ||
-            records.Count(record => record.Severity == "error") != errors ||
-            records.Count(record => record.Severity == "warning") != warnings)
+        if ((typedRecordsVerified &&
+                (records.Count != messageCount ||
+                 records.Count(record => record.Severity == "error") != errors ||
+                 records.Count(record => record.Severity == "warning") != warnings)) ||
+            (!typedRecordsVerified && records.Count != 0))
         {
             throw new BrokerEngineeringException(
                 "BUILD_FRESH_RECORDS_INVALID",
                 "compile_project summary counts do not match its same-call records.");
+        }
+
+        var diagnosticNodes = summary["diagnosticRows"] as JsonArray
+            ?? throw new BrokerEngineeringException(
+                "BUILD_FRESH_RECORDS_INVALID",
+                "compile_project summary diagnostic rows are missing.");
+        if (diagnosticNodes.Count > messageCount ||
+            (diagnosticRowsComplete && diagnosticNodes.Count != messageCount))
+        {
+            throw new BrokerEngineeringException(
+                "BUILD_FRESH_RECORDS_INVALID",
+                "compile_project diagnostic row completeness does not match its same-call message count.");
+        }
+
+        var diagnosticRows = new List<string>(diagnosticNodes.Count);
+        foreach (var node in diagnosticNodes)
+        {
+            if (node is not JsonValue value ||
+                !value.TryGetValue<string>(out var row) ||
+                string.IsNullOrWhiteSpace(row))
+            {
+                throw new BrokerEngineeringException(
+                    "BUILD_FRESH_RECORDS_INVALID",
+                    "compile_project summary contains an invalid diagnostic row.");
+            }
+
+            diagnosticRows.Add(row.Trim());
         }
 
         return new FreshCompileSummary(
@@ -668,7 +807,11 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
             producerCompleted,
             errors,
             warnings,
-            records);
+            messageCount,
+            typedRecordsVerified,
+            diagnosticRowsComplete,
+            records,
+            diagnosticRows);
     }
 
     private static T RequiredJson<T>(JsonObject value, string name)
@@ -747,10 +890,13 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
         }
     }
 
-    private static string ProjectStructureUri(string projectPath)
+    internal static string ProjectStructureUri(string projectPath)
     {
         var normalized = Path.GetFullPath(projectPath).Replace('\\', '/');
-        var encoded = string.Join('/', normalized.Split('/').Select(Uri.EscapeDataString));
+        var encoded = string.Join('/', normalized.Split('/').Select((segment, index) =>
+            index == 0 && segment.Length == 2 && char.IsAsciiLetter(segment[0]) && segment[1] == ':'
+                ? segment
+                : Uri.EscapeDataString(segment)));
         return $"codesys://project/{encoded}/structure";
     }
 
@@ -790,7 +936,11 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
         DateTimeOffset CompletedAtUtc,
         int Errors,
         int Warnings,
-        IReadOnlyList<CompileRecord> Records);
+        int MessageCount,
+        bool TypedRecordsVerified,
+        bool DiagnosticRowsComplete,
+        IReadOnlyList<CompileRecord> Records,
+        IReadOnlyList<string> DiagnosticRows);
 }
 
 public class BrokerEngineeringException : Exception

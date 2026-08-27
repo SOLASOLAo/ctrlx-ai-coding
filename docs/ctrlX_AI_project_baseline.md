@@ -1,7 +1,7 @@
 ﻿# ctrlX AI 项目基线记录(MD 版)
 
 > Persistent MCP + Control plus Studio 混合工作流
-> 记录日期:2026-08-11 · 更新:2026-08-22（EtherCAT BMK 与 Symbol 导出闭环实测）· 机器:AGZ1WX-APAC
+> 记录日期:2026-08-11 · 更新:2026-08-28（Controlled Runner 真实 PLE 技术通道与失败关闭加固）· 环境:已验证工程工作站
 > 配套 HTML:`ctrlX_AI_project_baseline.html`(同目录)
 
 ---
@@ -267,6 +267,14 @@ args = ["--codesys-path", "C:\\ctrlXWORKS\\ctrlXPLCEngineering\\PLE_V_0206\\Stud
 - **覆盖范围**：同一补丁同步修改 npm 包 `dist/scripts` 与 `src/scripts` 中的 `_message_utils.py`、`compile_project.py`、`get_compile_messages.py`；`test-fast-compile-message.py` 离线覆盖干净、失败、Application current 与未知摘要四类情况。
 - **实测**：Station010 离线 Build 从 MCP 超过 300 s 降到约 **7.6 s**（0 errors / 7 warnings），缓存消息读取约 **0.8 s**；未连接、下载或运行实体 PLC。
 
+### 7.9 Controlled Runner 真实 PLE 技术通道（2026-08-28）
+
+- 唯一 interactive Broker 持有 persistent MCP/PLE；immutable action 只允许固定的 status、fresh Build 与 read-only semantic snapshot，不提供 generic 或在线工具面。
+- 受控 adapter 返回 same-call `buildId`、固定类别 typed warnings，并递归采集声明 scope 下的 ctrlX connector I/O Mapping 与 Application Symbol Configuration 摘要。PLE REST 必须使用 `localhost`；Symbol payload 若因 IEC 文本未转义而不是合法 JSON，只在 adapter 内做有界规范化/哈希，原始 payload 不跨 MCP。
+- Station010 实测 fresh Build 为 **0 errors / 101 条可见 warnings**；其中包含 PLE 的 `>100 warnings` 截断哨兵，所以这不证明完整告警全集。semantic snapshot 为 456 条 mapping facts（438 bound / 18 unbound）。mapping SHA-256 为 `491B719C...A5086`，Symbol SHA-256 为 `3FE32193...E686F`。
+- PLC project 与结构哈希在 action 前后完全一致；未修改 PLC/IO/ST，未连接 PLC、下载、启停 runtime、写变量或 FORCE。
+- 没有经人工审阅的 warning/semantic baseline 时，action 必须以 bootstrap `BLOCKED` 结束。Runner 可以生成 deterministic candidate，但不得自动晋升为正式 baseline；正式文件必须绑定 reviewer 和独立 evidence hash，并通过新的 immutable action 复验。包含截断哨兵的 warning population 由 Broker、Stage 1、Stage 2 和 evidence sealer 以 `PLE_WARNING_OUTPUT_TRUNCATED` 失败关闭，不能批准为正式 baseline。
+
 ---
 
 ## 8. 脚本 API 速查(IronPython 2.7,ctrlX 脚本引擎)
@@ -338,10 +346,21 @@ ctrlX-PLC-Engineering.exe --profile="ctrlX PLC 2.6.8" --noUI --runscript="脚本
 - `skills/ctrlx-opcon-engineering/` 是 Codex 工作流/安全层；Skill 组合流程，项目事实仍来自当前项目的 `config/specs/ai/src/catalog`
 - Post-export 使用 `pending → processing → done/failed` 独立请求；hook 本身不得启动 PLE/MCP，消费者必须把 Station/PLC 路径与 `config/project.yaml` 强一致校验
 - 2026-08-22 已增加 Stage 2 PlanOnly operation ledger：成功的 Stage 1 报告生成不可变 action，并只接受与 operation/action 哈希绑定的 runner evidence；它本身不启动 PLE、MCP 或 REST
-- Stage 2 已增加纯离线 runner evidence 封装器：它不执行 PLE/MCP/REST，只复核 action/Stage 1/ownership/所需关键 Station 指纹、Build 新鲜度和当前 PLC SHA，并以固定算法生成 warning 签名多重集；live engineering action 仍由既有的唯一 persistent Codex 会话执行
-- 当前 `workflow-local` lease 仅代表单 Codex 会话协调，真正的跨进程 MCP 租约尚未实现；条件 Export #2 只在记录到 Symbol/后处理需求时进入人工同步点
-- runner 报告的 session PID、session reuse、acceptance 和 workflow-local lease 是结构化自证；纯离线封装器校验必填性与相互一致性，但不独立查询进程表/MCP，因此它们不是加密证明或 OS 强制锁
-- MCP 继续按 `docs/mcp_productization_roadmap.md` 产品化：受控 fork、跨进程租约、异步 operation、`project_health`、`compile_project_v2`、FORCE 生命周期、`apply_change_set`，再实现正式 Symbol/I/O/SFC 接口
+- Stage 2 的纯离线 runner evidence 封装器不执行 PLE/MCP/REST；它复核 action/Stage 1/ownership/关键 Station 指纹、Build 新鲜度、当前 PLC SHA 和 semantic proofs，并以固定算法生成 warning 签名多重集。live engineering action 由显式启动的 interactive Broker 执行，该 Broker 是唯一 persistent MCP/PLE owner。
+- P1.1 已提供 OS 排他运行租约；P1.2 client/action 与 Broker session/action serialization 分别提供跨进程和执行期门禁。条件 Export #2 仍只在记录到 Symbol/后处理需求时进入人工同步点。
+- current-user Pipe/registration、PID/session/executable/project identity 校验用于防止误连和跨会话混用，但不防御同一 Windows 用户下的恶意进程；商业发行仍需受控安装和签名/release-bound Broker identity。evidence 是哈希绑定的审计证据，不是加密签名。
+- 后续产品化重点是完整 warning population、独立人工 baseline 验收与新 immutable action 复验；通过后再推进 P1.3 Host、`project_health`、`compile_project_v2`、受控 change set、FORCE 生命周期及正式 Symbol/I/O/SFC 接口。
+
+## 10.2 Runner baseline 审阅边界（2026-08-28）
+
+- 真实 PLE 技术通道通过不等于工程 `DONE`；Build 0 errors 也不等于 warning、I/O mapping 或 Symbol 语义已经被批准。
+- warning candidate 保存当前 warning signature multiset；semantic candidate 保存 scope 绑定的 mapping facts 与 Symbol 摘要。两者只能进入 `docs/reviews/`，状态必须是 `pending-human-review`。
+- `review.reviewBlockers` 含 `PLE_WARNING_OUTPUT_TRUNCATED` 时，当前 warning 集合不完整，禁止建立正式 warning baseline。已确认 100 条来自 PLE 工程 `Compile Options` 的编译器生成上限，而不是 MCP/ScriptEngine 的读取分页。先在隔离工程副本中通过官方 REST 对 `CompileOptionsEditor.maxCompilerWarnings=<no limit>` 完成 GET/PUT/readback/Build/回滚验证，再由新 action 生成新候选；不得手改 `.project`、`.opt`、注册表或插件文件。
+- AI/脚本不得替人填写 reviewer、reviewedAtUtc 或独立 evidence，也不得把 candidate 重命名为 `config/*-baseline.json`。
+- 独立人审 evidence 必须是 `docs/reviews/` 下单独的人工文档；candidate、AI triage、reviews index、目录外文件及其改名/逐字副本均不能作为 evidence。Stage 1/2 对 review 文件只做一次有界读取，严格 UTF-8、内容检查和 action-bound SHA 均来自同一 byte snapshot。
+- warning baseline、semantic scope 和 semantic baseline 同样按各自上限单次读取，并用同一 bytes 完成 SHA 与 JSON 解析。畸形 Post-export 请求的失败记录不得保存 raw/original payload，只保留 1 MiB 上限内的字节数、SHA-256 和固定安全诊断元数据。
+- 正式 baseline 的 project/profile、scope、candidate hashes、review evidence path/SHA 任一变化都使旧 action 失效；必须回到 Stage 1 创建新的 operation/action。
+- P1.2 只有在人工审阅完成且新 immutable action 复验通过后才能标为完成；此前不启动 P1.3 Windows Runner Host 产品化。
 
 ---
 

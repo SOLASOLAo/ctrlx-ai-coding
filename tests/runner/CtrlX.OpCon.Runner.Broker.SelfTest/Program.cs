@@ -16,6 +16,7 @@ internal static class Program
     {
         var tests = new (string Name, Func<Task> Run)[]
         {
+            ("semantic snapshot tool is required by MCP handshake", SemanticSnapshotToolIsRequiredByHandshakeAsync),
             ("both allowlisted actions execute serially", BothAllowlistedActionsExecuteSeriallyAsync),
             ("duplicate submit executes once", DuplicateSubmitExecutesOnceAsync),
             ("session verification failure is terminal blocked", VerificationFailureIsTerminalBlockedAsync),
@@ -53,6 +54,42 @@ internal static class Program
 
         Console.Error.WriteLine($"Broker offline self-test failed: {failures.Count} case(s).");
         return 1;
+    }
+
+    private static Task SemanticSnapshotToolIsRequiredByHandshakeAsync()
+    {
+        const string semanticTool = "get_ctrlx_semantic_snapshot";
+        var options = new McpProcessOptions
+        {
+            ExecutablePath = Environment.ProcessPath
+                ?? throw new InvalidOperationException("Self-test process path is unavailable."),
+            WorkingDirectory = AppContext.BaseDirectory
+        };
+        Require(options.RequiredTools.Contains(semanticTool, StringComparer.Ordinal),
+            "The default MCP handshake contract must require the semantic snapshot tool.");
+
+        var complete = options.RequiredTools.ToDictionary(
+            name => name,
+            name => new McpToolDescriptor(name, null, new JsonObject(), new JsonObject()),
+            StringComparer.Ordinal);
+        JsonLineMcpClient.EnsureRequiredToolsAdvertised(options.RequiredTools, complete);
+
+        var missingSemantic = complete
+            .Where(entry => !entry.Key.Equals(semanticTool, StringComparison.Ordinal))
+            .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal);
+        try
+        {
+            JsonLineMcpClient.EnsureRequiredToolsAdvertised(options.RequiredTools, missingSemantic);
+            throw new InvalidOperationException("A missing semantic tool did not fail the handshake contract.");
+        }
+        catch (McpClientException exception)
+        {
+            Require(exception.ReasonCode == "MCP_PROTOCOL_INVALID" &&
+                exception.Message.Contains(semanticTool, StringComparison.Ordinal),
+                "A missing semantic tool must fail fast with the stable MCP protocol reason and tool name.");
+        }
+
+        return Task.CompletedTask;
     }
 
     private static async Task BothAllowlistedActionsExecuteSeriallyAsync()

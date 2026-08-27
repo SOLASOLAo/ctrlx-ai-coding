@@ -25,6 +25,7 @@ $requiredFiles = @(
     'scripts/cpstudio/Invoke-PostExportAudit.ps1',
     'scripts/cpstudio/Invoke-PostExportEngineering.ps1',
     'scripts/cpstudio/New-PostExportRunnerEvidence.ps1',
+    'scripts/cpstudio/New-EngineeringSemanticBaselineCandidate.ps1',
     'scripts/cpstudio/Invoke-OfflinePostExportCheck.ps1',
     'scripts/cpstudio/offline_mcp_build.cjs',
     'scripts/cpstudio/Run-OfflinePostExportCheck.cmd',
@@ -32,6 +33,8 @@ $requiredFiles = @(
     'tests/cpstudio/Test-PostExportQueue.ps1',
     'tests/cpstudio/Test-PostExportEngineering.ps1',
     'tests/cpstudio/Test-PostExportRunnerEvidence.ps1',
+    'tests/cpstudio/Test-EngineeringSemanticBaselineCandidate.ps1',
+    'docs/reviews/README.md',
     'tests/cpstudio/Test-OfflinePostExportCheck.ps1'
 )
 

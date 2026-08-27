@@ -23,7 +23,10 @@
     9. Refuses compile_project when the project is dirty instead of implicitly saving it
    10. Exposes explicit broker/external PLE ownership and guards shutdown
    11. Returns a correlated same-call compile summary even for a clean 0/0 Build
-   12. Verifies Python/JavaScript syntax when the runtimes are available
+   12. Reads typed warnings only from two fixed compile categories and Warning severity
+   13. Adds a read-only ctrlX I/O Mapping + Symbol Configuration snapshot tool
+   14. Verifies Python/JavaScript syntax before committing any changed file;
+       missing validators fail closed unless -SkipRuntimeSyntaxCheck is explicit
 
   WARNING: `npm install/update codesys-mcp-persistent` OVERWRITES the patch.
   Re-run this script after every upgrade.
@@ -54,8 +57,8 @@ $marker = "ctrlX PATCH (2026-08-12)"
 $connectorMarker = "ctrlX/DataLayer devices expose I/O channels as mappable"
 $readbackMarker = "I/O mapping read-back mismatch"
 $batchMarker = "ctrlX batch I/O mapping"
-$fastMessageMarker = "ctrlX fast compile message path v2 (2026-08-20)"
-$fastMessageLegacyMarker = "ctrlX fast compile message path (2026-08-20)"
+$fastMessageMarker = "ctrlX fast compile message path v4 (2026-08-28)"
+$fastMessageLegacyMarker = "ctrlX fast compile message path"
 $fastCompileMarker = "ctrlX bounded application build (2026-08-20)"
 $fastCachedMarker = "ctrlX bounded cached-message read (2026-08-20)"
 $safeAdoptionMarker = "ctrlX safe stale-session adoption (2026-08-20)"
@@ -64,10 +67,94 @@ $pleOwnershipMarker = "ctrlX PLE ownership contract v1 (2026-08-27)"
 $freshCompileContractLegacyMarker = "ctrlX fresh compile contract v1 (2026-08-27)"
 $freshCompileContractMarker = "ctrlX fresh compile contract v2 (2026-08-27)"
 $strictBuildSummaryMarker = "ctrlX explicit Build summary only (2026-08-27)"
+$typedWarningProducerMarker = "ctrlX fixed-category typed warning producer v1 (2026-08-28)"
+$semanticSnapshotMarker = "ctrlX semantic snapshot contract v1 (2026-08-27)"
 $utf8nobom = New-Object System.Text.UTF8Encoding($false)
 
 function ReadText([string]$p) {
   return ([System.IO.File]::ReadAllText($p)).Replace("`r`n", "`n").Replace("`r", "`n")
+}
+
+function GetTextSha256([string]$value) {
+  $bytes = $utf8nobom.GetBytes($value)
+  $algorithm = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return ([System.BitConverter]::ToString($algorithm.ComputeHash($bytes))).Replace("-", "")
+  } finally {
+    $algorithm.Dispose()
+  }
+}
+
+$script:patchTransactionRoot = $null
+$script:patchTransactionEntries = @()
+
+function Remove-PatchTransactionRoot {
+  if ([string]::IsNullOrWhiteSpace($script:patchTransactionRoot) -or
+      -not (Test-Path -LiteralPath $script:patchTransactionRoot)) {
+    return
+  }
+  $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\')
+  $resolved = [System.IO.Path]::GetFullPath($script:patchTransactionRoot)
+  $expectedPrefix = $tempRoot + "\ctrlx-patch-transaction-"
+  if (-not $resolved.StartsWith($expectedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to remove unexpected patch transaction path: $resolved"
+  }
+  [System.IO.Directory]::Delete($resolved, $true)
+  $script:patchTransactionRoot = $null
+}
+
+function Start-PatchTransaction([string[]]$paths) {
+  if ($script:patchTransactionRoot) { throw "Patch transaction is already active." }
+  $script:patchTransactionRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+    "ctrlx-patch-transaction-" + [Guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Path $script:patchTransactionRoot -Force | Out-Null
+  $script:patchTransactionEntries = @()
+  $index = 0
+  foreach ($path in ($paths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)) {
+    $resolved = [System.IO.Path]::GetFullPath($path)
+    $existed = Test-Path -LiteralPath $resolved -PathType Leaf
+    $backupPath = Join-Path $script:patchTransactionRoot (("{0:D4}.bin" -f $index))
+    if ($existed) { Copy-Item -LiteralPath $resolved -Destination $backupPath -Force }
+    $script:patchTransactionEntries += [PSCustomObject]@{
+      Path = $resolved
+      Existed = $existed
+      BackupPath = $backupPath
+    }
+    $index++
+  }
+}
+
+function Restore-PatchTransaction {
+  if (-not $script:patchTransactionRoot) { return }
+  foreach ($entry in $script:patchTransactionEntries) {
+    if ($entry.Existed) {
+      Copy-Item -LiteralPath $entry.BackupPath -Destination $entry.Path -Force
+    } elseif (Test-Path -LiteralPath $entry.Path -PathType Leaf) {
+      [System.IO.File]::Delete($entry.Path)
+    }
+  }
+  Remove-PatchTransactionRoot
+  $script:patchTransactionEntries = @()
+}
+
+function Complete-PatchTransaction {
+  Remove-PatchTransactionRoot
+  $script:patchTransactionEntries = @()
+}
+
+function Fail-PatchSyntaxValidation([string]$label, [int]$exitCode) {
+  throw "$label failed with exit code $exitCode."
+}
+
+function CountLiteral([string]$source, [string]$needle) {
+  if ([string]::IsNullOrEmpty($needle)) { return 0 }
+  $count = 0
+  $index = 0
+  while (($index = $source.IndexOf($needle, $index, [System.StringComparison]::Ordinal)) -ge 0) {
+    $count++
+    $index += $needle.Length
+  }
+  return $count
 }
 
 function PatchIoMappingScript([string]$mapFile) {
@@ -686,14 +773,41 @@ function PatchPleOwnershipLauncher([string]$launcherFile, [bool]$isTypeScript) {
   if (-not (Test-Path -LiteralPath $launcherFile)) { return }
 
   $source = ReadText $launcherFile
-  $isPatched = $source.Contains($pleOwnershipMarker)
+  $ownershipMethod = if ($isTypeScript) {
+@'
+  ownsProcess(): boolean {
+    return this.process !== null;
+  }
+'@.Replace("`r`n", "`n").TrimEnd("`n")
+  } else {
+@'
+    ownsProcess() {
+        return this.process !== null;
+    }
+'@.Replace("`r`n", "`n").TrimEnd("`n")
+  }
+  $adoptionStart = $source.IndexOf("Adopting verified existing session:")
+  $adoptionEnd = $source.IndexOf("this.startHealthMonitor()", [Math]::Max(0, $adoptionStart))
+  $adoptionBlock = if ($adoptionStart -ge 0 -and $adoptionEnd -gt $adoptionStart) {
+    $source.Substring($adoptionStart, $adoptionEnd - $adoptionStart)
+  } else { "" }
+  $hasMarker = $source.Contains($pleOwnershipMarker)
+  $isPatched =
+    (CountLiteral $source $pleOwnershipMarker) -eq 1 -and
+    (CountLiteral $source $ownershipMethod) -eq 1 -and
+    $adoptionBlock.Contains("this.process = null;") -and
+    $source.Contains($safeAdoptionMarker)
   if ($Check) {
-    Write-Host ("[{0}] {1} explicit PLE ownership provenance" -f $(if ($isPatched) { "OK " } else { "TODO" }), $launcherFile)
+    $state = if ($isPatched) { "OK " } elseif ($hasMarker) { "UPGR" } else { "TODO" }
+    Write-Host ("[{0}] {1} explicit PLE ownership provenance" -f $state, $launcherFile)
     return
   }
   if ($isPatched) {
     Write-Host "PLE ownership provenance already present - skipped: $launcherFile"
     return
+  }
+  if ($hasMarker) {
+    Write-Error "Partial PLE ownership contract found; restore the file from its package/backup before reapplying: $launcherFile"
   }
 
   BackupOnce $launcherFile "bak_pre_ple_ownership_contract"
@@ -736,14 +850,33 @@ function PatchPleOwnershipServer([string]$serverFile, [bool]$isTypeScript) {
   if (-not (Test-Path -LiteralPath $serverFile)) { return }
 
   $source = ReadText $serverFile
-  $isPatched = $source.Contains($pleOwnershipMarker)
+  $toolStartForCheck = $source.IndexOf("'shutdown_codesys'")
+  $toolEndForCheck = $source.IndexOf("'eval_python'", [Math]::Max(0, $toolStartForCheck))
+  $toolBlockForCheck = if ($toolStartForCheck -ge 0 -and $toolEndForCheck -gt $toolStartForCheck) {
+    $source.Substring($toolStartForCheck, $toolEndForCheck - $toolStartForCheck)
+  } else { "" }
+  $signalStartForCheck = $source.IndexOf("const shutdown = async () =>")
+  $signalTailForCheck = if ($signalStartForCheck -ge 0) { $source.Substring($signalStartForCheck) } else { "" }
+  $statusOwnershipExpression = "launcher ? (launcher.ownsProcess() ? 'broker' : (status.state === 'ready' ? 'external' : 'none')) : 'none'"
+  $hasMarker = $source.Contains($pleOwnershipMarker)
+  $isPatched =
+    (CountLiteral $source $pleOwnershipMarker) -eq 1 -and
+    (CountLiteral $source "'PLE Ownership Contract: ctrlx-ple-ownership-v1'") -eq 1 -and
+    $source.Contains($statusOwnershipExpression) -and
+    $toolBlockForCheck.Contains("if (!launcher || !launcher.ownsProcess()) {") -and
+    $toolBlockForCheck.Contains("No Broker-owned persistent CODESYS instance to shut down.") -and
+    $signalTailForCheck.Contains("if (launcher && launcher.ownsProcess()) {")
   if ($Check) {
-    Write-Host ("[{0}] {1} PLE ownership status/shutdown guard" -f $(if ($isPatched) { "OK " } else { "TODO" }), $serverFile)
+    $state = if ($isPatched) { "OK " } elseif ($hasMarker) { "UPGR" } else { "TODO" }
+    Write-Host ("[{0}] {1} PLE ownership status/shutdown guard" -f $state, $serverFile)
     return
   }
   if ($isPatched) {
     Write-Host "PLE ownership status/shutdown guard already present - skipped: $serverFile"
     return
+  }
+  if ($hasMarker) {
+    Write-Error "Partial PLE ownership server contract found; restore the file from its package/backup before reapplying: $serverFile"
   }
 
   BackupOnce $serverFile "bak_pre_ple_ownership_contract"
@@ -797,17 +930,201 @@ function PatchPleOwnershipServer([string]$serverFile, [bool]$isTypeScript) {
   Write-Host "patched PLE ownership status/shutdown guard -> $serverFile"
 }
 
+function PatchSemanticSnapshotScript([string]$snapshotFile) {
+  $asset = Join-Path $PSScriptRoot "get_ctrlx_semantic_snapshot.py"
+  if (-not (Test-Path -LiteralPath $asset)) {
+    Write-Error "Canonical semantic snapshot asset is missing: $asset"
+  }
+  $expected = ReadText $asset
+  $current = if (Test-Path -LiteralPath $snapshotFile) { ReadText $snapshotFile } else { "" }
+  $hasMarker = $current.Contains($semanticSnapshotMarker)
+  $currentSha256 = GetTextSha256 $current
+  # Exact hash of the immediately preceding canonical producer.  Only that
+  # known complete asset may be upgraded in place; a partial/hand-edited
+  # marker remains fail-closed.
+  $previousCanonicalSha256 = "04D68D6C4B712550F97C4A4917770A18DEFE53438029793EF0B9501C0B5E21BE"
+  $canUpgrade =
+    $hasMarker -and
+    $currentSha256 -eq $previousCanonicalSha256 -and
+    (CountLiteral $current $semanticSnapshotMarker) -eq 1 -and
+    $current.Contains('u"recordsComplete": records_complete') -and
+    (-not $current.Contains(".save("))
+  $isPatched =
+    $current -eq $expected -and
+    (CountLiteral $current $semanticSnapshotMarker) -eq 1 -and
+    $current.Contains('producer": u"codesys-persistent.get_ctrlx_semantic_snapshot"') -and
+    $current.Contains('u"contractId": SEMANTIC_CONTRACT_ID') -and
+    $current.Contains('MAPPING_SCOPES_B64 = "{MAPPING_SCOPES_B64}"') -and
+    $current.Contains("MAX_MAPPING_RECORDS = 2048") -and
+    $current.Contains("def _enumerate_scope_node(") -and
+    $current.Contains("def _read_project_dirty(") -and
+    $current.Contains('u"dirtyCheckCount": 2') -and
+    $current.Contains('u"dirtyBefore": dirty_before') -and
+    $current.Contains('u"dirtyAfter": dirty_after') -and
+    $current.Contains('u"traversalFailureCount": len(_traversal_failures)') -and
+    $current.Contains('u"recordsComplete": records_complete') -and
+    (-not $current.Contains(".save("))
+  if ($Check) {
+    $state = if ($isPatched) { "OK " } elseif ($canUpgrade) { "UPGR" } else { "TODO" }
+    Write-Host ("[{0}] {1} read-only semantic mapping snapshot producer" -f $state, $snapshotFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "read-only semantic mapping snapshot producer already present - skipped: $snapshotFile"
+    return
+  }
+  if ($hasMarker -and -not $canUpgrade) {
+    Write-Error "Partial semantic snapshot script contract found; restore the file from its package/backup before reapplying: $snapshotFile"
+  }
+
+  if (Test-Path -LiteralPath $snapshotFile) {
+    BackupOnce $snapshotFile "bak_pre_semantic_snapshot_contract"
+  }
+  [System.IO.File]::WriteAllText($snapshotFile, $expected, $utf8nobom)
+  Write-Host "$(if ($canUpgrade) { 'upgraded' } else { 'installed' }) read-only semantic mapping snapshot producer -> $snapshotFile"
+}
+
+function PatchSemanticSnapshotServer([string]$serverFile, [bool]$isTypeScript) {
+  if (-not (Test-Path -LiteralPath $serverFile)) { return }
+
+  $assetName = if ($isTypeScript) {
+    "get_ctrlx_semantic_snapshot.tool.ts"
+  } else {
+    "get_ctrlx_semantic_snapshot.tool.js"
+  }
+  $assetPath = Join-Path $PSScriptRoot $assetName
+  if (-not (Test-Path -LiteralPath $assetPath)) {
+    Write-Error "Canonical semantic snapshot server asset is missing: $assetPath"
+  }
+  $block = ReadText $assetPath
+  $source = ReadText $serverFile
+  $hasMarker = $source.Contains($semanticSnapshotMarker)
+  $toolRegistration = if ($isTypeScript) {
+    "  s.tool(`n    'get_ctrlx_semantic_snapshot',"
+  } else {
+    "    s.tool('get_ctrlx_semantic_snapshot',"
+  }
+  $blockStartMarker = if ($isTypeScript) {
+    "  // $semanticSnapshotMarker"
+  } else {
+    "    // $semanticSnapshotMarker"
+  }
+  $anchor = if ($isTypeScript) {
+@'
+  s.tool(
+    'map_io_channel',
+'@.Replace("`r`n", "`n")
+  } else {
+@'
+    s.tool('map_io_channel',
+'@.Replace("`r`n", "`n")
+  }
+  $blockStart = $source.IndexOf($blockStartMarker, [System.StringComparison]::Ordinal)
+  $toolStart = $source.IndexOf($toolRegistration, [System.StringComparison]::Ordinal)
+  $toolEnd = if ($blockStart -ge 0) {
+    $source.IndexOf($anchor, $blockStart, [System.StringComparison]::Ordinal)
+  } else {
+    -1
+  }
+  $currentBlock = if ($blockStart -ge 0 -and $toolEnd -gt $blockStart) {
+    $source.Substring($blockStart, $toolEnd - $blockStart)
+  } else {
+    ""
+  }
+  $markerCount = CountLiteral $source $semanticSnapshotMarker
+  $previousCanonicalSha256 = if ($isTypeScript) {
+    "323252B84E184AEC7D575B00F6B00D4E3CF7FB2ACD510E5135647E579852190D"
+  } else {
+    "8B25D694A683530B619A4083C998E0BE8C5C5E08582679BD6806D78955FFEEFB"
+  }
+  $currentBlockSha256 = GetTextSha256 $currentBlock
+  $knownAuthorityUpgradeBlock = $block.Replace("http://localhost:9002", "http://127.0.0.1:9002")
+  $canUpgrade =
+    $hasMarker -and
+    $markerCount -eq 1 -and
+    (CountLiteral $source $toolRegistration) -eq 1 -and
+    $blockStart -ge 0 -and
+    $toolStart -ge $blockStart -and
+    $toolEnd -gt $toolStart -and
+    (($currentBlock -eq $knownAuthorityUpgradeBlock) -or
+     ($currentBlockSha256 -eq $previousCanonicalSha256))
+  $isPatched =
+    $currentBlock -eq $block -and
+    (CountLiteral $source $semanticSnapshotMarker) -eq 1 -and
+    (CountLiteral $source $toolRegistration) -eq 1 -and
+    $source.Contains("contractId = 'ctrlx-semantic-snapshot-v1'") -and
+    $source.Contains("mappingScopes:") -and
+    $source.Contains("recursive:") -and
+    $source.Contains("includeAllMappableChannels:") -and
+    $source.Contains("MAPPING_SCOPES_B64:") -and
+    $source.Contains("MAPPING_TARGETS_B64:") -and
+    $source.Contains("recordLimit === 2048") -and
+    $source.Contains("data.traversalFailureCount === 0") -and
+    $source.Contains("const mappingBefore = await readMappings();") -and
+    $source.Contains("const mappingAfter = await readMappings();") -and
+    $source.Contains("const mappingFinal = await readMappings();") -and
+    $source.Contains("const symbolBefore = await readSymbolConfig();") -and
+    $source.Contains("const symbolAfter = await readSymbolConfig();") -and
+    $source.Contains("data.dirtyCheckCount === 2") -and
+    $source.Contains("const readBoundedResponseBody =") -and
+    $source.Contains("response.body.getReader") -and
+    $source.Contains("canonicalization: 'ctrlx-semantic-canonical-json-v1'") -and
+    $source.Contains("reasonCode = 'SEMANTIC_SNAPSHOT_FAILED'") -and
+    $source.Contains("'SEMANTIC_SNAPSHOT_TOO_LARGE'") -and
+    $source.Contains("responseByteCount > 480 * 1024") -and
+    $source.Contains("const safeReason =") -and
+    $source.Contains("outputSha256=") -and
+    $source.Contains("bodySha256=") -and
+    $source.Contains("payloadSha256:") -and
+    $source.Contains("mappingSha256:") -and
+    $source.Contains("symbolConfigSha256:") -and
+    $source.Contains("snapshotSha256:") -and
+    $source.Contains("method: 'GET'") -and
+    (-not $source.Contains("localeCompare")) -and
+    (-not $source.Contains("payload: symbolBefore.payload")) -and
+    (-not $source.Contains("expectedVariable")) -and
+    (-not $source.Contains("symbolsAccepted"))
+  if ($Check) {
+    $state = if ($isPatched) { "OK " } elseif ($canUpgrade) { "UPGR" } else { "TODO" }
+    Write-Host ("[{0}] {1} read-only recursive I/O + Symbol semantic snapshot tool" -f $state, $serverFile)
+    return
+  }
+  if ($isPatched) {
+    Write-Host "read-only semantic snapshot tool already present - skipped: $serverFile"
+    return
+  }
+  if ($hasMarker -and -not $canUpgrade) {
+    Write-Error "Partial semantic snapshot server contract found; restore the file from its package/backup before reapplying: $serverFile"
+  }
+
+  BackupOnce $serverFile "bak_pre_semantic_snapshot_contract"
+  if ($canUpgrade) {
+    $source = $source.Substring(0, $blockStart) + $block + $source.Substring($toolEnd)
+    [System.IO.File]::WriteAllText($serverFile, $source, $utf8nobom)
+    Write-Host "upgraded read-only recursive I/O + Symbol semantic snapshot tool -> $serverFile"
+    return
+  }
+  $source = ReplaceRequired $source $anchor ($block + $anchor) "semantic snapshot tool" $serverFile
+  [System.IO.File]::WriteAllText($serverFile, $source, $utf8nobom)
+  Write-Host "patched read-only recursive I/O + Symbol semantic snapshot tool -> $serverFile"
+}
+
 function PatchFastMessageUtils([string]$messageUtilsFile) {
   if (-not (Test-Path -LiteralPath $messageUtilsFile)) { return }
 
   $source = ReadText $messageUtilsFile
-  $isPatched = $source.Contains($fastMessageMarker)
+  $isPatched =
+    $source.Contains($fastMessageMarker) -and
+    $source.Contains($typedWarningProducerMarker) -and
+    $source.Contains("def msg_fast_prepare_typed_warning_records(") -and
+    $source.Contains("'diagnosticRows': diagnostic_rows") -and
+    $source.Contains("'diagnosticRowsComplete': diagnostic_rows_complete")
   if ($Check) {
-    Write-Host ("[{0}] {1} bounded compile-message helper" -f $(if ($isPatched) { "OK " } else { "TODO" }), $messageUtilsFile)
+    Write-Host ("[{0}] {1} bounded compile-message + fixed-category typed warning helper" -f $(if ($isPatched) { "OK " } else { "TODO" }), $messageUtilsFile)
     return
   }
   if ($isPatched) {
-    Write-Host "bounded compile-message helper already present - skipped: $messageUtilsFile"
+    Write-Host "bounded compile-message + fixed-category typed warning helper already present - skipped: $messageUtilsFile"
     return
   }
 
@@ -815,11 +1132,11 @@ function PatchFastMessageUtils([string]$messageUtilsFile) {
   $legacyIndex = $source.IndexOf("# $fastMessageLegacyMarker")
   if ($legacyIndex -ge 0) {
     $source = $source.Substring(0, $legacyIndex).TrimEnd("`n") + "`n"
-    Write-Host "upgrading bounded compile-message helper v1 -> v2: $messageUtilsFile"
+    Write-Host "upgrading bounded compile-message helper -> v4: $messageUtilsFile"
   }
   $helper = @'
 
-# ctrlX fast compile message path v2 (2026-08-20)
+# ctrlX fast compile message path v4 (2026-08-28)
 #
 # ctrlX PLE 2.6.8 can block for minutes when get_message_objects(category,
 # severity) is called once per category and severity. The documented
@@ -830,6 +1147,11 @@ _MSG_FAST_COMPILE_CATEGORIES = (
     ('Build', '97F48D64-A2A3-4856-B640-75C046E37EA9'),
     ('Additional code checks', '220493A1-F49B-4416-9A3F-A545DB707CBE'),
 )
+
+_MSG_FAST_WARNING_RECORD_LIMIT = 2048
+_MSG_FAST_WARNING_RECORD_BYTE_LIMIT = 4096
+_MSG_FAST_WARNING_TOTAL_BYTE_LIMIT = 262144
+_MSG_FAST_SENSITIVE_WARNING_RE = None
 
 def msg_fast_compile_categories():
     out = []
@@ -862,6 +1184,172 @@ def _msg_fast_is_progress(text):
             return True
     return False
 
+def _msg_fast_contains_sensitive_text(text):
+    global _MSG_FAST_SENSITIVE_WARNING_RE
+    import re as _fast_sensitive_re
+    if _MSG_FAST_SENSITIVE_WARNING_RE is None:
+        _MSG_FAST_SENSITIVE_WARNING_RE = _fast_sensitive_re.compile(
+            r'\b(password|passwd|secret|token|api[_-]?key|private[_-]?key|credential)\b',
+            _fast_sensitive_re.IGNORECASE
+        )
+    return _MSG_FAST_SENSITIVE_WARNING_RE.search(_to_unicode(text)) is not None
+
+def _msg_fast_normalize_warning_text(value):
+    import re as _fast_space_re
+    text = _to_unicode(value).strip()
+    if not text:
+        return None, 'WARNING_RECORD_TEXT_EMPTY'
+    for character in text:
+        if ord(character) < 32 and character not in u'\t\r\n':
+            return None, 'WARNING_RECORD_TEXT_CONTROL_CHARACTER'
+    text = _fast_space_re.sub(r'\s+', u' ', text).strip()
+    if not text:
+        return None, 'WARNING_RECORD_TEXT_EMPTY'
+    if _msg_fast_contains_sensitive_text(text):
+        return None, 'WARNING_RECORD_TEXT_SENSITIVE'
+    if len(text.encode('utf-8')) > _MSG_FAST_WARNING_RECORD_BYTE_LIMIT:
+        return None, 'WARNING_RECORD_TEXT_TOO_LARGE'
+    return text, None
+
+def _msg_fast_safe_diagnostic_text(value):
+    text = _to_unicode(value).strip()
+    if _msg_fast_contains_sensitive_text(text):
+        return u'[redacted sensitive diagnostic row]'
+    if len(text.encode('utf-8')) > 2048:
+        return u'[oversized diagnostic row omitted]'
+    return text
+
+def _msg_fast_warning_severity():
+    # Resolving an enum member is local reflection only. It does not enumerate
+    # message categories and does not call get_message_objects().
+    try:
+        severity = getattr(script_engine.Severity, 'Warning', None)
+        if severity is not None:
+            return severity
+    except Exception:
+        pass
+    _msg_setup_severity()
+    matches = [
+        severity for severity in _MSG_SEVERITY_MEMBERS
+        if msg_sev_to_string(severity) == 'warning'
+    ]
+    return matches[0] if matches else None
+
+def msg_fast_collect_typed_warnings(categories, expected_warning_count):
+    # ctrlX fixed-category typed warning producer v1 (2026-08-28)
+    # This is intentionally two fixed category x one Warning severity calls,
+    # never the historical generic category x severity scan.
+    result = {
+        'verified': False,
+        'records': [],
+        'queryCount': 0,
+        'objectCount': 0,
+        'reason': 'WARNING_COLLECTION_NOT_RUN',
+    }
+    expected_names = ('Build', 'Additional code checks')
+    actual_names = tuple([category_name for category_guid, category_name in categories])
+    if actual_names != expected_names:
+        result['reason'] = 'WARNING_CATEGORY_CONTRACT_INVALID'
+        return result
+    if expected_warning_count < 1 or expected_warning_count > _MSG_FAST_WARNING_RECORD_LIMIT:
+        result['reason'] = 'WARNING_COUNT_OUT_OF_RANGE'
+        return result
+    if not hasattr(script_engine.system, 'get_message_objects'):
+        result['reason'] = 'WARNING_OBJECT_API_UNAVAILABLE'
+        return result
+
+    warning_severity = _msg_fast_warning_severity()
+    if warning_severity is None:
+        result['reason'] = 'WARNING_SEVERITY_UNAVAILABLE'
+        return result
+
+    records = []
+    total_bytes = 0
+    for category_guid, category_name in categories:
+        try:
+            raw_warnings = script_engine.system.get_message_objects(
+                category_guid,
+                warning_severity
+            )
+            result['queryCount'] += 1
+            if raw_warnings is None:
+                raw_warnings = []
+            for raw_warning in raw_warnings:
+                result['objectCount'] += 1
+                if result['objectCount'] > expected_warning_count:
+                    result['reason'] = 'WARNING_OBJECT_COUNT_MISMATCH'
+                    return result
+                entry = msg_build_entry(raw_warning, category_name)
+                if entry.get('severity') != 'warning':
+                    result['reason'] = 'WARNING_RECORD_SEVERITY_INVALID'
+                    return result
+                text, text_error = _msg_fast_normalize_warning_text(entry.get('text', ''))
+                if text_error is not None:
+                    result['reason'] = text_error
+                    return result
+                text_bytes = len(text.encode('utf-8'))
+                if total_bytes + text_bytes > _MSG_FAST_WARNING_TOTAL_BYTE_LIMIT:
+                    result['reason'] = 'WARNING_RECORDS_TOO_LARGE'
+                    return result
+                total_bytes += text_bytes
+                records.append({'severity': 'warning', 'text': text})
+        except Exception:
+            result['reason'] = 'WARNING_QUERY_FAILED'
+            return result
+
+    if result['objectCount'] != expected_warning_count:
+        result['reason'] = 'WARNING_OBJECT_COUNT_MISMATCH'
+        return result
+
+    result['verified'] = True
+    result['records'] = records
+    result['reason'] = 'WARNING_COLLECTION_VERIFIED'
+    return result
+
+def msg_fast_prepare_typed_warning_records(
+        fresh_verified, error_count, warning_count, categories,
+        diagnostic_rows, diagnostic_rows_complete):
+    # Keep bounded untyped diagnostics on every failure path. Only a proven
+    # exact Warning-object multiset replaces them with type-verified records.
+    outcome = {
+        'typedRecordsVerified': False,
+        'records': [],
+        'messageCount': len(diagnostic_rows),
+        'diagnosticRows': list(diagnostic_rows),
+        'diagnosticRowsComplete': diagnostic_rows_complete is True,
+        'warningQueryCount': 0,
+        'warningObjectCount': 0,
+        'warningCollectionReason': 'WARNING_COLLECTION_NOT_REQUESTED',
+    }
+    if not fresh_verified:
+        outcome['warningCollectionReason'] = 'WARNING_COLLECTION_NOT_FRESH'
+        return outcome
+    if error_count != 0:
+        outcome['warningCollectionReason'] = 'WARNING_COLLECTION_ERRORS_PRESENT'
+        return outcome
+    if warning_count == 0:
+        if diagnostic_rows_complete is True and len(diagnostic_rows) == 0:
+            outcome['typedRecordsVerified'] = True
+            outcome['warningCollectionReason'] = 'EMPTY_WARNING_SET_VERIFIED'
+        else:
+            outcome['warningCollectionReason'] = 'EMPTY_WARNING_SET_DIAGNOSTICS_PRESENT'
+        return outcome
+
+    collected = msg_fast_collect_typed_warnings(categories, warning_count)
+    outcome['warningQueryCount'] = collected.get('queryCount', 0)
+    outcome['warningObjectCount'] = collected.get('objectCount', 0)
+    outcome['warningCollectionReason'] = collected.get('reason')
+    if collected.get('verified') is not True:
+        return outcome
+
+    records = collected.get('records', []) or []
+    outcome['typedRecordsVerified'] = True
+    outcome['records'] = records
+    outcome['messageCount'] = len(records)
+    outcome['diagnosticRows'] = [record.get('text') for record in records]
+    outcome['diagnosticRowsComplete'] = True
+    return outcome
+
 def msg_fast_compile_snapshot(categories=None):
     import re as _fast_re
     import time as _fast_time
@@ -890,7 +1378,7 @@ def msg_fast_compile_snapshot(categories=None):
                 for raw_row in raw_rows:
                     texts.append(_to_unicode(raw_row))
         except Exception as exc:
-            read_error = _to_unicode(exc)
+            read_error = u'[message read failed]'
 
         compile_counts = None
         build_counts = None
@@ -956,12 +1444,53 @@ def msg_fast_compile_snapshot(categories=None):
             'summarySource': summary_source,
         })
 
+    # get_messages(category) exposes display text but no per-row severity.
+    # Preserve those rows only as bounded, explicitly untyped diagnostics.
+    # The fresh compile contract must never promote them to reviewed warning
+    # records.  Keep this payload comfortably below the 1 MiB MCP JSON-line
+    # boundary even when it is present twice in the internal script response.
+    diagnostic_rows = []
+    diagnostic_rows_complete = True
+    diagnostic_total_bytes = 0
+    diagnostic_row_limit = 100
+    diagnostic_row_byte_limit = 2048
+    diagnostic_total_byte_limit = 65536
+    for detail in details:
+        if len(diagnostic_rows) >= diagnostic_row_limit:
+            diagnostic_rows_complete = False
+            break
+        row = _msg_fast_safe_diagnostic_text(u'[%s] %s' % (
+            _to_unicode(detail.get('category', 'Build')),
+            _to_unicode(detail.get('text', '')),
+        ))
+        row_bytes = row.encode('utf-8')
+        if len(row_bytes) > diagnostic_row_byte_limit:
+            diagnostic_rows_complete = False
+            row = u'[oversized diagnostic row omitted]'
+            row_bytes = row.encode('utf-8')
+        if diagnostic_total_bytes + len(row_bytes) > diagnostic_total_byte_limit:
+            diagnostic_rows_complete = False
+            break
+        diagnostic_rows.append(row)
+        diagnostic_total_bytes += len(row_bytes)
+    if len(diagnostic_rows) != len(details):
+        diagnostic_rows_complete = False
+    if any([item.get('readError') for item in category_results]):
+        diagnostic_rows_complete = False
+
+    detail_count = len(details)
     return {
         'verified': build_verified,
         'errorCount': total_errors,
         'warningCount': total_warnings,
         'messageCount': total_rows,
         'details': details[:100],
+        'detailCount': detail_count,
+        'detailsComplete': detail_count <= 100,
+        'diagnosticRows': diagnostic_rows,
+        'diagnosticRowCount': len(diagnostic_rows),
+        'diagnosticRowsComplete': diagnostic_rows_complete,
+        'diagnosticRowsUtf8ByteCount': diagnostic_total_bytes,
         'categoryResults': category_results,
         'warningDetailsOmitted': True,
     }
@@ -973,14 +1502,14 @@ def msg_fast_structured_entries(snapshot):
     entries = []
 
     if not snapshot.get('verified', False):
-        detail_text = '\n'.join([d.get('text', '') for d in details[:40]])
+        detail_text = '\n'.join([_msg_fast_safe_diagnostic_text(d.get('text', '')) for d in details[:40]])
         text = 'Build finished, but the Build summary could not be verified.'
         if detail_text:
             text += '\nCached messages:\n' + detail_text
         return [{'category': 'Build summary', 'severity': 'error', 'text': text}]
 
     if error_count > 0:
-        detail_text = '\n'.join([d.get('text', '') for d in details[:40]])
+        detail_text = '\n'.join([_msg_fast_safe_diagnostic_text(d.get('text', '')) for d in details[:40]])
         for index in range(error_count):
             text = 'Build reported error %d of %d.' % (index + 1, error_count)
             if index == 0 and detail_text:
@@ -993,7 +1522,9 @@ def msg_fast_structured_entries(snapshot):
             entries.append({
                 'category': detail.get('category', 'Build'),
                 'severity': 'warning',
-                'text': detail.get('text', 'Build warning %d of %d.' % (index + 1, warning_count)),
+                'text': _msg_fast_safe_diagnostic_text(
+                    detail.get('text', 'Build warning %d of %d.' % (index + 1, warning_count))
+                ),
             })
         else:
             entries.append({
@@ -1190,7 +1721,7 @@ function PatchFreshCompileContract([string]$compileFile) {
     ""
   }
   $hasRequiredFacts =
-    $source.Contains($freshCompileContractMarker) -and
+    (CountLiteral $source $freshCompileContractMarker) -eq 2 -and
     $source.Contains("import datetime as _build_datetime`n") -and
     $source.Contains("hasattr(child, 'build'):") -and
     $boundedBlock.Contains("if project_kind != 'application':") -and
@@ -1205,7 +1736,12 @@ function PatchFreshCompileContract([string]$compileFile) {
     (-not $boundedBlock.Contains("('Compile complete', 'Build complete', 'Other summary')")) -and
     $boundedBlock.Contains("compile_summary['fresh'] = fresh_evidence_verified") -and
     $boundedBlock.Contains("compile_summary['patchPreflightVerified'] = patch_preflight_verified") -and
-    $boundedBlock.Contains("compile_summary['recordsComplete'] = records_complete")
+    $boundedBlock.Contains($typedWarningProducerMarker) -and
+    $boundedBlock.Contains("msg_fast_prepare_typed_warning_records(") -and
+    $boundedBlock.Contains("compile_summary['warningQueryCount']") -and
+    $boundedBlock.Contains("compile_summary['typedRecordsVerified'] = typed_records_verified") -and
+    $boundedBlock.Contains("compile_summary['diagnosticRowsComplete'] = diagnostic_rows_complete") -and
+    $boundedBlock.Contains("compile_summary['recordsComplete'] = True")
   $isPatched = $hasRequiredFacts
   $isLegacy =
     $source.Contains($freshCompileContractLegacyMarker) -or
@@ -1392,17 +1928,28 @@ import datetime as _build_datetime
         patch_preflight_verified and
         compile_summary.get('verified') is True
     )
-    expected_diagnostics = (
-        int(compile_summary.get('errorCount', 0) or 0) +
-        int(compile_summary.get('warningCount', 0) or 0)
+    # ctrlX fixed-category typed warning producer v1 (2026-08-28)
+    # get_messages() remains the authoritative same-call numeric summary and
+    # bounded diagnostic source. For a fresh 0-error/nonzero-warning result,
+    # query IScriptMessage objects exactly twice: Build/Warning and Additional
+    # code checks/Warning. Never reinstate a generic category x severity scan.
+    warning_count = int(compile_summary.get('warningCount', 0) or 0)
+    error_count = int(compile_summary.get('errorCount', 0) or 0)
+    diagnostic_rows = compile_summary.get('diagnosticRows', []) or []
+    diagnostic_rows_complete = (compile_summary.get('diagnosticRowsComplete') is True)
+    typed_warning_outcome = msg_fast_prepare_typed_warning_records(
+        fresh_evidence_verified,
+        error_count,
+        warning_count,
+        fast_categories,
+        diagnostic_rows,
+        diagnostic_rows_complete
     )
-    # The bounded API may synthesize count-preserving placeholders for nonzero
-    # results. Until it supplies every structured diagnostic, only a proven
-    # same-call 0/0 result has a complete empty record set.
-    records_complete = (
-        fresh_evidence_verified and
-        expected_diagnostics == 0 and
-        len(messages) == 0
+    typed_records_verified = typed_warning_outcome.get('typedRecordsVerified') is True
+    typed_records = typed_warning_outcome.get('records', []) or []
+    diagnostic_rows = typed_warning_outcome.get('diagnosticRows', []) or []
+    diagnostic_rows_complete = (
+        typed_warning_outcome.get('diagnosticRowsComplete') is True
     )
 
     compile_summary['contractVersion'] = 1
@@ -1422,9 +1969,22 @@ import datetime as _build_datetime
     compile_summary['explicitBuildSummaryVerified'] = explicit_build_summary
     compile_summary['patchPreflightVerified'] = patch_preflight_verified
     compile_summary['verified'] = fresh_evidence_verified
-    compile_summary['messageCount'] = len(messages)
-    compile_summary['recordsComplete'] = records_complete
-    compile_summary['records'] = messages
+    compile_summary['messageCount'] = int(typed_warning_outcome.get('messageCount', 0) or 0)
+    compile_summary['recordsComplete'] = True
+    compile_summary['typedRecordsVerified'] = typed_records_verified
+    compile_summary['diagnosticRowsComplete'] = diagnostic_rows_complete
+    compile_summary['diagnosticRows'] = diagnostic_rows
+    compile_summary['records'] = typed_records
+    compile_summary['warningQueryCount'] = int(
+        typed_warning_outcome.get('warningQueryCount', 0) or 0
+    )
+    compile_summary['warningObjectCount'] = int(
+        typed_warning_outcome.get('warningObjectCount', 0) or 0
+    )
+    compile_summary['warningCollectionReason'] = typed_warning_outcome.get(
+        'warningCollectionReason',
+        'WARNING_COLLECTION_UNKNOWN'
+    )
     print("DEBUG: bounded message snapshot verified=%s errors=%d warnings=%d rows=%d elapsed=%.3f s" %
           (compile_summary.get('verified'), compile_summary.get('errorCount', 0),
            compile_summary.get('warningCount', 0), compile_summary.get('messageCount', 0),
@@ -1443,12 +2003,16 @@ function PatchFreshCompileServer([string]$serverFile, [bool]$isTypeScript) {
 
   $source = ReadText $serverFile
   $isPatched =
-    $source.Contains($freshCompileContractMarker) -and
+    (CountLiteral $source $freshCompileContractMarker) -eq 1 -and
     $source.Contains("compileSummary.adapterPatchId === 'ctrlx-fresh-compile-v2'") -and
     $source.Contains("compileSummary.buildInvocation === 'application.build'") -and
     $source.Contains("compileSummary.allExpectedCategoriesCleared === true") -and
     $source.Contains("compileSummary.allExpectedCategoriesRead === true") -and
     $source.Contains("compileSummary.explicitBuildSummaryVerified === true") -and
+    $source.Contains("typeof compileSummary.typedRecordsVerified === 'boolean'") -and
+    $source.Contains("typeof compileSummary.diagnosticRowsComplete === 'boolean'") -and
+    $source.Contains("const diagnosticRowsValid =") -and
+    $source.Contains("record.severity === 'error' || record.severity === 'warning'") -and
     $source.Contains("Fresh compile contract rejected the result; it is diagnostic only.")
   $isLegacy = $source.Contains($freshCompileContractLegacyMarker)
   if ($Check) {
@@ -1519,13 +2083,34 @@ function PatchFreshCompileServer([string]$serverFile, [bool]$isTypeScript) {
         }
       }
 
+      const recordsValid = compileSummary !== null &&
+        Array.isArray(compileSummary.records) &&
+        compileSummary.records.every((record: any) =>
+          record !== null && typeof record === 'object' &&
+          (record.severity === 'error' || record.severity === 'warning') &&
+          typeof record.text === 'string' && record.text.trim().length > 0
+        );
+      const typedRecordCountsValid = recordsValid &&
+        ((compileSummary.typedRecordsVerified === true &&
+          compileSummary.records.filter((record: any) => record.severity === 'error').length === compileSummary.errorCount &&
+          compileSummary.records.filter((record: any) => record.severity === 'warning').length === compileSummary.warningCount &&
+          compileSummary.records.length === compileSummary.messageCount) ||
+         (compileSummary.typedRecordsVerified === false && compileSummary.records.length === 0));
+      const diagnosticRowsValid = compileSummary !== null &&
+        Array.isArray(compileSummary.diagnosticRows) &&
+        compileSummary.diagnosticRows.every((row: any) =>
+          typeof row === 'string' && row.trim().length > 0
+        ) &&
+        compileSummary.diagnosticRows.length <= compileSummary.messageCount &&
+        (compileSummary.diagnosticRowsComplete !== true ||
+          compileSummary.diagnosticRows.length === compileSummary.messageCount);
       const countsValid = compileSummary !== null &&
         Number.isInteger(compileSummary.errorCount) && compileSummary.errorCount >= 0 &&
         Number.isInteger(compileSummary.warningCount) && compileSummary.warningCount >= 0 &&
         Number.isInteger(compileSummary.messageCount) && compileSummary.messageCount >= 0 &&
-        Array.isArray(compileSummary.records) &&
-        compileSummary.records.length === compileSummary.messageCount &&
-        compileSummary.errorCount + compileSummary.warningCount === compileSummary.messageCount;
+        typeof compileSummary.typedRecordsVerified === 'boolean' &&
+        typeof compileSummary.diagnosticRowsComplete === 'boolean' &&
+        typedRecordCountsValid && diagnosticRowsValid;
       const freshContractValid = countsValid &&
         compileSummary.contractVersion === 1 &&
         compileSummary.producer === 'codesys-persistent.compile_project' &&
@@ -1575,13 +2160,30 @@ function PatchFreshCompileServer([string]$serverFile, [bool]$isTypeScript) {
                 compileSummary = null;
             }
         }
+        const recordsValid = compileSummary !== null &&
+            Array.isArray(compileSummary.records) &&
+            compileSummary.records.every((record) => record !== null && typeof record === 'object' &&
+                (record.severity === 'error' || record.severity === 'warning') &&
+                typeof record.text === 'string' && record.text.trim().length > 0);
+        const typedRecordCountsValid = recordsValid &&
+            ((compileSummary.typedRecordsVerified === true &&
+                compileSummary.records.filter((record) => record.severity === 'error').length === compileSummary.errorCount &&
+                compileSummary.records.filter((record) => record.severity === 'warning').length === compileSummary.warningCount &&
+                compileSummary.records.length === compileSummary.messageCount) ||
+                (compileSummary.typedRecordsVerified === false && compileSummary.records.length === 0));
+        const diagnosticRowsValid = compileSummary !== null &&
+            Array.isArray(compileSummary.diagnosticRows) &&
+            compileSummary.diagnosticRows.every((row) => typeof row === 'string' && row.trim().length > 0) &&
+            compileSummary.diagnosticRows.length <= compileSummary.messageCount &&
+            (compileSummary.diagnosticRowsComplete !== true ||
+                compileSummary.diagnosticRows.length === compileSummary.messageCount);
         const countsValid = compileSummary !== null &&
             Number.isInteger(compileSummary.errorCount) && compileSummary.errorCount >= 0 &&
             Number.isInteger(compileSummary.warningCount) && compileSummary.warningCount >= 0 &&
             Number.isInteger(compileSummary.messageCount) && compileSummary.messageCount >= 0 &&
-            Array.isArray(compileSummary.records) &&
-            compileSummary.records.length === compileSummary.messageCount &&
-            compileSummary.errorCount + compileSummary.warningCount === compileSummary.messageCount;
+            typeof compileSummary.typedRecordsVerified === 'boolean' &&
+            typeof compileSummary.diagnosticRowsComplete === 'boolean' &&
+            typedRecordCountsValid && diagnosticRowsValid;
         const freshContractValid = countsValid &&
             compileSummary.contractVersion === 1 &&
             compileSummary.producer === 'codesys-persistent.compile_project' &&
@@ -1681,7 +2283,58 @@ if (-not (Test-Path (Join-Path $PackageScriptsDir "watcher.py"))) {
 }
 $watcher = Join-Path $PackageScriptsDir "watcher.py"
 $msgutils = Join-Path $PackageScriptsDir "_message_utils.py"
-Write-Host "Target: $PackageScriptsDir"
+$packageDistDir = Split-Path $PackageScriptsDir -Parent
+$packageRoot = Split-Path $packageDistDir -Parent
+$launcherTargets = @(
+  (Join-Path $packageRoot "src\launcher.ts"),
+  (Join-Path $packageDistDir "launcher.js")
+)
+$serverTargets = @(
+  (Join-Path $packageRoot "src\server.ts"),
+  (Join-Path $packageDistDir "server.js")
+)
+$mapTargets = @(
+  (Join-Path $PackageScriptsDir "map_io_channel.py"),
+  (Join-Path $packageRoot "src\scripts\map_io_channel.py")
+)
+$packageScriptRoots = @(
+  $PackageScriptsDir,
+  (Join-Path $packageRoot "src\scripts")
+) | Select-Object -Unique
+
+$patchTransactionActive = $false
+if (-not $Check) {
+  $transactionFiles = @($watcher, $msgutils) + $launcherTargets + $serverTargets + $mapTargets
+  foreach ($scriptRoot in $packageScriptRoots) {
+    foreach ($scriptName in @("_message_utils.py", "compile_project.py", "get_compile_messages.py", "get_ctrlx_semantic_snapshot.py")) {
+      $transactionFiles += Join-Path $scriptRoot $scriptName
+    }
+  }
+  # BackupOnce and the two legacy backup branches also mutate the package.
+  # Track every possible backup path so rollback removes backups created by a
+  # failed invocation while preserving backups that existed beforehand.
+  $transactionSourceFiles = @($transactionFiles)
+  $transactionBackupSuffixes = @(
+    "bak_orig",
+    "bak_crlf",
+    "bak_pre_ctrlx_connector_mapping",
+    "bak_pre_safe_session_adoption",
+    "bak_pre_ple_ownership_contract",
+    "bak_pre_semantic_snapshot_contract",
+    "bak_pre_fast_compile",
+    "bak_pre_strict_compile",
+    "bak_pre_fresh_compile_contract"
+  )
+  foreach ($transactionSourceFile in $transactionSourceFiles) {
+    foreach ($transactionBackupSuffix in $transactionBackupSuffixes) {
+      $transactionFiles += "$transactionSourceFile.$transactionBackupSuffix"
+    }
+  }
+  Start-PatchTransaction $transactionFiles
+  $patchTransactionActive = $true
+}
+try {
+  Write-Host "Target: $PackageScriptsDir"
 
 # --- watcher.py ---------------------------------------------------------------
 $w = ReadText $watcher
@@ -1740,40 +2393,24 @@ if (Test-Path $msgutils) {
 }
 
 # --- map_io_channel.py: ctrlX connector parameters ---------------------------
-$packageDistDir = Split-Path $PackageScriptsDir -Parent
-$packageRoot = Split-Path $packageDistDir -Parent
-$launcherTargets = @(
-  (Join-Path $packageRoot "src\launcher.ts"),
-  (Join-Path $packageDistDir "launcher.js")
-)
 PatchLauncherSource $launcherTargets[0]
 PatchLauncherDist $launcherTargets[1]
 PatchPleOwnershipLauncher $launcherTargets[0] $true
 PatchPleOwnershipLauncher $launcherTargets[1] $false
 
-$serverTargets = @(
-  (Join-Path $packageRoot "src\server.ts"),
-  (Join-Path $packageDistDir "server.js")
-)
 PatchPleOwnershipServer $serverTargets[0] $true
 PatchPleOwnershipServer $serverTargets[1] $false
 PatchFreshCompileServer $serverTargets[0] $true
 PatchFreshCompileServer $serverTargets[1] $false
+PatchSemanticSnapshotServer $serverTargets[0] $true
+PatchSemanticSnapshotServer $serverTargets[1] $false
 
-$mapTargets = @(
-  (Join-Path $PackageScriptsDir "map_io_channel.py"),
-  (Join-Path $packageRoot "src\scripts\map_io_channel.py")
-)
 $mapTargets | Select-Object -Unique | ForEach-Object { PatchIoMappingScript $_ }
 
 # --- compile_project/get_compile_messages: bounded ctrlX message path ---------
-$packageScriptRoots = @(
-  $PackageScriptsDir,
-  (Join-Path $packageRoot "src\scripts")
-) | Select-Object -Unique
-
 foreach ($scriptRoot in $packageScriptRoots) {
   if (-not (Test-Path -LiteralPath $scriptRoot)) { continue }
+  PatchSemanticSnapshotScript (Join-Path $scriptRoot "get_ctrlx_semantic_snapshot.py")
   PatchFastMessageUtils (Join-Path $scriptRoot "_message_utils.py")
   PatchCompileProjectScript (Join-Path $scriptRoot "compile_project.py")
   PatchStrictCompileNoSaveGuard (Join-Path $scriptRoot "compile_project.py")
@@ -1786,24 +2423,24 @@ if (-not $Check -and -not $SkipRuntimeSyntaxCheck) {
   $py = Get-Command python -ErrorAction SilentlyContinue
   if ($py) {
     & python -m py_compile $watcher
-    if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] py_compile watcher.py passed" } else { Write-Warning "py_compile failed - inspect $watcher" }
+    if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] py_compile watcher.py passed" } else { Fail-PatchSyntaxValidation "py_compile watcher.py ($watcher)" $LASTEXITCODE }
     foreach ($mapTarget in ($mapTargets | Select-Object -Unique)) {
       if (Test-Path $mapTarget) {
         & python -m py_compile $mapTarget
-        if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] py_compile map_io_channel.py passed: $mapTarget" } else { Write-Warning "py_compile failed - inspect $mapTarget" }
+        if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] py_compile map_io_channel.py passed: $mapTarget" } else { Fail-PatchSyntaxValidation "py_compile map_io_channel.py ($mapTarget)" $LASTEXITCODE }
       }
     }
     foreach ($scriptRoot in $packageScriptRoots) {
-      foreach ($scriptName in @("_message_utils.py", "compile_project.py", "get_compile_messages.py")) {
+      foreach ($scriptName in @("_message_utils.py", "compile_project.py", "get_compile_messages.py", "get_ctrlx_semantic_snapshot.py")) {
         $scriptPath = Join-Path $scriptRoot $scriptName
         if (Test-Path -LiteralPath $scriptPath) {
           & python -m py_compile $scriptPath
-          if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] py_compile passed: $scriptPath" } else { Write-Warning "py_compile failed - inspect $scriptPath" }
+          if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] py_compile passed: $scriptPath" } else { Fail-PatchSyntaxValidation "py_compile ($scriptPath)" $LASTEXITCODE }
         }
       }
     }
   } else {
-    Write-Host "python not found - skipped syntax verification"
+    throw "python was not found; runtime syntax verification is mandatory unless -SkipRuntimeSyntaxCheck is explicit."
   }
 
   $node = Get-Command node -ErrorAction SilentlyContinue
@@ -1811,17 +2448,38 @@ if (-not $Check -and -not $SkipRuntimeSyntaxCheck) {
     $distLauncher = Join-Path $packageDistDir "launcher.js"
     if (Test-Path -LiteralPath $distLauncher) {
       & node --check $distLauncher
-      if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] node --check launcher.js passed" } else { Write-Warning "node --check failed - inspect $distLauncher" }
+      if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] node --check launcher.js passed" } else { Fail-PatchSyntaxValidation "node --check launcher.js ($distLauncher)" $LASTEXITCODE }
     }
     $distServer = Join-Path $packageDistDir "server.js"
     if (Test-Path -LiteralPath $distServer) {
       & node --check $distServer
-      if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] node --check server.js passed" } else { Write-Warning "node --check failed - inspect $distServer" }
+      if ($LASTEXITCODE -eq 0) { Write-Host "[OK ] node --check server.js passed" } else { Fail-PatchSyntaxValidation "node --check server.js ($distServer)" $LASTEXITCODE }
     }
   } else {
-    Write-Host "node not found - skipped launcher.js syntax verification"
+    throw "node was not found; runtime syntax verification is mandatory unless -SkipRuntimeSyntaxCheck is explicit."
   }
   Write-Host "Done. Script-template changes apply on the next tool call; restart the MCP-managed IDE only when recovering an already-stuck call."
 } elseif (-not $Check) {
   Write-Host "Runtime syntax checks skipped by explicit request. No package process was started."
+}
+
+  if ($patchTransactionActive) {
+    Complete-PatchTransaction
+    $patchTransactionActive = $false
+  }
+}
+catch {
+  $patchFailure = $_
+  if ($patchTransactionActive) {
+    try {
+      Restore-PatchTransaction
+      $patchTransactionActive = $false
+    }
+    catch {
+      throw ("Patch failed: {0} Transaction rollback also failed: {1}" -f `
+        $patchFailure.Exception.Message, $_.Exception.Message)
+    }
+    throw ("{0} All files changed by this patch run were restored." -f $patchFailure.Exception.Message)
+  }
+  throw $patchFailure
 }

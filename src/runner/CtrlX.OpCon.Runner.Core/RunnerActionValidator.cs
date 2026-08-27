@@ -118,7 +118,16 @@ public sealed class RunnerActionValidator
         ValidateFileHash(auditPath, RunnerValidation.RequiredString(source, "auditReportSha256", "Runner action source"), "Stage 1 audit report");
 
         var preconditions = RunnerValidation.RequiredObject(action, "preconditions", "Runner action");
-        RunnerValidation.RequireOnly(preconditions, "Runner action preconditions", "workflowRevision", "idempotencyKey", "manifests", "fingerprints");
+        RunnerValidation.RequireOnly(
+            preconditions,
+            "Runner action preconditions",
+            "workflowRevision",
+            "idempotencyKey",
+            "manifests",
+            "fingerprints",
+            "warningBaseline",
+            "semanticBaseline",
+            "semanticSnapshotRequest");
         _ = RunnerValidation.RequiredString(preconditions, "workflowRevision", "Runner action preconditions");
         var idempotencyKey = RunnerValidation.RequiredString(preconditions, "idempotencyKey", "Runner action preconditions");
         if (!RunnerValidation.IsSha256(idempotencyKey))
@@ -131,6 +140,18 @@ public sealed class RunnerActionValidator
         {
             ValidateFingerprint(root, RequireObjectItem(item, "Ownership manifest"), "Ownership manifest");
         }
+
+        ValidateReviewedArtifactReference(
+            root,
+            preconditions["warningBaseline"],
+            "config/warning-signature-baseline.json",
+            "warningBaseline");
+        ValidateReviewedArtifactReference(
+            root,
+            preconditions["semanticBaseline"],
+            "config/engineering-semantic-baseline.json",
+            "semanticBaseline");
+        ValidateSnapshotScopeReference(root, preconditions["semanticSnapshotRequest"]);
 
         var fingerprints = RunnerValidation.RequiredArray(preconditions, "fingerprints", "Runner action preconditions");
         if (actionKind == "verify_after_export_2")
@@ -360,6 +381,125 @@ public sealed class RunnerActionValidator
         {
             throw new RunnerGateException("EVIDENCE_CONTRACT_INVALID", "Runner action evidence contract is not supported.");
         }
+    }
+
+    private static void ValidateReviewedArtifactReference(
+        string engineeringRoot,
+        JsonNode? referenceNode,
+        string requiredRelativePath,
+        string referenceName)
+    {
+        var invalidReason = referenceName == "semanticBaseline"
+            ? "SEMANTIC_BASELINE_REFERENCE_INVALID"
+            : "WARNING_BASELINE_REFERENCE_INVALID";
+        var displayName = referenceName == "semanticBaseline"
+            ? "semantic baseline"
+            : "warning baseline";
+
+        // Older Stage 2 producers do not emit this optional reference. Treat
+        // its absence as bootstrap mode so inspect_and_build can still collect
+        // a fresh warning multiset, but it cannot later claim reviewed warning
+        // acceptance.
+        if (referenceNode is null)
+        {
+            return;
+        }
+
+        if (referenceNode is not JsonObject reference)
+        {
+            throw new RunnerGateException(
+                invalidReason,
+                $"Runner action preconditions.{referenceName} must be an object.");
+        }
+
+        RunnerValidation.RequireOnly(
+            reference,
+            $"Runner action {referenceName}",
+            "state",
+            "path",
+            "sha256",
+            "reviewEvidence");
+        var state = RunnerValidation.RequiredString(reference, "state", $"Runner action {referenceName}");
+        var relativePath = RunnerValidation.RequiredString(reference, "path", $"Runner action {referenceName}")
+            .Replace('\\', '/');
+        if (!relativePath.Equals(requiredRelativePath, StringComparison.Ordinal))
+        {
+            throw new RunnerGateException(
+                invalidReason,
+                $"Runner {referenceName} must use {requiredRelativePath}.");
+        }
+
+        var baselinePath = RunnerValidation.EnsureInside(
+            engineeringRoot,
+            Path.Combine(engineeringRoot, relativePath),
+            $"Runner {referenceName}");
+        if (state == "missing-bootstrap")
+        {
+            if (reference["sha256"] is not null || reference["reviewEvidence"] is not null)
+            {
+                throw new RunnerGateException(
+                    invalidReason,
+                    $"A missing-bootstrap {referenceName} cannot carry accepted SHA/review evidence.");
+            }
+
+            return;
+        }
+
+        if (state != "reviewed")
+        {
+            throw new RunnerGateException(
+                invalidReason,
+                $"Unsupported {displayName} state '{state}'.");
+        }
+
+        var expectedSha = RunnerValidation.RequiredString(reference, "sha256", $"Runner action {referenceName}");
+        ValidateFileHash(baselinePath, expectedSha, $"Reviewed {referenceName}");
+        var review = RunnerValidation.RequiredObject(reference, "reviewEvidence", $"Runner action {referenceName}");
+        RunnerValidation.RequireOnly(review, $"Runner action {referenceName} reviewEvidence", "path", "sha256");
+        var reviewPath = RunnerValidation.EnsureInside(
+            engineeringRoot,
+            Path.Combine(
+                engineeringRoot,
+                RunnerValidation.RequiredString(review, "path", $"Runner action {referenceName} reviewEvidence")),
+            $"Runner {referenceName} review evidence");
+        ValidateFileHash(
+            reviewPath,
+            RunnerValidation.RequiredString(review, "sha256", $"Runner action {referenceName} reviewEvidence"),
+            $"Reviewed {referenceName} provenance");
+    }
+
+    private static void ValidateSnapshotScopeReference(string engineeringRoot, JsonNode? referenceNode)
+    {
+        if (referenceNode is null)
+        {
+            return;
+        }
+
+        if (referenceNode is not JsonObject reference)
+        {
+            throw new RunnerGateException(
+                "SEMANTIC_SCOPE_REFERENCE_INVALID",
+                "Runner action preconditions.semanticSnapshotRequest must be an object.");
+        }
+
+        RunnerValidation.RequireOnly(reference, "Runner semanticSnapshotRequest", "path", "sha256");
+        var relativePath = RunnerValidation.RequiredString(reference, "path", "Runner semanticSnapshotRequest")
+            .Replace('\\', '/');
+        if (relativePath != "config/engineering-semantic-scope.json")
+        {
+            throw new RunnerGateException(
+                "SEMANTIC_SCOPE_REFERENCE_INVALID",
+                "Runner semantic snapshot scope must use config/engineering-semantic-scope.json.");
+        }
+
+        var path = RunnerValidation.EnsureInside(
+            engineeringRoot,
+            Path.Combine(engineeringRoot, relativePath),
+            "Engineering semantic snapshot scope");
+        ValidateFileHash(
+            path,
+            RunnerValidation.RequiredString(reference, "sha256", "Runner semanticSnapshotRequest"),
+            "Engineering semantic snapshot scope");
     }
 
     private static void ValidateRequiredFingerprint(JsonArray fingerprints, string root, string requiredPath)

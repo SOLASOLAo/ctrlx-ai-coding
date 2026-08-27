@@ -120,6 +120,7 @@ try {
             'TODO.md',
             'TEAM_SETUP.md',
             'config\project.yaml',
+            'config\engineering-semantic-scope.json',
             'config\quality-gates.yaml',
             'specs\station.yaml',
             'specs\io.yaml',
@@ -133,6 +134,7 @@ try {
             'scripts\cpstudio\Invoke-PostExportAudit.ps1',
             'scripts\cpstudio\Invoke-PostExportEngineering.ps1',
             'scripts\cpstudio\New-PostExportRunnerEvidence.ps1',
+            'scripts\cpstudio\New-EngineeringSemanticBaselineCandidate.ps1',
             'scripts\cpstudio\Invoke-OfflinePostExportCheck.ps1',
             'scripts\cpstudio\offline_mcp_build.cjs',
             'scripts\cpstudio\Run-OfflinePostExportCheck.cmd',
@@ -143,15 +145,22 @@ try {
             'tools\runner\CtrlX.OpCon.Runner.Core\NamedPipeSessionBrokerClient.cs',
             'tools\runner\CtrlX.OpCon.Runner.Cli\CtrlX.OpCon.Runner.Cli.csproj',
             'tools\runner\CtrlX.OpCon.Runner.Cli\Program.cs',
+            'tools\runner\CtrlX.OpCon.Runner.Broker\CtrlX.OpCon.Runner.Broker.csproj',
+            'tools\runner\CtrlX.OpCon.Runner.Broker\Program.cs',
+            'tools\runner\CtrlX.OpCon.Runner.Broker\BrokerHost.cs',
+            'tools\runner\README.md',
             'scripts\git\Get-ReadOnlyGitAudit.ps1',
             'tests\cpstudio\Test-PostExportQueue.ps1',
             'tests\cpstudio\Test-PostExportEngineering.ps1',
             'tests\cpstudio\Test-PostExportRunnerEvidence.ps1',
+            'tests\cpstudio\Test-EngineeringSemanticBaselineCandidate.ps1',
+            'tests\cpstudio\semantic-canonical-vectors.json',
             'tests\cpstudio\Test-OfflinePostExportCheck.ps1',
             'tests\runner\Test-CtrlXOpconRunner.ps1',
             'tests\static\Test-ProjectFramework.ps1',
             'data\requests\.gitkeep',
-            'docs\project_structure.md'
+            'docs\project_structure.md',
+            'docs\reviews\README.md'
         )) {
         Assert-True -Condition ([System.IO.File]::Exists((Join-Path $outputPath $relativePath))) -Message "Missing generated file: $relativePath"
     }
@@ -163,10 +172,29 @@ try {
     Assert-True -Condition (-not $projectConfig.Contains($testRoot)) -Message 'Generated project.yaml leaked an absolute workstation path.'
     Assert-True -Condition (-not $projectConfig.Contains('\')) -Message 'Generated project.yaml contains a backslash path.'
     Assert-True -Condition $projectConfig.Contains("export_request: 'data/requests'") -Message 'Generated project does not use the schema-v2 request queue root.'
+    $semanticScope = [System.IO.File]::ReadAllText((Join-Path $outputPath 'config\engineering-semantic-scope.json')) | ConvertFrom-Json
+    Assert-True -Condition ([string]$semanticScope.kind -eq 'ctrlx-opcon-engineering-semantic-scope') -Message 'Generated semantic scope has the wrong contract kind.'
+    Assert-True -Condition ([string]$semanticScope.project.plcProjectRelativePath -eq 'Plc/Stat020_PLC.project') -Message 'Generated semantic scope PLC path is not Station-relative.'
+    Assert-True -Condition ([string]$semanticScope.project.profile -eq 'ctrlX PLC 2.6.8') -Message 'Generated semantic scope profile was not rendered.'
+    Assert-True -Condition ([string]$semanticScope.mappingScopes[0].devicePath -eq 'Device/Realtime_Data') -Message 'Generated semantic scope did not use the default mapping root.'
+    Assert-True -Condition ([string]$semanticScope.symbolApplicationPath -ceq 'Device/Plc Logic/Application') -Message 'Generated semantic scope Symbol application path has incorrect casing.'
 
     $generatedRunnerWrapper = [System.IO.File]::ReadAllText((Join-Path $outputPath 'scripts\runner\Invoke-CtrlXOpconRunner.ps1'))
     Assert-True -Condition (-not [regex]::IsMatch($generatedRunnerWrapper, '(?im)^\s*&\s*dotnet\s+run\b')) -Message 'Generated action wrapper invokes dotnet run/MSBuild while consuming an action.'
     Assert-True -Condition $generatedRunnerWrapper.Contains('Get-RunnerCliAssembly') -Message 'Generated action wrapper is not bound to a prebuilt Runner assembly.'
+
+    $generatedControlDocs = @(
+        [System.IO.File]::ReadAllText((Join-Path $outputPath 'README.md')),
+        [System.IO.File]::ReadAllText((Join-Path $outputPath 'AGENTS.md')),
+        [System.IO.File]::ReadAllText((Join-Path $outputPath 'HANDOVER.md')),
+        [System.IO.File]::ReadAllText((Join-Path $outputPath 'TODO.md')),
+        [System.IO.File]::ReadAllText((Join-Path $outputPath 'scripts\README.md')),
+        [System.IO.File]::ReadAllText((Join-Path $outputPath 'docs\project_structure.md'))
+    ) -join "`n"
+    Assert-True -Condition $generatedControlDocs.Contains('Named Pipe v2') -Message 'Generated documentation does not describe the P1.2b Named Pipe v2 foundation.'
+    Assert-True -Condition ($generatedControlDocs.Contains('完整且未截断的 warning') -and $generatedControlDocs.Contains('缺 baseline') -and $generatedControlDocs.Contains('bootstrap')) -Message 'Generated documentation omits the warning-completeness and baseline-bootstrap failure-closed boundary.'
+    Assert-True -Condition (-not $generatedControlDocs.Contains('BLOCKED_CAPABILITY_NOT_IMPLEMENTED')) -Message 'Generated documentation retained the obsolete pre-adapter capability blocker.'
+    Assert-True -Condition (-not [regex]::IsMatch($generatedControlDocs, '(?i)Named Pipe v1|P1\.2b[^\r\n]{0,100}Agent/Broker (尚未实现|完成前，不会自行)|live runner[^\r\n]{0,100}尚未实现')) -Message 'Generated documentation regressed to the pre-Broker P1.2 status.'
 
     $mcpExample = [System.IO.File]::ReadAllText((Join-Path $outputPath 'config\codex-mcp.toml.example'))
     Assert-True -Condition $mcpExample.Contains('ctrlX PLC 2.6.8') -Message 'MCP example did not render the configured profile.'
@@ -181,6 +209,8 @@ try {
 
     $gitIgnore = [System.IO.File]::ReadAllText((Join-Path $outputPath '.gitignore'))
     Assert-True -Condition $gitIgnore.Contains('data/requests/*') -Message 'Runtime export requests are not ignored by the generated repository.'
+    Assert-True -Condition $gitIgnore.Contains('docs/reviews/*-baseline-candidate-*.json') -Message 'Generated baseline candidates are not kept local by default.'
+    Assert-True -Condition $gitIgnore.Contains('docs/reviews/*-triage-*.md') -Message 'Generated AI triage artifacts are not kept local by default.'
 
     $generatedFiles = Get-ChildItem -LiteralPath $outputPath -Recurse -File
     $forbiddenFiles = @($generatedFiles | Where-Object { $_.Extension.ToLowerInvariant() -in @('.project', '.chm', '.pdf', '.zip', '.compiled-library') })
@@ -194,40 +224,53 @@ try {
     }
     Assert-True -Condition ($unresolved.Count -eq 0) -Message 'Generated output contains unresolved template tokens.'
 
+    Write-Host '[initializer] generated framework test'
     $staticTest = Join-Path $outputPath 'tests\static\Test-ProjectFramework.ps1'
     $staticOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $staticTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated framework test failed: " + ($staticOutput -join ' '))
     Assert-True -Condition (($staticOutput -join ' ') -match 'Project framework OK') -Message 'Generated framework test did not report success.'
 
+    Write-Host '[initializer] generated post-export queue test'
     $queueTest = Join-Path $outputPath 'tests\cpstudio\Test-PostExportQueue.ps1'
     $queueOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $queueTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated post-export queue test failed: " + ($queueOutput -join ' '))
     Assert-True -Condition (($queueOutput -join ' ') -match 'Post-export queue self-test OK') -Message 'Generated queue test did not report success.'
 
+    Write-Host '[initializer] generated Stage2 test'
     $engineeringTest = Join-Path $outputPath 'tests\cpstudio\Test-PostExportEngineering.ps1'
     $engineeringOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $engineeringTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated post-export Stage2 test failed: " + ($engineeringOutput -join ' '))
     Assert-True -Condition (($engineeringOutput -join ' ') -match 'Post-export Stage2 self-test OK') -Message 'Generated Stage2 test did not report success.'
 
+    Write-Host '[initializer] generated runner evidence test'
     $runnerEvidenceTest = Join-Path $outputPath 'tests\cpstudio\Test-PostExportRunnerEvidence.ps1'
     $runnerEvidenceOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runnerEvidenceTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated runner evidence test failed: " + ($runnerEvidenceOutput -join ' '))
     Assert-True -Condition (($runnerEvidenceOutput -join ' ') -match 'Post-export runner evidence self-test OK') -Message 'Generated runner evidence test did not report success.'
 
+    Write-Host '[initializer] generated offline checker test'
     $offlineCheckerTest = Join-Path $outputPath 'tests\cpstudio\Test-OfflinePostExportCheck.ps1'
     $offlineCheckerOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $offlineCheckerTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated offline checker test failed: " + ($offlineCheckerOutput -join ' '))
     Assert-True -Condition (($offlineCheckerOutput -join ' ') -match 'Offline post-export checker self-test OK') -Message 'Generated offline checker test did not report success.'
 
+    Write-Host '[initializer] generated controlled Runner test'
     $controlledRunnerTest = Join-Path $outputPath 'tests\runner\Test-CtrlXOpconRunner.ps1'
     $controlledRunnerOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $controlledRunnerTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated controlled Runner test failed: " + ($controlledRunnerOutput -join ' '))
     Assert-True -Condition (($controlledRunnerOutput -join ' ') -match 'Controlled Runner P1.1 self-test OK') -Message 'Generated controlled Runner test did not report success.'
 
+    Write-Host '[initializer] generated .NET Runner build'
     $generatedRunnerProject = Join-Path $outputPath 'tools\runner\CtrlX.OpCon.Runner.Cli\CtrlX.OpCon.Runner.Cli.csproj'
-    $generatedRunnerBuild = & dotnet build $generatedRunnerProject --configuration Release 2>&1
+    $generatedRunnerBuild = & dotnet build $generatedRunnerProject --configuration Release /p:RestoreIgnoreFailedSources=true 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated .NET Runner build failed: " + ($generatedRunnerBuild -join ' '))
     Assert-True -Condition (($generatedRunnerBuild -join ' ') -match '0 Error\(s\)') -Message 'Generated .NET Runner build did not report zero errors.'
+    Write-Host '[initializer] generated .NET Broker build'
+    $generatedBrokerProject = Join-Path $outputPath 'tools\runner\CtrlX.OpCon.Runner.Broker\CtrlX.OpCon.Runner.Broker.csproj'
+    $generatedBrokerBuild = & dotnet build $generatedBrokerProject --configuration Release /p:RestoreIgnoreFailedSources=true 2>&1
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated .NET Broker build failed: " + ($generatedBrokerBuild -join ' '))
+    Assert-True -Condition (($generatedBrokerBuild -join ' ') -match '0 Error\(s\)') -Message 'Generated .NET Broker build did not report zero errors.'
+    Write-Host '[initializer] generated Runner doctor'
     $generatedRunnerDoctor = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $outputPath 'scripts\runner\Invoke-CtrlXOpconRunner.ps1') -Command Doctor 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated .NET Runner doctor failed: " + ($generatedRunnerDoctor -join ' '))
     Assert-True -Condition (($generatedRunnerDoctor -join ' ') -match '"readyForActionClient"\s*:\s*true') -Message 'Generated .NET Runner doctor did not report ready.'
@@ -245,6 +288,10 @@ try {
     Assert-True -Condition $minimalConfig.Contains('plc_project: null') -Message 'Omitted PLC project must remain null.'
     Assert-True -Condition $minimalConfig.Contains('io_project: null') -Message 'Omitted IO project must remain null.'
     Assert-True -Condition $minimalConfig.Contains('bus_config: null') -Message 'Omitted bus config must remain null.'
+    $minimalSemanticScope = [System.IO.File]::ReadAllText((Join-Path $minimalOutputPath 'config\engineering-semantic-scope.json')) | ConvertFrom-Json
+    Assert-True -Condition ([string]$minimalSemanticScope.project.plcProjectRelativePath -eq '') -Message 'Omitted PLC project must leave the semantic scope unconfigured.'
+    Assert-True -Condition ([string]$minimalSemanticScope.project.profile -eq 'ctrlX PLC 9.9 Test') -Message 'Custom PLE profile was not rendered into the semantic scope.'
+    Assert-True -Condition ([string]$minimalSemanticScope.symbolApplicationPath -ceq 'Device/Plc Logic/Application') -Message 'Minimal semantic scope Symbol application path has incorrect casing.'
     $minimalMcpExample = [System.IO.File]::ReadAllText((Join-Path $minimalOutputPath 'config\codex-mcp.toml.example'))
     Assert-True -Condition $minimalMcpExample.Contains('ctrlX PLC 9.9 Test') -Message 'Custom PLE profile was not rendered into the MCP example.'
 

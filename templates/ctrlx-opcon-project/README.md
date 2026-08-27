@@ -41,8 +41,15 @@ CpStudio Export #1 的离线报告可交给
 `scripts/cpstudio/Invoke-PostExportEngineering.ps1`。该工具只生成带哈希的
 operation/action 并接收 runner 证据，不启动 PLE/MCP/REST。P1.1 Runner 统一执行
 Stage 1/Stage 2 控制面；P1.2a .NET 客户端校验并消费 immutable action，但只连接
-已存在的本地 Broker。P1.2b 唯一 persistent session Agent/Broker 完成前，不会自行
-Build，也不会伪造成功证据。只有 Symbol/后处理证据明确要求时才安排 Export #2。
+已存在的本地 Broker。P1.2b interactive Broker 离线基础已随骨架提供：它使用
+current-user validated registration、Named Pipe v2、durable submit/query、单 profile/project
+owner 和 typed action allowlist。它必须显式启动，action wrapper 不会自行启动
+PLE、MCP 或 Broker。参考环境中的受控 adapter、fresh Build 和只读 semantic snapshot
+技术通道已经实测；新工位仍须安装并校验 adapter、配置 semantic scope、取得完整且未截断
+的 warning 集合、建立绑定独立人工证据的正式 warning/semantic baseline，并以新 immutable
+action 完成本工位离线验收。缺 baseline 时必须以对应 bootstrap `BLOCKED` 结束，不会伪造
+成功证据。`apply_change_set_and_build` 仍不支持。只有 Symbol/后处理证据明确要求时才安排
+Export #2。
 
 ## 目录
 

@@ -15,7 +15,7 @@
 - 第一次完整离线编译的 warning 签名基线；
 - 初始 BMK、Event、Unit、Peripheral、AddOn 和 Chain 规格；
 - CpStudio Post-export hook 的安装位置；Stage 1 队列/离线审计与 Stage 2 PlanOnly ledger 已随骨架生成，尚待真实导出验证；
-- Stage 2 已包含 P1.2a .NET action client、双层租约和 Named Pipe v1 客户端；P1.2b 唯一 session Agent/Broker 尚未实现（含 Broker-side ACL/可信注册、typed action 与长 Build 完成语义），因此当前无 Broker 时会生成真实阻塞结果，不会伪造 Build 成功。
+- Stage 2 已包含 P1.2a .NET action client 和 P1.2b interactive Broker：Named Pipe v2、current-user validated registration、durable submit/query、双层租约、typed action 及长 Build 查询语义。参考环境的 ownership/fresh-Build adapter 与只读 semantic snapshot 技术通道已实测；当前工位仍须安装并 `-Check` adapter、配置 semantic scope、取得完整且未截断的 warning 集合、建立绑定独立人工证据的正式 warning/semantic baseline，并用新的 immutable action 完成本工位离线验收。缺 baseline 时必须以对应 bootstrap `BLOCKED` 结束，不会伪造 Build 成功；`apply_change_set_and_build` 仍不支持。
 
 ## 下次第一步
 

@@ -4,20 +4,28 @@
 > 目标 IDE:ctrlX PLC Engineering(PLE-V-0206.x,profile `ctrlX PLC 2.6.8`)及其他 OEM CODESYS 品牌 IDE
 > 首次应用:2026-08-12 · connector I/O 扩展:2026-08-18 · 编译消息/会话接管扩展:2026-08-20 · no-save Build 门禁:2026-08-23 · Broker ownership/fresh-build contract:2026-08-27
 
-> **当前门禁（2026-08-27）**：本机已安装 adapter 尚未应用最后一项
-> ownership/fresh-build contract；本轮没有修改全局 npm。Broker 因此会在任何
-> `launch_codesys` 前失败关闭。只有单独审阅并应用本仓库脚本、再完成实体
-> acceptance 后，才能把该能力写成“已安装/可用”。
+> **当前门禁（2026-08-28）**：本机 adapter 已应用；全局 `-Check`、隔离 readiness 与
+> Station010 真实 PLE 离线技术通道均通过。这只证明 ownership、fresh Build、typed
+> warning 与 semantic snapshot 技术通道；正式 baseline/P1.2 仍未验收。当前 warning
+> candidate 含 `PLE_WARNING_OUTPUT_TRUNCATED`，不得批准为正式 baseline。
 >
 > fresh-build contract v2 不接受推断结果：两个预期消息类别必须全部成功清空并回读为空，
 > 应用对象必须实际执行一次 `build()`（不接受 `generate_code()` 代替），两个类别
 > 必须全部读取成功，且 Build 类别必须返回以 `Compile complete` 或 `Build complete`
 > 开头的明确数字摘要。包含通用 `0 errors / 0 warnings` 的其他文本（内部标记为
 > `Other summary`）只供诊断，不能认证 fresh。上述事实任一缺失时，
-> `fresh`、`patchPreflightVerified` 与 `recordsComplete` 都不会被认证为 `true`。
-> 当前 fast message API 只有在这些前提成立且结果为 0 errors / 0 warnings 时能证明
-> 同次记录集完整；非零摘要中的占位记录只供诊断，`recordsComplete=false`，在
-> adapter 能逐条返回结构化诊断前继续失败关闭。
+> `fresh` 与 `patchPreflightVerified` 都不会被认证为 `true`。0 errors / 0 warnings
+> 的空集合可直接标记 `typedRecordsVerified=true`；仅在 fresh、0 errors、非零
+> warnings 时，adapter 才额外读取固定的 Build 与 Additional code checks 两个类别，
+> 每类只调用一次 `get_message_objects(category, Warning)`。两个调用返回的 warning
+> 对象总数必须精确等于数字摘要，且每条通过 severity、空值、敏感字段及 UTF-8
+> 大小门禁，才输出 `{severity:"warning",text}` records。数量不符、API 异常、含敏感
+> 内容或超限时保留有界脱敏 `diagnosticRows` 并令 `typedRecordsVerified=false`；不猜测
+> severity，也不会退回全部类别 × 全部 severity 扫描。
+>
+> semantic snapshot 是单独的 actual-only 只读工具，不与 `compile_project` 混合。
+> Broker 在同一 owned session 完成 Build 后调用它，再把返回事实与 action-bound、
+> 已审阅 baseline 比较；工具本身不接收 expected 值，也不返回 acceptance 布尔值。
 
 ## 症状 1：CRLF 导致编译工具失败
 
@@ -53,7 +61,7 @@ device.connectors → connector.host_parameters
 1. 原脚本连续执行 `clean()`、`clean_all()`、`build()` 和 `generate_code()`，对大型 OpCon 工程存在重复编译；
 2. 编译结束后，原脚本按“全部消息类别 × Fatal/Error/Warning/Information/Text”反复调用 `get_message_objects(category, severity)`，ctrlX PLE 2.6.8 的该 OEM 接口可能单次阻塞数分钟。
 
-兼容补丁改成一次官方 `ScriptApplication.build()`，并只读取 Build 与 Additional code checks 两类缓存；每类仅调用一次 `System.get_messages(category)`，由 IDE 自身的 Build summary 统计 error/warning。若拿不到 Build summary，工具按错误失败，不会把未知状态误报成成功。
+兼容补丁改成一次官方 `ScriptApplication.build()`，并只读取 Build 与 Additional code checks 两类缓存；每类仅调用一次 `System.get_messages(category)`，由 IDE 自身的 Build summary 统计 error/warning。若摘要为 fresh 0-error + 非零 warning，再对同样两个固定类别各做一次 Warning-only 对象读取，以生成 type-verified warning records。若拿不到 Build summary、对象数与摘要不一致或对象不安全，工具失败关闭，不会把未知状态误报成成功。
 
 同一 Build 类别同时出现 `Compile complete` 与尾部 `Build complete` 时，以前者为应用编译结果。后者可能只统计外层生成阶段，不能用它把实际数百条错误误报为少量错误。
 
@@ -83,18 +91,42 @@ device.connectors → connector.host_parameters
 | `dist/scripts` + `src/scripts` 的 `get_compile_messages.py` | 使用同一有界缓存读取路径，避免只读消息也阻塞 IDE |
 | `dist/launcher.js` + `src/launcher.ts` | 校验持久会话 PID 的 PLE 可执行文件身份，并在接管前探测 watcher；健康检查和 shutdown 同样防 PID 复用 |
 | `dist/launcher.js` + `src/launcher.ts`、`dist/server.js` + `src/server.ts` | 输出 `ctrlx-ple-ownership-v1`，区分本 launcher 创建的 `broker` 与接管的 `external`；外部 PLE 禁止 shutdown |
-| `dist/scripts` + `src/scripts` 的 `compile_project.py`、`dist/server.js` + `src/server.ts` | 输出 `ctrlx-fresh-compile-v2` 同次 summary；只有类别全清空、真实 `application.build()`、类别全读回、明确以 `Compile complete`/`Build complete` 开头的 Build 数字摘要均成立时才认证 fresh/patch preflight；通用数字行不得认证 fresh；0 errors / 0 warnings 保留完整空 records，非零但缺逐条详情时明确 `recordsComplete=false` |
+| `dist/scripts` + `src/scripts` 的 `compile_project.py`、`dist/server.js` + `src/server.ts` | 输出 `ctrlx-fresh-compile-v2` 同次 summary；只有类别全清空、真实 `application.build()`、类别全读回、明确 Build 数字摘要均成立时才认证 fresh/patch preflight；0/0 保留 type-verified 空 records；fresh 0-error + warning 仅通过固定两类别 × Warning severity 精确计数后输出 typed records，其余结果保留有界脱敏 diagnostics 并失败关闭 |
+| `dist/scripts` + `src/scripts` 的 `get_ctrlx_semantic_snapshot.py` | 只读递归遍历 action 指定的工程树 scope root 及其后代对象；读取 connector/device parameter 与树通道的实际 mapping（包括空 binding），固定稳定 identity/order，总记录硬上限 2048；不调用 `save()` |
+| `dist/server.js` + `src/server.ts` | 注册 actual-only `get_ctrlx_semantic_snapshot`；mapping 与官方 PLE REST Symbol Configuration 各做双读稳定性检查；mapping facts 只返回一份，Symbol payload 不跨 MCP、只返回其 hash/byte count/shape summary；compact 内层响应硬限 480 KiB，为 1 MiB MCP JSON-line 外层转义保留空间；任一读失败、工程 dirty、前后变化或超限均失败关闭 |
 
 ## 一键应用
 
 ```powershell
 # 先检查(不写盘)
 .\apply-crlf-patch.ps1 -Check
-# 应用(幂等;自动备份 watcher.py.bak_orig / _message_utils.py.bak_crlf)
+# 应用(幂等；每个新契约只创建一次对应的 .bak_pre_* 备份)
 .\apply-crlf-patch.ps1
 ```
 
-脚本会自动从 `npm root -g` 定位包路径;也可 `-PackageScriptsDir <path>` 手动指定。脚本会同时检查/修补 `dist/scripts` 与存在时的 `src/scripts`，重复执行不会重复插入。
+脚本会自动从 `npm root -g` 定位包路径;也可 `-PackageScriptsDir <path>` 手动指定。脚本会同时检查/修补 `dist/scripts` 与存在时的 `src/scripts`，重复执行不会重复插入。应用阶段从首个文件写入到 Python/Node 语法校验完成属于同一事务；任何中途异常都会恢复本次运行涉及的全部文件。默认找不到 Python 或 Node 也会失败并回滚。只有调用者明确传入 `-SkipRuntimeSyntaxCheck` 时才允许跳过语法校验，该参数不应用于正常工作站部署。
+
+`-Check` 是只读状态报告，不以退出码把 `TODO` 当作成功或失败：`OK` 表示完整
+结构契约存在，`TODO` 表示尚未安装，`UPGR` 表示检测到旧版/局部 marker。应用模式
+遇到 ownership/semantic 的 `UPGR` 会停止，要求先从相同版本 npm 包或对应备份恢复
+该文件，禁止在未知局部状态上继续叠加。Runner readiness 应使用下面的隔离 fixture
+测试，而不能只看 `-Check` 命令退出码。
+
+### 回滚
+
+补丁通过 `BackupOnce` 生成且不覆盖已有备份。P1.2b 相关后缀为：
+
+- launcher/server ownership：`.bak_pre_ple_ownership_contract`；
+- server/compile fresh-v2：`.bak_pre_fresh_compile_contract`；
+- server/既有 semantic script：`.bak_pre_semantic_snapshot_contract`。
+
+回滚前先关闭唯一的 MCP/PLE owner，避免恢复正在加载的文件。最稳妥的全量回滚是
+重新安装完全相同的 `codesys-mcp-persistent` 版本，再仅应用仍需保留的旧补丁层。
+若按备份做定点回滚，必须按“semantic → fresh-v2 → ownership”的逆序恢复对应
+`src`/`dist` 文件；新增加且此前不存在的两份
+`src/scripts/get_ctrlx_semantic_snapshot.py`、`dist/scripts/get_ctrlx_semantic_snapshot.py`
+没有旧内容可恢复，只能在确认精确路径后删除。完成后重新运行 `-Check`，预期被
+回滚的项显示 `TODO`，不能把混合的 `OK/UPGR` 状态投入 Runner。
 
 ## 验证
 
@@ -104,8 +136,8 @@ python -m py_compile "$env:APPDATA\npm\node_modules\codesys-mcp-persistent\dist\
 
 然后通过 MCP 调用 `compile_project`,应返回结构化错误/警告列表而非 SyntaxError。
 `-Check` 还必须显示 dist/src 两份 `compile_project.py` 的
-`strict no-save compile guard`、`fail-closed same-call fresh compile contract`，以及 launcher/server
-的 `PLE ownership` 均为 `[OK]`。
+`strict no-save compile guard`、`fail-closed same-call fresh compile contract`、recursive semantic snapshot，
+以及 launcher/server 的 `PLE ownership` 均为 `[OK]`。
 2026-08-23 本机已完成补丁应用、`-Check`、Python/Node 语法和离线 fixture
 验证；由于当时仍有既有 PLE/MCP owner 与活动 `.project.~u`，新的独立
 checker 生命周期实测按门禁延期，不能把静态验证表述为已完成真实启动/退出验收。
@@ -118,7 +150,74 @@ python .\test-fast-compile-message.py `
   "$env:APPDATA\npm\node_modules\codesys-mcp-persistent\dist\scripts\compile_project.py"
 ```
 
-2026-08-20 在 Station010 实测：旧路径超过 300 s；补丁后 `compile_project` 约 7.6 s 返回 0 errors / 7 warnings，`get_compile_messages` 约 0.8 s 返回同一缓存。该验证是离线 Build，未连接、下载或运行实体 PLC。
+该测试显式覆盖：无关文本里的通用 `0 errors / 0 warnings` 只能保留为
+`Other summary` 诊断，不能认证 fresh-v2；0/0 不调用对象 API；error 非零不调用对象
+API；fresh 0-error + warning 只调用固定 `Build/Warning` 与
+`Additional code checks/Warning` 两次，精确数量可输出 typed records。数量不符、异常、
+错误 severity、Unicode、敏感词、单条/总量超限均有独立的失败关闭断言。
+
+完整的纯离线 adapter readiness 回归（复制到临时 fixture 后应用，不修改全局 npm，
+不启动 MCP/PLE/工程）：
+
+```powershell
+.\test-adapter-readiness.ps1
+```
+
+它要求隔离 fixture 应用后的 `-Check` 不含 `TODO`/`UPGR`，随后运行 Node/Python
+语法检查、fresh-v2、recursive mapping stub、Unicode canonical/近限、final-dirty、
+slow-body/oversize stream 与补丁失败回滚回归。应用模式若 `py_compile` 或
+`node --check` 失败会非零退出，并恢复本轮写入的 package source 文件。本机
+全局安装当前运行 `apply-crlf-patch.ps1 -Check` 应全部显示 `[OK]`；这证明已安装文件与
+受控补丁一致，但不能替代真实工程 action 和 baseline 审阅。
+
+semantic snapshot 请求示例（只给位置，不给 expected 值）：
+
+```json
+{
+  "projectFilePath": "C:/Engineering/Station/Plc/Station_PLC.project",
+  "mappingScopes": [
+    {
+      "devicePath": "Device/Realtime_Data/ethercat_master_instances_example",
+      "recursive": true,
+      "includeAllMappableChannels": true
+    }
+  ],
+  "mappingTargets": [],
+  "symbolApplicationPath": "Device/Plc Logic/Application"
+}
+```
+
+成功响应契约为 `ctrlx-semantic-snapshot-v1`，关键事实如下：
+
+- `dirtyStateVerified=true`、`projectDirty=false`、`recordsComplete=true`、
+  `stableAcrossRead=true`；mapping traversal 自身前后检查 dirty，且 mapping/Symbol
+  双读全部完成后再执行第三次 ScriptEngine clean/stability probe；
+- `canonicalFacts.mapping.scopes/records` 是实际只读结果，空 binding 明确表示为
+  `actualVariable:""`；
+- Symbol payload 在 adapter 内递归 key 排序（数组顺序保留）并以 UTF-8 计算 hash，
+  payload 本体不通过 MCP 返回；仅保留 byte count、`payloadSha256` 与 shape summary；
+- `canonicalFacts.mapping` 固定包含 `scopeCount`、`explicitTargetCount`、
+  `recordCount`、`recordLimit`、`scopes`、`records`；
+- actual facts 只在 `canonicalFacts` 出现一次，`sources` 只保留读取来源/HTTP 元数据；
+- `hashes` 固定包含 `mappingSha256`、`symbolConfigSha256`、`snapshotSha256`，
+  算法为 `SHA-256` / `ctrlx-semantic-canonical-json-v1`。
+- Symbol REST 以流式 reader 消费，30 s abort 覆盖 fetch 与完整 body；首字节超过
+  8 MiB 即 cancel/fail，不先把超大响应整体缓冲到内存。
+
+这些 hash 只是确定性实际事实，不是通过证明；Runner 必须递归重算 hash，并与
+action-bound baseline 的完整 `canonicalFacts + hashes` 比较。失败响应保留相同
+contract/producer/patch IDs，并返回 `recordsComplete=false`、
+`stableAcrossRead=false`、结构化 `reasonCode/reason`。脚本执行失败和 REST 非 2xx
+只返回长度与 SHA-256，错误正文经过脱敏和 4 KiB 上限处理。最终 compact JSON 超过
+491520 UTF-8 bytes 时必须返回 `SEMANTIC_SNAPSHOT_TOO_LARGE`，不得截断或放宽限制；对应完整 MCP JSON-RPC 外层消息仍必须小于 1 MiB。
+
+2026-08-20 在 Station010 实测：旧路径超过 300 s；当时仅使用文本缓存的补丁后
+`compile_project` 约 7.6 s 返回 0 errors / 7 warnings，`get_compile_messages` 约 0.8 s
+返回同一缓存。2026-08-28 真实 PLE action 已验证“两固定类别 × Warning-only”对象
+读取并返回 `typedRecordsVerified=true`，但未单独记录两个调用的耗时；结果同时包含
+`>100 warnings` 截断哨兵。因此这次 101 条记录不能成为完整 warning baseline，且仍需
+在后续 acceptance 中记录真实分调用耗时。若读取异常慢或输出不完整，必须失败关闭，
+不得放宽为全扫描。上述验证均为离线 Build，未连接、下载或运行实体 PLC。
 
 同日会话恢复实测：残留 `ready.signal` 指向一个已被 `python.exe` 复用的 PID；补丁拒绝该候选并成功启动、连接新的 ctrlX PLE watcher。`apply-crlf-patch.ps1 -Check` 会同时检查源码和运行时 launcher 标记，应用模式还执行 `node --check dist/launcher.js`。
 
@@ -162,7 +261,13 @@ map_io_channel(
 | `watcher.py.patched` | 打补丁后的完整文件 |
 | `watcher_crlf_normalize.patch` | unified diff(仅 5 行插入) |
 | `apply-crlf-patch.ps1` | 一键应用/检查 ctrlX 兼容补丁（CRLF、docstring、connector I/O Mapping、有界编译消息、no-save Build、安全会话接管） |
-| `test-fast-compile-message.py` | 不启动 IDE 的编译摘要解析/失败关闭回归测试；覆盖无关 `0 errors / 0 warnings` 只能作为 `Other summary`，不得进入 fresh-v2 allow-list |
+| `test-fast-compile-message.py` | 不启动 IDE 的编译摘要、固定两类别 Warning-only producer 与失败关闭回归；覆盖精确计数、异常、Unicode、敏感/超限记录、0-warning/error-no-query 和通用 0/0 拒绝 |
+| `get_ctrlx_semantic_snapshot.py` | IronPython 2.7 actual-only mapping scope/target 读取模板；稳定 identity/order，最多 2048 records |
+| `get_ctrlx_semantic_snapshot.tool.ts/.js` | MCP 工具的源码/运行时 canonical 插入资产；双读 mapping/Symbol，输出 canonical facts + SHA-256 |
+| `test-semantic-snapshot.py` | 纯 stub 的递归 scope、connector/tree mapping、空 binding、dirty/缺失 scope 失败关闭回归 |
+| `semantic-canonical-vectors.json` | Node/C# 共用 Unicode + shuffled-key canonical UTF-8/hash 向量；C# 序列化必须使用 literal Unicode 并与向量逐字节一致 |
+| `test-semantic-tool.js` | 直接执行运行时插入资产的纯离线回归；覆盖 ordinal 排序、Unicode hash、Symbol payload 不外发、双读变化、480 KiB 内层上限及 1 MiB 外层消息边界 |
+| `test-adapter-readiness.ps1` | 临时隔离 fixture apply → 全 `[OK]` check → 语法、final-dirty race、slow-body/oversize stream、unknown-block 拒绝和 syntax-failure rollback 回归；不写全局 npm、不启动 PLE/MCP |
 
 ## 附注:docstring 损坏修复
 

@@ -1,17 +1,34 @@
+using System.Globalization;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace CtrlX.OpCon.Runner.Core;
 
 public static class BrokerPipeCodec
 {
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
-    private static readonly JsonSerializerOptions CompactJson = new() { WriteIndented = false };
+    // The wire-size gate is defined over UTF-8 bytes.  Keep non-ASCII text as
+    // literal UTF-8 instead of expanding every code point to a \uXXXX escape;
+    // otherwise a bounded semantic/warning observation can exceed the frame
+    // solely because the local IPC serializer chose a larger representation.
+    private static readonly JsonSerializerOptions CompactJson = new(JsonSerializerOptions.Default)
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        WriteIndented = false
+    };
+    private static readonly Regex JsonSurrogateEscape = new(
+        "(?<!\\\\)\\\\u(?<high>D[89ABab][0-9A-Fa-f]{2})\\\\u(?<low>D[C-Fc-f][0-9A-Fa-f]{2})",
+        RegexOptions.CultureInvariant);
+    private static readonly Regex JsonBmpEscape = new(
+        "(?<!\\\\)\\\\u(?<code>[0-9A-Fa-f]{4})",
+        RegexOptions.CultureInvariant);
 
     public static async Task WriteAsync(Stream stream, JsonObject message, CancellationToken cancellationToken)
     {
-        var json = message.ToJsonString(CompactJson);
+        var json = LiteralUtf8Json(message);
         if (json.IndexOfAny(['\r', '\n']) >= 0)
         {
             throw new RunnerGateException("BROKER_PROTOCOL_INVALID", "Broker message contains a line break.");
@@ -26,6 +43,30 @@ public static class BrokerPipeCodec
         await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
         await stream.WriteAsync(new byte[] { (byte)'\n' }, cancellationToken).ConfigureAwait(false);
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public static int SerializedUtf8ByteCount(JsonObject message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        return StrictUtf8.GetByteCount(LiteralUtf8Json(message));
+    }
+
+    private static string LiteralUtf8Json(JsonObject message)
+    {
+        var serialized = message.ToJsonString(CompactJson);
+        serialized = JsonSurrogateEscape.Replace(serialized, match =>
+        {
+            var high = int.Parse(match.Groups["high"].Value, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+            var low = int.Parse(match.Groups["low"].Value, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+            return char.ConvertFromUtf32(char.ConvertToUtf32((char)high, (char)low));
+        });
+        return JsonBmpEscape.Replace(serialized, match =>
+        {
+            var code = int.Parse(match.Groups["code"].Value, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+            return code >= 0x20 && code is not (0x22 or 0x5C) && !char.IsSurrogate((char)code)
+                ? ((char)code).ToString()
+                : match.Value;
+        });
     }
 
     public static async Task<JsonObject> ReadAsync(Stream stream, CancellationToken cancellationToken)

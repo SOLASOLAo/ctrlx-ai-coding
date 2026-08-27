@@ -46,8 +46,10 @@
 
 CpStudio 导出后，必须同时审计 AI-owned 对象、mixed hooks、I/O Mapping、BinIo、Symbol
 Configuration 和 SFC 图形属性。Post-export hook 只发布 Stage 1 请求；Stage 2 PlanOnly coordinator 只生成
-哈希绑定的 action 并校验 evidence，不启动 PLE、MCP 或 REST。action 由既有的唯一 persistent Codex 会话执行；
-live runner 与跨进程 MCP 租约尚未实现。
+哈希绑定的 action 并校验 evidence，不启动 PLE、MCP 或 REST。P1.2a client 与 P1.2b
+interactive Broker 离线基础已随骨架提供；Broker 使用 Named Pipe v2、current-user
+validated registration、durable submit/query 和单 owner 租约，并必须由交互用户显式启动。
+在受控 adapter、语义证据 producer 及真实 PLE 离线 acceptance 通过前，生产 action 必须失败关闭。
 
 ## 6. PLC ST 风格
 
@@ -71,3 +73,4 @@ THEN
 - [ ] 补齐工程路径、初始规格和 Catalog；
 - [ ] 建立首次离线编译与 warning 签名基线；
 - [ ] 配置并验证 CpStudio Post-export Stage 1 请求与 Stage 2 PlanOnly ledger。
+- [ ] 验证本工位受控 adapter、语义证据 producer 和真实 PLE 离线 acceptance；完成前不得将生产 action 标记成功。

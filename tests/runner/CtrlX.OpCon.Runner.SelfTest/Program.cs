@@ -1103,7 +1103,8 @@ internal static class RunnerSelfTest
             ["completedAtUtc"] = completed.ToString("O"),
             ["capabilitiesInvoked"] = new JsonArray(
                 "get_codesys_status",
-                "compile_project"),
+                "compile_project",
+                "get_ctrlx_semantic_snapshot"),
             ["session"] = observedSession,
             ["guardrails"] = new JsonObject
             {
@@ -1150,6 +1151,17 @@ internal static class RunnerSelfTest
                     ["pleOrMcpStartedByAction"] = false,
                     ["directWatcherIpcUsed"] = false,
                     ["symbolPostProcessingVerified"] = true
+                },
+                ["semanticProofs"] = new JsonObject
+                {
+                    ["contractVersion"] = 1,
+                    ["ownership"] = VerifiedProof("fixture.ownership"),
+                    ["readback"] = VerifiedProof("fixture.readback"),
+                    ["recoverableBaseline"] = VerifiedProof("fixture.git-head"),
+                    ["warnings"] = VerifiedProof("fixture.warning-baseline"),
+                    ["semanticBaseline"] = VerifiedProof("fixture.semantic-baseline"),
+                    ["mapping"] = VerifiedProof("fixture.mapping"),
+                    ["symbolPostProcessing"] = VerifiedProof("fixture.symbol")
                 }
             }
         };
@@ -1165,6 +1177,13 @@ internal static class RunnerSelfTest
             ["observation"] = observation
         };
     }
+
+    private static JsonObject VerifiedProof(string producer) => new()
+    {
+        ["producer"] = producer,
+        ["contractVersion"] = 1,
+        ["verified"] = true
+    };
 
     private static void AssertBrokerRequestBound(JsonObject request, ActionFixture action)
     {

@@ -33,7 +33,7 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 **核心结论(已实测)**:`.project` 是加密容器，只能经对应 IDE、MCP 或正式 REST 接口修改；
 CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型文件，也不覆盖未声明的生成对象。
 
-## 当前状态(2026-08-22)
+## 当前状态(2026-08-28)
 
 | 项 | 状态 |
 |---|---|
@@ -43,11 +43,27 @@ CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型�
 | 分工 | 用户做骨架(CpStudio),AI 做 PLC 代码细节 |
 | 项目模板 | ✅ 新项目初始化器 + Stage 1 离线审计队列 + Stage 2 PlanOnly operation ledger |
 | Codex Skill | ✅ `ctrlx-opcon-engineering`，源码可版本化、安装可校验 |
+| Controlled Runner | ✅ P1.1、P1.2a、P1.2b Broker 与真实 PLE 技术通道；⏳ 完整 warning population、warning/semantic baseline 人审及新 action 复验 |
 | 产品化计划 | `docs/mcp_productization_roadmap.md` |
 
-Stage 2 已实现为哈希绑定、可恢复的 PlanOnly 协调器，只生成 action 并校验 runner evidence；它不会自行启动
-PLE、MCP 或 REST。live runner 与跨进程 MCP 租约仍未实现，当前 action 只能由既有的唯一 persistent Codex
-会话执行。
+Stage 2 已实现为哈希绑定、可恢复的 PlanOnly 协调器，只生成 action 并校验
+runner evidence；它不会自行启动 PLE、MCP 或 REST。P1.2a 已提供 .NET 8 immutable-action
+client 和证据封口；P1.2b 已提供显式启动的 interactive Broker 离线基础，包括
+current-user validated registration、Named Pipe v2、durable submit/query、单 profile/project owner
+和 typed action allowlist。2026-08-28 已在真实 Station010 PLE 离线 action 中验证受控
+adapter、fresh Build、typed warnings 与 semantic snapshot：0 errors / 101 条可见 warnings，456 条
+mapping facts，工程哈希前后不变且无在线动作。当前 warning candidate 含
+`PLE_WARNING_OUTPUT_TRUNCATED`，所以 101 条只是可见记录，并不证明完整告警全集。
+已确认 100 条来自 PLE 工程 `Compile Options` 的生成上限，而不是 MCP 读取分页。下一步
+先在隔离工程副本中通过官方 REST 对 `CompileOptionsEditor.maxCompilerWarnings=<no limit>`
+完成 GET/PUT/readback/Build/回滚验证，再进行 warning/semantic
+baseline 人审及新 action 复验。完成前 action 仍按设计停在 baseline-bootstrap
+`BLOCKED`；不得把技术通道跑通冒充最终工程验收成功。
+
+提交前失败关闭审查也已收口：独立人审证据、scope/baseline 均采用同字节有界
+校验与 SHA 绑定；candidate/AI triage 不能冒充人审；semantic adapter 在全部 REST
+读取后执行最终 dirty probe，并限制 30 s/8 MiB；畸形请求与证据生成不会持久化或
+回显凭据。该加固只提高证据可信度，不绕过当前 warning 截断和人工 baseline 门禁。
 
 ## 创建新工站 AI 旁车
 
@@ -129,7 +145,8 @@ Station、`Std`、`.project` 或闭源资料，目标目录已存在时会拒绝
 - [ ] 阶段 3:AI 填充逻辑(SqM/SqS/自动/手动),compile 结构化错误闭环
 - [ ] 阶段 4:仿真 → 真机下载调试
 - [x] 产品化基础:可复用项目初始化器、Post-export Stage 1 审计队列、Stage 2 PlanOnly ledger 和 Codex Skill
-- [ ] 产品化 MCP:受控 fork、租约/operation、project_health、compile_project_v2、change set 与正式 SFC/Symbol/I/O 工具
+- [x] 产品化 MCP 技术通道:Controlled Runner P1.1、P1.2a client、P1.2b interactive Broker、受控 adapter、fresh Build、typed warning 与真实 PLE semantic snapshot
+- [ ] 产品化 MCP 基线验收:先消除 `PLE_WARNING_OUTPUT_TRUNCATED` 并取得完整告警全集，再进行人工 warning/semantic baseline + 新 immutable action 复验；其后再推进 project_health/change set 与正式 SFC/Symbol/I/O 工具
 
 ## 版权说明
 

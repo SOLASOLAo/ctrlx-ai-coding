@@ -459,7 +459,8 @@ public sealed class NamedPipeSessionBrokerClient : ISessionBrokerClient
         var allowed = new HashSet<string>(new[]
         {
             "get_codesys_status",
-            "compile_project"
+            "compile_project",
+            "get_ctrlx_semantic_snapshot"
         }, StringComparer.Ordinal);
         foreach (var node in capabilities)
         {
@@ -526,9 +527,86 @@ public sealed class NamedPipeSessionBrokerClient : ISessionBrokerClient
             _ = RunnerValidation.RequiredBoolean(result, name, "Broker observation result");
         }
 
-        if (result["build"] is not JsonObject || result["acceptance"] is not JsonObject)
+        if (!RunnerValidation.RequiredBoolean(result, "verificationOk", "Broker observation result") ||
+            !RunnerValidation.RequiredBoolean(result, "appliedReadbackOk", "Broker observation result") ||
+            RunnerValidation.RequiredBoolean(result, "repairRequired", "Broker observation result") ||
+            RunnerValidation.RequiredBoolean(result, "requiresSecondExport", "Broker observation result") ||
+            RunnerValidation.RequiredBoolean(result, "requiresCpStudioChange", "Broker observation result") ||
+            result["build"] is not JsonObject ||
+            result["acceptance"] is not JsonObject acceptance ||
+            result["semanticProofs"] is not JsonObject semanticProofs)
         {
-            throw new RunnerGateException(ProtocolInvalid, "Successful Broker observation lacks Build or acceptance evidence.");
+            throw new RunnerGateException(ProtocolInvalid, "Successful Broker observation lacks complete Build/semantic evidence.");
+        }
+
+        RunnerValidation.RequireOnly(
+            acceptance,
+            "Broker semantic acceptance",
+            "ownershipVerified",
+            "mappingConsistent",
+            "readbackVerified",
+            "recoverableBaselineVerified",
+            "warningSignaturesReviewed",
+            "existingSessionReused",
+            "pleOrMcpStartedByAction",
+            "directWatcherIpcUsed",
+            "symbolPostProcessingVerified");
+        foreach (var name in new[]
+        {
+            "ownershipVerified",
+            "mappingConsistent",
+            "readbackVerified",
+            "recoverableBaselineVerified",
+            "warningSignaturesReviewed",
+            "existingSessionReused",
+            "symbolPostProcessingVerified"
+        })
+        {
+            if (!RunnerValidation.RequiredBoolean(acceptance, name, "Broker semantic acceptance"))
+            {
+                throw new RunnerGateException(ProtocolInvalid, $"Successful Broker observation has false acceptance proof '{name}'.");
+            }
+        }
+
+        if (RunnerValidation.RequiredBoolean(acceptance, "pleOrMcpStartedByAction", "Broker semantic acceptance") ||
+            RunnerValidation.RequiredBoolean(acceptance, "directWatcherIpcUsed", "Broker semantic acceptance"))
+        {
+            throw new RunnerGateException(ProtocolInvalid, "Successful Broker observation violates semantic acceptance guardrails.");
+        }
+
+        RunnerValidation.RequireOnly(
+            semanticProofs,
+            "Broker semantic proofs",
+            "contractVersion",
+            "ownership",
+            "readback",
+            "recoverableBaseline",
+            "warnings",
+            "semanticBaseline",
+            "mapping",
+            "symbolPostProcessing");
+        if (RunnerValidation.RequiredInt32(semanticProofs, "contractVersion", "Broker semantic proofs") != 1)
+        {
+            throw new RunnerGateException(ProtocolInvalid, "Broker semantic proof contract is unsupported.");
+        }
+
+        foreach (var name in new[]
+        {
+            "ownership",
+            "readback",
+            "recoverableBaseline",
+            "warnings",
+            "semanticBaseline",
+            "mapping",
+            "symbolPostProcessing"
+        })
+        {
+            var proof = RunnerValidation.RequiredObject(semanticProofs, name, "Broker semantic proofs");
+            if (RunnerValidation.RequiredInt32(proof, "contractVersion", $"Broker semantic proof {name}") != 1 ||
+                !RunnerValidation.RequiredBoolean(proof, "verified", $"Broker semantic proof {name}"))
+            {
+                throw new RunnerGateException(ProtocolInvalid, $"Successful Broker observation has incomplete semantic proof '{name}'.");
+            }
         }
     }
 

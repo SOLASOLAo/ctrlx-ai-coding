@@ -63,13 +63,17 @@ AI 可以创建标准化的 AI 旁车目录，但不伪造 CpStudio 供应商模
 - 提交信息风格:`docs:` / `patches:` / `scripts:` / `config:` / `hmi:` 前缀 + 简述;中文正文可
 - 日期一律 ISO 格式(YYYY-MM-DD);新增决策追加到 SESSION_LOG 决策清单与基线红线章节
 
-## 7. 当前状态快照(2026-08-27)
+## 7. 当前状态快照(2026-08-28)
 
 - [x] 阶段 0:环境基线 + persistent 上线验证 + ctrlX 兼容补丁产品化（含编译超时修复）
 - [x] 通用 AI 旁车初始化器 + Post-export 离线审计队列 + `ctrlx-opcon-engineering` Skill
 - [x] MCP 分层产品化路线与验收标准：`docs/mcp_productization_roadmap.md`
 - [x] Controlled Runner P1.1：单一 CLI、OS 排他租约、项目预检、Stage 1/Stage 2 编排、结构化 run manifest；默认不启动 PLE/MCP
-- [ ] Controlled Runner P1.2：交互用户会话唯一 Agent/Broker + immutable action 执行/readback/fresh Build/evidence
+- [x] Controlled Runner P1.2a：.NET 8 immutable-action client、双租约、幂等终态、失败关闭和 evidence 封口
+- [x] Controlled Runner P1.2b 离线基础：interactive Broker、current-user registration、Named Pipe v2、durable submit/query、单 owner 和 typed action allowlist
+- [x] Controlled Runner P1.2 真实 PLE 技术通道：受控 ownership/fresh-Build/typed-warning/semantic-snapshot adapter 已应用，Station010 离线 action 验证为 0 errors / 101 条可见 warnings 与 456 条 mapping facts
+- [x] Controlled Runner P1.2 失败关闭加固：独立人审证据、同字节有界 hash/parse、warning 截断阻断、畸形请求/证据脱敏、semantic 最终 dirty probe、REST timeout/stream cap 与 patch rollback 回归完成
+- [ ] Controlled Runner P1.2 基线验收：当前 warning candidate 含 `PLE_WARNING_OUTPUT_TRUNCATED`，101 条仅为可见记录；必须先将告警降到截断阈值以下或实现并验证完整有界读取，再人工审阅 warning/semantic candidates、创建正式 baseline，并用新的 immutable action 复验；候选禁止自动晋升
 - [ ] 阶段 A(进行中):用户 CpStudio 骨架 → AI 填充逻辑(阶段 3)→ 仿真 → 真机
 - [ ] 阶段 B:路线② HMI 原型(OPC UA demo → hmi-framework,主画面 Avalonia 原生壳,Web 版远程备选)
 - [ ] 阶段 C:路线③ 标准 CODESYS + MCP 实测(先验证后买授权)

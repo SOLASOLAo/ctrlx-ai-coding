@@ -116,14 +116,7 @@ public sealed class JsonLineMcpClient : IMcpRpcClient
                     new JsonObject(),
                     timeout.Token).ConfigureAwait(false);
                 var tools = ValidateToolList(toolList);
-
-                foreach (var requiredTool in requiredTools)
-                {
-                    if (!tools.ContainsKey(requiredTool))
-                    {
-                        throw ProtocolError($"Required MCP tool is not advertised: {requiredTool}");
-                    }
-                }
+                EnsureRequiredToolsAdvertised(requiredTools, tools);
 
                 var handshake = new McpHandshake(
                     identity.ProtocolVersion,
@@ -581,6 +574,21 @@ public sealed class JsonLineMcpClient : IMcpRpcClient
         }
 
         return descriptors;
+    }
+
+    internal static void EnsureRequiredToolsAdvertised(
+        IEnumerable<string> required,
+        IReadOnlyDictionary<string, McpToolDescriptor> advertised)
+    {
+        ArgumentNullException.ThrowIfNull(required);
+        ArgumentNullException.ThrowIfNull(advertised);
+        foreach (var requiredTool in required)
+        {
+            if (!advertised.ContainsKey(requiredTool))
+            {
+                throw ProtocolError($"Required MCP tool is not advertised: {requiredTool}");
+            }
+        }
     }
 
     private static McpToolCallResult ValidateToolResult(string toolName, JsonObject result)

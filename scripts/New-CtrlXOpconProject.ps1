@@ -64,7 +64,8 @@ param(
     [string]$PlcEngineeringProfile = 'ctrlX PLC 2.6.8',
     [string]$PlcEngineeringVersion = 'PLE_V_0206',
     [string]$IoEngineeringVersion = 'IOE 2.6.4',
-    [string]$PlcRestBaseUrl = 'http://localhost:9002/plc/engineering/api/v2'
+    [string]$PlcRestBaseUrl = 'http://localhost:9002/plc/engineering/api/v2',
+    [string]$SemanticMappingDevicePath = 'Device/Realtime_Data'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -219,6 +220,7 @@ foreach ($entry in @{
         PlcRestBaseUrl = $PlcRestBaseUrl
         EngineeringRepository = $EngineeringRepository
         IntegrationRepository = $IntegrationRepository
+        SemanticMappingDevicePath = $SemanticMappingDevicePath
     }.GetEnumerator()) {
     Assert-SingleLineValue -Name $entry.Key -Value $entry.Value
 }
@@ -265,6 +267,7 @@ $stationRelativePath = ConvertTo-PortableRelativePath -BaseDirectory $outputFull
 $standardLibraryRelativePath = ConvertTo-PortableRelativePath -BaseDirectory $outputFullPath -TargetPath $standardLibraryFullPath
 $cpStudioRelativePath = if ($null -eq $cpStudioFullPath) { $null } else { ConvertTo-PortableRelativePath -BaseDirectory $outputFullPath -TargetPath $cpStudioFullPath }
 $plcRelativePath = if ($null -eq $plcFullPath) { $null } else { ConvertTo-PortableRelativePath -BaseDirectory $outputFullPath -TargetPath $plcFullPath }
+$plcStationRelativePath = if ($null -eq $plcFullPath) { '' } else { ConvertTo-PortableRelativePath -BaseDirectory $stationFullPath -TargetPath $plcFullPath }
 $ioRelativePath = if ($null -eq $ioFullPath) { $null } else { ConvertTo-PortableRelativePath -BaseDirectory $outputFullPath -TargetPath $ioFullPath }
 $busConfigRelativePath = if ($null -eq $busConfigFullPath) { $null } else { ConvertTo-PortableRelativePath -BaseDirectory $outputFullPath -TargetPath $busConfigFullPath }
 
@@ -292,12 +295,15 @@ $tokens = [ordered]@{
     '{{STANDARD_LIBRARY_ROOT_YAML}}' = ConvertTo-YamlScalar $standardLibraryRelativePath
     '{{CPSTUDIO_PROJECT_YAML}}' = ConvertTo-YamlScalar $cpStudioRelativePath
     '{{PLC_PROJECT_YAML}}' = ConvertTo-YamlScalar $plcRelativePath
+    '{{PLC_PROJECT_STATION_REL_JSON}}' = ($plcStationRelativePath | ConvertTo-Json -Compress)
     '{{IO_PROJECT_YAML}}' = ConvertTo-YamlScalar $ioRelativePath
     '{{BUS_CONFIG_YAML}}' = ConvertTo-YamlScalar $busConfigRelativePath
     '{{ENGINEERING_REPOSITORY_YAML}}' = ConvertTo-YamlScalar $(if ([string]::IsNullOrWhiteSpace($EngineeringRepository)) { $null } else { $EngineeringRepository })
     '{{INTEGRATION_REPOSITORY_YAML}}' = ConvertTo-YamlScalar $(if ([string]::IsNullOrWhiteSpace($IntegrationRepository)) { $null } else { $IntegrationRepository })
     '{{PLC_ENGINEERING_PROFILE_YAML}}' = ConvertTo-YamlScalar $PlcEngineeringProfile
     '{{PLC_ENGINEERING_PROFILE}}' = $PlcEngineeringProfile
+    '{{PLC_ENGINEERING_PROFILE_JSON}}' = ($PlcEngineeringProfile | ConvertTo-Json -Compress)
+    '{{SEMANTIC_MAPPING_DEVICE_PATH_JSON}}' = ($SemanticMappingDevicePath | ConvertTo-Json -Compress)
     '{{PLC_ENGINEERING_VERSION_YAML}}' = ConvertTo-YamlScalar $PlcEngineeringVersion
     '{{IO_ENGINEERING_VERSION_YAML}}' = ConvertTo-YamlScalar $IoEngineeringVersion
     '{{PLC_REST_BASE_URL_YAML}}' = ConvertTo-YamlScalar $PlcRestBaseUrl

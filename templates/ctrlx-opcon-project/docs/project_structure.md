@@ -27,11 +27,11 @@
 2. Post-export hook 原子发布请求；
 3. Stage 1 消费者只读生成 Git/指纹/ownership 审计报告；
 4. Stage 2 PlanOnly coordinator 建立 operation ledger 和不可变、哈希绑定的 runner action；
-5. 既有的唯一 persistent Codex 会话执行 action：按 ownership/hooks/graphical 审计或恢复 AI 增量，检查 I/O Mapping、BinIo、Symbol Configuration 和 SFC metadata，并回传 evidence；
+5. 交互用户显式启动的唯一 P1.2b Broker 持有 persistent MCP/PLE 会话，按 ownership/hooks/graphical 审计或恢复 AI 增量，检查 I/O Mapping、BinIo、Symbol Configuration 和 SFC metadata，并回传 evidence；
 6. 仅在 evidence 明确要求时由用户执行 Export #2，再绑定新的 Stage 1 报告并完成最终 Build；
 7. 回读、记录 warning 签名、更新报告并提交。
 
-Stage 2 coordinator 不启动 PLE、MCP 或 REST；live runner 与跨进程 MCP 租约尚未实现。
+Stage 2 coordinator 不启动 PLE、MCP 或 REST。P1.2a client 与 P1.2b interactive Broker 离线基础已实现，使用 Named Pipe v2、current-user registration、durable submit/query 和单 owner 租约。受控 adapter、语义证据 producer 及真实 PLE 离线 acceptance 通过前，生产 action 必须失败关闭。
 
 ## 通用与项目专用
 

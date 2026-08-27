@@ -16,10 +16,11 @@
 - [ ] 运行 `tests/cpstudio/Test-PostExportQueue.ps1`，验证队列、锁、失败留痕和只读 Station 审计；
 - [ ] 运行 `tests/cpstudio/Test-PostExportEngineering.ps1`，验证 PlanOnly operation/action/evidence 与条件 Export #2 状态机；
 - [ ] 验证导出后 ownership/hooks/graphical、I/O Mapping 和 Symbol Configuration 审计；
-- [ ] 用真实 Stage 1 报告建立一次 Stage 2 ledger，并由既有唯一 persistent 会话提交 action evidence；
+- [ ] 用真实 Stage 1 报告建立一次 Stage 2 ledger，由显式启动的唯一 interactive Broker 执行 action，并提交封口 evidence；
 - [ ] 运行 `tests/runner/Test-CtrlXOpconRunner.ps1`，验证 P1.1 单 owner、项目预检、幂等消费和 run manifest；
 - [ ] 运行 `scripts/runner/Invoke-CtrlXOpconRunner.ps1 -Command Doctor`，验证 P1.2a .NET action client、工程定位和 Broker 状态；
-- [ ] 记录导出批次、回读结果和编译证据。P1.2a client 已随骨架生成；P1.2b 唯一 session Agent/Broker 尚未实现。
+- [ ] 安装并 `-Check` 本工位受控 adapter，配置 semantic scope，取得完整且未截断的 warning 集合，建立绑定独立人工证据的正式 warning/semantic baseline，再用新的 immutable action 完成真实 PLE 离线 acceptance；缺 baseline 时必须以对应 bootstrap `BLOCKED` 失败关闭；
+- [ ] 记录导出批次、回读结果、编译证据和 baseline 审阅证据。
 
 ## P2：仿真与真机
 

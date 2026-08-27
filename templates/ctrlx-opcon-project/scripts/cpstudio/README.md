@@ -75,6 +75,7 @@ station. It performs only:
 - SHA-256 fingerprints of changed and critical generated files;
 - existence/hash checks for `ai/ownership.yaml`, `ai/hooks.yaml` and
   `ai/graphical.yaml`;
+- a separate optional review of `config/warning-signature-baseline.json`;
 - JSON and Markdown report generation inside `McpCoding/data/`.
 
 It does not run the live snapshot, I/O/Symbol repair, compile or code merge.
@@ -134,12 +135,91 @@ configured Station/PLC paths, and must confirm that no online operation or
 second PLE was used. The coordinator rejects mismatched or replayed evidence;
 it does not pretend that writing an action file is the same as executing it.
 
+### Reviewed warning-signature baseline
+
+`config/warning-signature-baseline.json` is optional during bootstrap and is
+not an ownership manifest. Stage 1 always reports it separately. When it is
+absent, `inspect_and_build` is still emitted so a fresh warning multiset can be
+collected, but the operation stops at `BLOCKED` and cannot reach `DONE`.
+
+After a person reviews the fresh warning records, create the file with this
+strict schema (replace the sample values with the reviewed project facts):
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "ctrlx-opcon-warning-signature-baseline",
+  "project": {
+    "plcProjectRelativePath": "Plc/Example_PLC.project",
+    "profile": "ctrlX PLC 2.6.8"
+  },
+  "signatureAlgorithm": "sha256:v1:normalized-warning-record",
+  "signatures": [
+    { "sha256": "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF", "occurrences": 1 }
+  ],
+  "review": {
+    "reviewId": "warning-review-2026-08-27",
+    "reviewer": "reviewer name",
+    "reviewedAtUtc": "2026-08-27T08:00:00Z",
+    "evidencePath": "docs/reviews/warning-review-2026-08-27.md",
+    "evidenceSha256": "FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210"
+  }
+}
+```
+
+The evidence path must be normalized, relative to the Engineering root, and
+must resolve inside it. Stage 1 and Stage 2 verify both file hashes, exact
+project/profile, exact signature multiset, strict properties, and absence of
+secret-bearing fields. Any later baseline or evidence drift invalidates the
+immutable action; run Stage 1 again to create a newly bound operation.
+Review evidence is a small, sanitized, tracked file under `docs/reviews/`;
+do not place it under ignored runtime `data/` directories.
+
+### Engineering semantic scope and reviewed baseline
+
+`config/engineering-semantic-scope.json` is required. It binds the exact
+Station-relative PLC project/profile, one or more recursive I/O mapping roots,
+and the Symbol Configuration application path. Stage 1 strictly validates its
+content and binds its path and SHA-256 into every immutable action as
+`preconditions.semanticSnapshotRequest`:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "ctrlx-opcon-engineering-semantic-scope",
+  "project": {
+    "plcProjectRelativePath": "Plc/Example_PLC.project",
+    "profile": "ctrlX PLC 2.6.8"
+  },
+  "mappingScopes": [
+    {
+      "devicePath": "Device/Realtime_Data/ExampleMaster",
+      "recursive": true,
+      "includeAllMappableChannels": true
+    }
+  ],
+  "symbolApplicationPath": "Device/Plc Logic/Application"
+}
+```
+
+`config/engineering-semantic-baseline.json` is optional during bootstrap. A
+missing baseline still permits `inspect_and_build` to call
+`get_ctrlx_semantic_snapshot`, but the operation blocks before `DONE` until a
+person reviews the snapshot and creates a new action. The reviewed baseline is
+strictly limited to project/scope SHA, canonical I/O mapping facts, and Symbol
+payload hash/byte-count/shape summary; raw Symbol payload and credentials are
+forbidden. It uses kind `ctrlx-opcon-engineering-semantic-baseline`, canonical
+contract `ctrlx-semantic-canonical-json-v1`, and a sanitized review evidence
+file under `docs/reviews/`. The action binds baseline path/SHA and review
+evidence path/SHA, so any drift requires a new Stage 1 report.
+
 ### Seal runner observations into evidence
 
-`New-PostExportRunnerEvidence.ps1` is the offline evidence boundary for the
-existing unique Codex/persistent session. It does not start or call PLE, MCP,
-REST, Symbol Configuration, or the watcher. After that session has executed
-the immutable action, it validates the action hash, Stage 1 report, ownership
+`New-PostExportRunnerEvidence.ps1` is the offline evidence boundary for an
+action executed by the explicitly started interactive Broker, which is the
+single MCP/PLE owner. The producer itself does not start or call PLE, MCP, REST,
+Symbol Configuration, or the watcher. After the Broker has executed the
+immutable action, it validates the action hash, Stage 1 report, ownership
 manifests, the required critical Station fingerprints, timestamps, explicit
 offline guardrails, and the current PLC project hash. It also converts one
 structured record per Build warning into a deterministic SHA-256 signature
@@ -161,11 +241,15 @@ that cannot reuse the existing session writes `status: blocked`, omits Build,
 and records a safe reason code instead of fabricating acceptance.
 The current typed Broker executes only `inspect_and_build` and
 `verify_after_export_2`. Their successful capability ledger is exactly
-`get_codesys_status` plus `compile_project`; legacy `get_compile_messages`,
+`get_codesys_status`, `compile_project`, and
+`get_ctrlx_semantic_snapshot`; legacy `get_compile_messages`,
 project-open/read/write tools, and any extra capability are rejected at the
 producer and consumer boundaries. `apply_change_set_and_build` is not yet
 supported and therefore terminates locally as `BLOCKED` before a Broker call;
 successful or partially-applied write evidence is rejected.
+Successful evidence also carries the complete, verified `semanticProofs`
+envelope; blocked evidence may retain incomplete proofs plus a manual-only
+`nextRoute`, but can never use those to reach `DONE`.
 
 Each immutable action names the same boundary explicitly:
 `prohibitPleOrMcpStartByAction`, `actionProjectGateRequired`,
@@ -261,3 +345,54 @@ the checker verifies the project hash before and after. It never connects,
 downloads, starts/stops, writes, or forces a physical PLC. Its report is
 advisory and does not impersonate the Stage 2 runner-evidence contract. The
 Post-export hook remains signal-only.
+
+## Semantic baseline review candidate
+
+After the controlled Broker has produced sealed `blocked` Runner evidence with
+reason `SEMANTIC_BASELINE_BOOTSTRAP_REQUIRED`, create a tracked review candidate
+without opening CpStudio, PLE, MCP, or REST:
+
+```powershell
+.\scripts\cpstudio\New-EngineeringSemanticBaselineCandidate.ps1 `
+  -EvidencePath .\data\runner-evidence\<action>.json
+```
+
+The script accepts only evidence already sealed by
+`New-PostExportRunnerEvidence.ps1`. It rechecks the offline/single-owner gates,
+current zero-error project SHA, exact mapping/Symbol candidate hashes, and the
+current `config/engineering-semantic-scope.json`. The output is an immutable,
+secret-scanned file under `docs/reviews/`; rerunning the same input yields
+`UNCHANGED`. Missing fields, singleton-array shape drift, hash mismatch, scope
+drift, path traversal, and secret-like content fail closed.
+
+This command never creates or overwrites
+`config/engineering-semantic-baseline.json`. Its output kind is
+`ctrlx-opcon-engineering-semantic-baseline-candidate`, its review state is
+`pending-human-review`, and automatic promotion is explicitly false. Review the
+mapping records and Symbol summary, create independent review evidence, then
+prepare a separate formal baseline and a new immutable action. Untyped warning
+diagnostics are not converted into a warning baseline by this tool.
+
+## Warning-signature baseline review candidate
+
+After a controlled Broker action has produced sealed Runner evidence with a
+fresh, zero-error, type-verified Build, create a tracked warning review
+candidate without opening CpStudio, PLE, MCP, or REST:
+
+```powershell
+.\scripts\cpstudio\New-WarningSignatureBaselineCandidate.ps1 `
+  -EvidencePath .\data\runner-evidence\<action>.json
+```
+
+The script rechecks the sealed evidence, current PLC project hash, offline
+guardrails, Build identity and exact warning signature multiset. It writes an
+immutable, secret-scanned `pending-human-review` artifact under
+`docs/reviews/`; rerunning the same evidence yields `UNCHANGED`. It never
+creates or overwrites `config/warning-signature-baseline.json`, and automatic
+promotion is always false.
+
+If `review.reviewBlockers` contains `PLE_WARNING_OUTPUT_TRUNCATED`, the visible
+records are not a complete warning population. That candidate must not be
+approved as a formal baseline. Reduce warnings below the PLE truncation
+threshold, or implement and validate complete bounded warning retrieval, then
+run a new immutable action and generate a new candidate.

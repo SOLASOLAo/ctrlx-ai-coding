@@ -71,14 +71,15 @@ typed allowlisted actions and keeps a durable execution record so a client
 timeout is not mistaken for a failed Build. It never executes free-form
 `instructions`.
 
-This is an offline-tested Broker foundation, not an accepted engineering-success
-path. The repository contains the controlled MCP ownership/fresh-Build patch,
-but it must be reviewed and applied to the workstation adapter separately; the
-independent ownership, mapping, readback, recoverable-baseline and Symbol
-post-processing evidence producers are also incomplete. Until those gates and
-a real-PLE offline acceptance pass, production actions must terminate as
-`BLOCKED_CAPABILITY_NOT_IMPLEMENTED` and must never turn a clean compile into a
-successful Stage 2 result.
+The controlled MCP ownership/fresh-Build adapter and read-only semantic snapshot
+channel have passed a real offline PLE action in the reference environment. A
+new workstation must still install and verify the controlled adapter, configure
+its semantic scope, capture a complete non-truncated warning population, bind
+independent human review evidence and formal warning/semantic baselines, and run
+its own offline acceptance action. Missing baselines return the corresponding
+baseline-bootstrap `BLOCKED` reason and can never turn a clean compile into a
+successful Stage 2 result. `apply_change_set_and_build` remains unsupported and
+returns `BLOCKED_UNSUPPORTED_ACTION`.
 
 ## Safety boundary
 

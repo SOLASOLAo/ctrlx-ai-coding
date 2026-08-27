@@ -9,20 +9,21 @@
 3. HMI 产品化；
 4. 商业交付。
 
-本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client 与 P1.2b Broker 已完成 durable action、会话所有权和失败关闭基础，但受控 adapter、语义证据 producer 与实体 PLE acceptance 尚未完成，因此还不能形成生产可用的 readback/fresh Build/evidence 闭环。
+本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client、P1.2b Broker、受控 adapter、fresh Build 与 semantic snapshot 的真实 PLE 技术通道已跑通。生产闭环仍缺完整 warning population、warning/semantic baseline 的人工审阅、正式绑定和新 immutable action 复验。已确认 100 条截断来自 PLE `Compile Options` 的编译器生成上限；下一切片先在隔离副本中验证官方 REST `CompileOptionsEditor.maxCompilerWarnings=<no limit>` 事务和失败回滚。
 
 `codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2b 由交互用户会话中的唯一 Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次 action 都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
 
-### P1.2 当前切片（2026-08-27）
+### P1.2 当前切片（2026-08-28）
 
 - **P1.2a 已实现**：.NET 8 Runner Core/CLI、immutable action 与权威 operation
   ledger 绑定、hash/fingerprint 门禁、client/action-run 租约、不可变 claim/result、
   终态重放完整性复核和 release-bound evidence producer SHA；初始化器会把相同
   Runner 源码放入新项目的 `tools/runner/`。
-- **P1.2b Broker 基础与离线测试已实现**：显式启动的 interactive Broker 独占
+- **P1.2b Broker 与真实 PLE 技术通道已实现**：显式启动的 interactive Broker 独占
   profile/project，并实现一个 `codesys-persistent` stdio child 与 persistent PLE 的
-  owner 生命周期；当前已安装 adapter 缺少必需契约，所以生产路径会在启动 PLE 前
-  安全阻断。Named Pipe protocol v2 采用 durable submit/query，客户端超时不抹掉已接受执行。
+  owner 生命周期。受控 adapter 已提供 ownership、same-call fresh Build、fixed-category
+  typed warnings 与 recursive mapping/Symbol snapshot。Named Pipe protocol v2 采用
+  durable submit/query，客户端超时不抹掉已接受执行。
 - Broker 在 `%LOCALAPPDATA%` 发布 current-user validated registration；客户端验证
   心跳、SID、Broker PID/start time、可执行路径/SHA、Windows session 及完整项目
   identity，调用者不能传入 Pipe/PID。Pipe 使用 `CurrentUserOnly`，Broker 同时反查
@@ -38,13 +39,20 @@
   persistent session + exact project 核验 → 前指纹 → 单次 `compile_project` 的同次结构化
   summary（含 correlation token、时间与 preflight）→ session/project 再核验 → 后指纹
   稳定性检查 → terminal observation。缓存型 `get_compile_messages` 不参与 fresh 成功
-  判定。语义验收 producer 尚未齐全时返回 `BLOCKED_CAPABILITY_NOT_IMPLEMENTED`。无
-  generic MCP surface，也无在线命令。
-- `apply_change_set_and_build` 继续返回 `BLOCKED_UNSUPPORTED_ACTION`。2026-08-27
-  离线回归为 Runner 24 cases / 196 assertions（连续三轮）、Broker 12/12（连续三轮）及
-  Engineering fake MCP 9/9；测试只使用 fixture、fake engineering session 和本地
-  Pipe，不启动 PLE/MCP。**实体 PLE acceptance 尚未执行**，因此不宣称真实
-  PLE、仿真、下载或真机已验收。
+  判定。缺少经人工审阅的 warning/semantic baseline 时返回对应 bootstrap `BLOCKED`；
+  检测到 PLE 告警输出截断时以 `PLE_WARNING_OUTPUT_TRUNCATED` 失败关闭。
+  无 generic MCP surface，也无在线命令。
+- 提交前独立审查加固已完成：人审证据只能来自 `docs/reviews/` 下的独立文档，AI
+  candidate/triage 及改名副本不得作为 review；review/scope/baseline 均用同一有界
+  bytes 完成校验、SHA 与解析；semantic adapter 在全部 mapping/Symbol REST 读取后执行
+  最终 clean/stability probe，并以 30 s 全程 timeout + 8 MiB streaming cap 读取 body。
+  畸形请求和 evidence/candidate 敏感扫描不会持久化或回显凭据；patcher 语法失败会回滚。
+- `apply_change_set_and_build` 继续返回 `BLOCKED_UNSUPPORTED_ACTION`。2026-08-28
+  Runner 24 cases / 196 assertions、Broker 13/13、Engineering 37/37 均通过。另有一次
+  真实 Station010 PLE 离线 action 完成 0 errors / 101 条可见 warnings 与 456 条 mapping
+  facts 采集，PLC/结构哈希前后不变；它因缺少人工 baseline 正确停在 `BLOCKED`。
+  warning candidate 含 `PLE_WARNING_OUTPUT_TRUNCATED`，必须先取得完整告警全集，不能
+  直接批准为正式 baseline。这不表示仿真、下载或真机已验收。
 - Runner 的 protocol v2 timeout fixture 通过 submit/query 明确握手并由客户端 3 秒
   deadline 决定 pending，不再依赖 250 ms 调度窗口。Broker atomic JSON 仅对 Windows
   access/sharing/lock violation 做 6 次、总计约 230 ms 的有界短重试；耗尽后仍抛出，
@@ -68,10 +76,10 @@ dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
   --expected-sha256 '<64-hex-sha256>' --broker-action-timeout-ms 600000 --json
 ```
 
-这些 `start` 命令仅保留给受控 adapter/语义证据验收后的交互式 acceptance；届时
-Broker 才能显式启动并持有 MCP/PLE。当前已安装 adapter 下，`start` 启动 MCP child
-读取状态后会在启动 PLE 前失败关闭；`status`、`doctor` 和 SelfTest 不会启动工程
-工具。详细的 run `status`/`verify` 命令见 `src/runner/README.md`。
+这些 `start` 命令只用于受控交互式 acceptance；Broker 是唯一可显式持有 MCP/PLE 的
+执行者。真实 PLE 技术通道已验证，但没有正式 baseline 的 action 仍会失败关闭；
+`status`、`doctor` 和 SelfTest 不会启动工程工具。详细的 run `status`/`verify` 命令见
+`src/runner/README.md`。
 
 ## 1. 目标
 
@@ -206,7 +214,8 @@ diagnostics = summary | errors | all
 P1.2b Broker 已固定使用一次 `compile_project`，只接受该次调用直接返回的结构化
 summary，并校验 correlation、preflight、session/project 与前后指纹；缓存型
 `get_compile_messages` 只可作人工补充显示，不能证明 fresh Build。这里定义的通用
-`compile_project_v2` 模式接口和实体 PLE acceptance 仍未完成。
+`compile_project_v2` 多模式产品接口仍未完成；当前固定 Build 合同已通过一次真实
+Station010 PLE 离线 action 验证。
 
 验收标准：
 
