@@ -222,6 +222,26 @@
   root/template PS5.1 tests、adapter readiness 与全局 `-Check`。没有启动 PLE/MCP，未触碰
   Station010/PLC/CpStudio/Std。warning 截断和人审 baseline 仍是最终 P1.2 blocker。
 
+### 2026-08-28 · Isolated warning limit and explicit Clean Build
+
+- 官方 PLE REST v2 `CompileOptionsEditor.maxCompilerWarnings` 已在 manifest 绑定、同 SHA
+  的可丢弃副本完成 `100 → <no limit> → 100`、精确 readback 和回滚；源/副本
+  `.project` 字节均未改变。
+- REST PUT 即使恢复原值仍令 PLE 内存工程 dirty。隔离工具不保存，并强制要求关闭不保存
+  后重开/丢弃；普通 compile 的 no-save guard 继续失败关闭。
+- 普通 `application.build()` 受路径/增量状态影响：原路径显示 101 条可见 warning，同字节
+  隔离路径显示 4 条；移除/复制 cache 与 user option 均未让两者收敛，因此都不能作为正式
+  语义基线。
+- `2c23612` 新增 `clean_compile_project`：恰好一次 `application.clean()` 和一次
+  `application.build()`，包含 identity/dirty/fixed-category/typed-warning 证据，不调用 save、
+  `clean_all`、`generate_code` 或在线操作；`ffa596a` 新增隔离 warning-limit 工具。补丁已安装，
+  全局 `-Check` 和离线事务回滚回归通过。
+- 新项目模板同步写入显式 Clean Build 门禁，并以 ASCII
+  `RUNNER_ACCEPTANCE_CONTRACT` 固定该合同；初始化器在 Windows PowerShell 5.1 下完整通过
+  106 项验收，避免无 BOM 测试脚本中的中文 literal 被系统代码页误解。
+- 剩余门禁：重启 MCP 扩展，在可丢弃隔离副本持久化 `<no limit>`，关闭重开并执行两次
+  一致且无截断 sentinel 的显式 Clean Build，之后才允许进入人工 baseline 审阅。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |
@@ -251,12 +271,13 @@
 | D26 | **工程 baseline 必须由人基于独立证据审阅**；Runner 只能生成 deterministic candidate，禁止自动晋升；正式 warning/semantic baseline 必须绑定 reviewer/evidence hash，并由新的 immutable action 复验 | 08-28 |
 | D27 | **截断的 PLE warning population 永不允许成为正式 baseline**；Broker、Stage 1、Stage 2 与 evidence sealer 均以 `PLE_WARNING_OUTPUT_TRUNCATED` 失败关闭 | 08-28 |
 | D28 | **所有可批准证据必须同字节校验并有界读取**；AI candidate/triage 不能充当独立人审，semantic snapshot 必须在最终 REST 读取后再次证明工程 clean/stable | 08-28 |
+| D29 | **普通 `application.build()` 不是语义重建证明**；正式 baseline 必须使用独立 `clean_compile_project`（恰好一次 clean + 一次 build），warning-limit REST PUT 后必须关闭不保存并重开 | 08-28 |
 
 ## 待办 / 下一步
 
 1. 新项目使用统一初始化器创建 AI 旁车；用户继续在 CpStudio 维护模型/标准对象/HMI，AI 维护 ownership 声明的 PLC 增量；
-2. 当前 warning candidate 含 `PLE_WARNING_OUTPUT_TRUNCATED`；先在隔离工程副本中通过官方 REST 验证 `CompileOptionsEditor.maxCompilerWarnings=<no limit>` 的完整事务与失败回滚，再生成新 action/candidate；此前不得批准正式 warning baseline；
-3. 告警完整性门禁通过后，审阅 warning/semantic candidates，创建绑定独立审阅证据的正式 baseline，再生成新的 immutable action 复验；完成前不扩展写工程 action；
+2. warning-limit REST 隔离事务和显式 Clean Build 工具已完成；重启扩展后，只在可丢弃隔离副本保存 `<no limit>`，关闭重开并连续执行两次 Clean Build，要求结果一致且无截断 sentinel；
+3. 告警完整性门禁通过后，审阅 warning/semantic candidates，创建绑定独立审阅证据的正式 baseline，再生成新的 immutable action 复验；完成前不得批准正式 baseline，也不扩展写工程 action；
 4. 继续用已配置的真实 CpStudio Post-export hook 验证 Stage 1/Stage 2/Runner 闭环，任何 baseline 或 scope 漂移都必须新建 action；
 5. 按 `docs/mcp_productization_roadmap.md` 继续通用健康检查、结构化编译和 change set；`apply_change_set_and_build` 在 payload/readback/恢复门禁完成前保持关闭；
 6. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；

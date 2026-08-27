@@ -192,7 +192,7 @@ try {
         [System.IO.File]::ReadAllText((Join-Path $outputPath 'docs\project_structure.md'))
     ) -join "`n"
     Assert-True -Condition $generatedControlDocs.Contains('Named Pipe v2') -Message 'Generated documentation does not describe the P1.2b Named Pipe v2 foundation.'
-    Assert-True -Condition ($generatedControlDocs.Contains('完整且未截断的 warning') -and $generatedControlDocs.Contains('缺 baseline') -and $generatedControlDocs.Contains('bootstrap')) -Message 'Generated documentation omits the warning-completeness and baseline-bootstrap failure-closed boundary.'
+    Assert-True -Condition ($generatedControlDocs.Contains('RUNNER_ACCEPTANCE_CONTRACT: clean-compile + complete-warning-set + independent-review; missing-baseline => bootstrap-blocked') -and $generatedControlDocs.Contains('clean_compile_project')) -Message 'Generated documentation omits the clean-build, warning-completeness, independent-review, or baseline-bootstrap failure-closed boundary.'
     Assert-True -Condition (-not $generatedControlDocs.Contains('BLOCKED_CAPABILITY_NOT_IMPLEMENTED')) -Message 'Generated documentation retained the obsolete pre-adapter capability blocker.'
     Assert-True -Condition (-not [regex]::IsMatch($generatedControlDocs, '(?i)Named Pipe v1|P1\.2b[^\r\n]{0,100}Agent/Broker (尚未实现|完成前，不会自行)|live runner[^\r\n]{0,100}尚未实现')) -Message 'Generated documentation regressed to the pre-Broker P1.2 status.'
 

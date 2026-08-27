@@ -51,14 +51,15 @@ runner evidence；它不会自行启动 PLE、MCP 或 REST。P1.2a 已提供 .NE
 client 和证据封口；P1.2b 已提供显式启动的 interactive Broker 离线基础，包括
 current-user validated registration、Named Pipe v2、durable submit/query、单 profile/project owner
 和 typed action allowlist。2026-08-28 已在真实 Station010 PLE 离线 action 中验证受控
-adapter、fresh Build、typed warnings 与 semantic snapshot：0 errors / 101 条可见 warnings，456 条
+adapter、普通 Build、typed warnings 与 semantic snapshot：0 errors / 101 条可见 warnings，456 条
 mapping facts，工程哈希前后不变且无在线动作。当前 warning candidate 含
 `PLE_WARNING_OUTPUT_TRUNCATED`，所以 101 条只是可见记录，并不证明完整告警全集。
-已确认 100 条来自 PLE 工程 `Compile Options` 的生成上限，而不是 MCP 读取分页。下一步
-先在隔离工程副本中通过官方 REST 对 `CompileOptionsEditor.maxCompilerWarnings=<no limit>`
-完成 GET/PUT/readback/Build/回滚验证，再进行 warning/semantic
-baseline 人审及新 action 复验。完成前 action 仍按设计停在 baseline-bootstrap
-`BLOCKED`；不得把技术通道跑通冒充最终工程验收成功。
+隔离副本已通过官方 REST 完成 `maxCompilerWarnings: 100 → <no limit> → 100` 的读写回滚；
+REST PUT 回滚后内存工程仍 dirty，必须关闭不保存并重开。另已新增并安装显式
+`clean_compile_project`（一次 `application.clean()` + 一次 `application.build()`，不保存）。
+下一步是重启扩展，在可丢弃隔离副本保存 `<no limit>`、重开并连续执行两次 Clean Build，
+再进行 warning/semantic baseline 人审及新 action 复验。完成前 action 仍按设计停在
+baseline-bootstrap `BLOCKED`；不得把技术通道跑通冒充最终工程验收成功。
 
 提交前失败关闭审查也已收口：独立人审证据、scope/baseline 均采用同字节有界
 校验与 SHA 绑定；candidate/AI triage 不能冒充人审；semantic adapter 在全部 REST

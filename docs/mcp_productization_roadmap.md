@@ -9,7 +9,7 @@
 3. HMI 产品化；
 4. 商业交付。
 
-本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client、P1.2b Broker、受控 adapter、fresh Build 与 semantic snapshot 的真实 PLE 技术通道已跑通。生产闭环仍缺完整 warning population、warning/semantic baseline 的人工审阅、正式绑定和新 immutable action 复验。已确认 100 条截断来自 PLE `Compile Options` 的编译器生成上限；下一切片先在隔离副本中验证官方 REST `CompileOptionsEditor.maxCompilerWarnings=<no limit>` 事务和失败回滚。
+本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client、P1.2b Broker、受控 adapter、普通 Build 与 semantic snapshot 的真实 PLE 技术通道已跑通。隔离 warning-limit REST 事务和显式 `clean_compile_project` 已实现并安装；生产闭环仍需扩展重启后的 `<no limit>` 保存—重开—连续两次 Clean Build、完整 warning population、warning/semantic baseline 人工审阅、正式绑定和新 immutable action 复验。
 
 `codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2b 由交互用户会话中的唯一 Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次 action 都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
 

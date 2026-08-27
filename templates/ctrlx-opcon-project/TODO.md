@@ -7,7 +7,7 @@
 - [ ] 在 `ai/` 登记第一个 AI-owned 对象和 mixed hook；
 - [ ] 只登记项目实际使用且已经核对的 Catalog 对象；
 - [ ] 运行 `.\tests\static\Test-ProjectFramework.ps1`；
-- [ ] 经唯一 persistent MCP 会话完成完整离线编译，记录 error=0 和 warning 签名基线；
+- [ ] 经唯一 persistent MCP 会话执行显式 `clean_compile_project`，记录 error=0 和完整 warning 签名基线；
 - [ ] 初始化 Git，提交并推送 AI 仓库；集成工程使用独立受控仓库。
 
 ## P1：CpStudio 集成
@@ -19,7 +19,7 @@
 - [ ] 用真实 Stage 1 报告建立一次 Stage 2 ledger，由显式启动的唯一 interactive Broker 执行 action，并提交封口 evidence；
 - [ ] 运行 `tests/runner/Test-CtrlXOpconRunner.ps1`，验证 P1.1 单 owner、项目预检、幂等消费和 run manifest；
 - [ ] 运行 `scripts/runner/Invoke-CtrlXOpconRunner.ps1 -Command Doctor`，验证 P1.2a .NET action client、工程定位和 Broker 状态；
-- [ ] 安装并 `-Check` 本工位受控 adapter，配置 semantic scope，取得完整且未截断的 warning 集合，建立绑定独立人工证据的正式 warning/semantic baseline，再用新的 immutable action 完成真实 PLE 离线 acceptance；缺 baseline 时必须以对应 bootstrap `BLOCKED` 失败关闭；
+- [ ] 安装并 `-Check` 本工位受控 adapter，配置 semantic scope，用显式 Clean Build 取得完整且未截断的 warning 集合，建立绑定独立人工证据的正式 warning/semantic baseline，再用新的 immutable action 完成真实 PLE 离线 acceptance；缺 baseline 时必须以对应 bootstrap `BLOCKED` 失败关闭；
 - [ ] 记录导出批次、回读结果、编译证据和 baseline 审阅证据。
 
 ## P2：仿真与真机

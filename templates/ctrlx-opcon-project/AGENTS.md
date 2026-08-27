@@ -71,6 +71,6 @@ THEN
 
 - [x] {{CREATED_DATE}}：创建标准 AI 旁车骨架；
 - [ ] 补齐工程路径、初始规格和 Catalog；
-- [ ] 建立首次离线编译与 warning 签名基线；
+- [ ] 用显式 `clean_compile_project` 建立首次离线编译与完整 warning 签名基线；
 - [ ] 配置并验证 CpStudio Post-export Stage 1 请求与 Stage 2 PlanOnly ledger。
 - [ ] 验证本工位受控 adapter、语义证据 producer 和真实 PLE 离线 acceptance；完成前不得将生产 action 标记成功。
