@@ -9,7 +9,7 @@
 3. HMI 产品化；
 4. 商业交付。
 
-本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client、P1.2b Broker、受控 adapter、typed warning 与 semantic snapshot 的真实 PLE 技术通道已跑通。隔离 warning-limit REST 事务和显式 `clean_compile_project` 已实现并安装；可丢弃隔离副本的 `<no limit>` 保存—重开—连续两次 Clean Build 已取得一致且完整的 0 errors / 4 warnings，Broker/evidence 集成和全部 PowerShell 7 离线回归也已通过。生产闭环仍需生成新的正式 warning/semantic candidates、完成人工 baseline 审阅与正式绑定，并用新的 immutable action 复验。
+本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client、P1.2b Broker、受控 adapter、typed warning 与 semantic snapshot 的真实 PLE 技术通道已跑通。隔离 warning-limit REST 事务和显式 `clean_compile_project` 已实现并安装；可丢弃隔离副本的 `<no limit>` 保存—重开—连续两次 Clean Build 已取得一致且完整的 0 errors / 4 warnings，Broker/evidence 集成和全部 PowerShell 7 离线回归也已通过。两次新的真实 Export action 又暴露并修复了 Symbol 多阶段重建和 raw mapping 表示噪声造成的稳定性误判。生产闭环仍需由下一次真实 Export 取得 semantic candidate、完成人工 baseline 审阅与正式绑定，并用新的 immutable action 复验。
 
 `codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2b 由交互用户会话中的唯一 Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次 action 都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
 
@@ -44,8 +44,9 @@
   无 generic MCP surface，也无在线命令。
 - 提交前独立审查加固已完成：人审证据只能来自 `docs/reviews/` 下的独立文档，AI
   candidate/triage 及改名副本不得作为 review；review/scope/baseline 均用同一有界
-  bytes 完成校验、SHA 与解析；semantic adapter 在全部 mapping/Symbol REST 读取后执行
-  最终 clean/stability probe，并以 30 s 全程 timeout + 8 MiB streaming cap 读取 body。
+  bytes 完成校验、SHA 与解析；semantic adapter 在最多 4 次 Symbol 有界收敛后执行三组
+  Mapping/Symbol 交叉权威读取，mapping 只比较最终封存的语义投影，并在全部 REST 读取后
+  执行最终 Mapping/dirty guard；REST body 使用 30 s 全程 timeout + 8 MiB streaming cap。
   畸形请求和 evidence/candidate 敏感扫描不会持久化或回显凭据；patcher 语法失败会回滚。
 - `apply_change_set_and_build` 继续返回 `BLOCKED_UNSUPPORTED_ACTION`。2026-08-28
   Broker/evidence 的显式 Clean Build 集成以及 Runner/Broker/Engineering/Stage/evidence/
@@ -54,8 +55,10 @@
   facts 采集，PLC/结构哈希前后不变；它因缺少人工 baseline 正确停在 `BLOCKED`。
   该历史 warning candidate 含 `PLE_WARNING_OUTPUT_TRUNCATED`，不能直接批准为正式
   baseline。隔离副本连续两次显式 Clean Build 已取得相同的完整 0 errors / 4 条
-  `OPC.UA.DA` warning，但本轮新的正式 immutable action/candidate 尚未生成，人工 baseline
-  也尚未建立。这不表示仿真、下载或真机已验收。
+  `OPC.UA.DA` warning。后续两次真实 Export action 均再次取得完整 0 errors / 4 warnings；
+  warning candidate 已生成，但 semantic candidate 因适配器稳定性失败尚未生成。修复后的
+  semantic adapter 已通过离线回归和全局安装检查，仍需另一次真实 Export action 验证；
+  人工 baseline 也尚未建立。这不表示仿真、下载或真机已验收。
 - Runner 的 protocol v2 timeout fixture 通过 submit/query 明确握手并由客户端 3 秒
   deadline 决定 pending，不再依赖 250 ms 调度窗口。Broker atomic JSON 仅对 Windows
   access/sharing/lock violation 做 6 次、总计约 230 ms 的有界短重试；耗尽后仍抛出，

@@ -123,7 +123,7 @@ wire warning 文本与 `summary.records` 使用同一组 typed records。
 | `dist/scripts` + `src/scripts` 的 `compile_project.py`、`dist/server.js` + `src/server.ts` | 输出 `ctrlx-fresh-compile-v2` 同次 summary；只有类别全清空、真实 `application.build()`、类别全读回、明确 Build 数字摘要均成立时才认证 fresh/patch preflight；0/0 保留 type-verified 空 records；fresh 0-error + warning 仅通过固定两类别 × Warning severity 精确计数后输出 typed records，其余结果保留有界脱敏 diagnostics 并失败关闭 |
 | `dist/scripts` + `src/scripts` 的 `clean_compile_project.py`、`dist/server.js` + `src/server.ts` | 注册显式 `clean_compile_project`；严格一次 `application.clean()` + 一次 `application.build()`，复用 fixed-category 清空/有界读取/type-verified warning，前后核验精确工程身份与 dirty；`semanticRebuildVerified` 与编译成功、warning 明细完整性分开表达 |
 | `dist/scripts` + `src/scripts` 的 `get_ctrlx_semantic_snapshot.py` | 只读递归遍历 action 指定的工程树 scope root 及其后代对象；读取 connector/device parameter 与树通道的实际 mapping（包括空 binding），固定稳定 identity/order，总记录硬上限 2048；不调用 `save()` |
-| `dist/server.js` + `src/server.ts` | 注册 actual-only `get_ctrlx_semantic_snapshot`；mapping 与官方 PLE REST Symbol Configuration 各做双读稳定性检查；mapping facts 只返回一份，Symbol payload 不跨 MCP、只返回其 hash/byte count/shape summary；compact 内层响应硬限 480 KiB，为 1 MiB MCP JSON-line 外层转义保留空间；任一读失败、工程 dirty、前后变化或超限均失败关闭 |
+| `dist/server.js` + `src/server.ts` | 注册 actual-only `get_ctrlx_semantic_snapshot`；官方 PLE REST Symbol Configuration 先做最多 4 次连续双读有界收敛并丢弃结果，再执行三组 Mapping/Symbol 交叉权威读取，mapping 仅比较最终封存的语义投影，末尾追加 Mapping/dirty guard；mapping facts 只返回一份，Symbol payload 不跨 MCP、只返回其 hash/byte count/shape summary；compact 内层响应硬限 480 KiB，为 1 MiB MCP JSON-line 外层转义保留空间；任一读失败、工程 dirty、语义投影/权威 Symbol 前后变化或超限均失败关闭 |
 
 ## 一键应用
 
@@ -233,8 +233,8 @@ semantic snapshot 请求示例（只给位置，不给 expected 值）：
 成功响应契约为 `ctrlx-semantic-snapshot-v1`，关键事实如下：
 
 - `dirtyStateVerified=true`、`projectDirty=false`、`recordsComplete=true`、
-  `stableAcrossRead=true`；mapping traversal 自身前后检查 dirty，且 mapping/Symbol
-  双读全部完成后再执行第三次 ScriptEngine clean/stability probe；
+  `stableAcrossRead=true`；Symbol 有界收敛结果全部丢弃，随后执行三组 Mapping/Symbol
+  交叉权威读取，最后再执行第四次 Mapping/dirty guard；
 - `canonicalFacts.mapping.scopes/records` 是实际只读结果，空 binding 明确表示为
   `actualVariable:""`；
 - Symbol payload 在 adapter 内递归 key 排序（数组顺序保留）并以 UTF-8 计算 hash，
@@ -309,10 +309,10 @@ map_io_channel(
 | `clean_compile_project.tool.ts/.js` | `clean_compile_project` MCP 注册与 fail-closed 响应合同 canonical 资产 |
 | `test-clean-compile-project.py` / `test-clean-compile-tool.js` | 不启动 IDE 的调用次数、禁止入口、identity/dirty、编译错误可信 summary 与 warning 明细分离回归 |
 | `get_ctrlx_semantic_snapshot.py` | IronPython 2.7 actual-only mapping scope/target 读取模板；稳定 identity/order，最多 2048 records |
-| `get_ctrlx_semantic_snapshot.tool.ts/.js` | MCP 工具的源码/运行时 canonical 插入资产；双读 mapping/Symbol，输出 canonical facts + SHA-256 |
+| `get_ctrlx_semantic_snapshot.tool.ts/.js` | MCP 工具的源码/运行时 canonical 插入资产；有界 Symbol 收敛、三组 Mapping/Symbol 交叉权威读取及最终 Mapping/dirty guard，输出 canonical facts + SHA-256 |
 | `test-semantic-snapshot.py` | 纯 stub 的递归 scope、connector/tree mapping、空 binding、dirty/缺失 scope 失败关闭回归 |
 | `semantic-canonical-vectors.json` | Node/C# 共用 Unicode + shuffled-key canonical UTF-8/hash 向量；C# 序列化必须使用 literal Unicode 并与向量逐字节一致 |
-| `test-semantic-tool.js` | 直接执行运行时插入资产的纯离线回归；覆盖 ordinal 排序、Unicode hash、Symbol payload 不外发、双读变化、480 KiB 内层上限及 1 MiB 外层消息边界 |
+| `test-semantic-tool.js` | 直接执行运行时插入资产的纯离线回归；覆盖 ordinal 排序、Unicode hash、Symbol payload 不外发、交叉权威读取变化/末端竞态、480 KiB 内层上限及 1 MiB 外层消息边界 |
 | `test-adapter-readiness.ps1` | 临时隔离 fixture apply → 全 `[OK]` check → 语法、final-dirty race、slow-body/oversize stream、unknown-block 拒绝和 syntax-failure rollback 回归；不写全局 npm、不启动 PLE/MCP |
 
 ## 附注:docstring 损坏修复

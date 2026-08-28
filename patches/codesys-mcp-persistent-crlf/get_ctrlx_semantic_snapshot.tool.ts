@@ -161,16 +161,52 @@
             data.scopeCount === scopes.length && data.explicitTargetCount === targets.length &&
             Number.isInteger(data.recordCount) && data.recordCount >= 0 && data.recordCount <= 2048 &&
             data.recordLimit === 2048 && Array.isArray(data.scopes) && data.scopes.length === scopes.length &&
+            data.scopes.every((scope: any) => scope !== null && typeof scope === 'object' &&
+              scope.resolved === true && (scope.error === undefined || scope.error === null || scope.error === '')) &&
             Array.isArray(data.mappings) && data.mappings.length === data.recordCount &&
+            data.mappings.every((record: any) => record !== null && typeof record === 'object' &&
+              record.resolved === true && record.mappingReadable === true &&
+              (record.error === undefined || record.error === null || record.error === '')) &&
             data.traversalFailureCount === 0 &&
             data.recordsComplete === true;
           if (!contractValid) throw new Error('Mapping snapshot contract is incomplete, dirty, or unverified.');
           return data;
         };
+        const projectMappingFacts = (data: any): any => {
+          const records = data.mappings.map((record: any) => {
+            const fact: Record<string, any> = {};
+            for (const key of Object.keys(record)) {
+              if (key !== 'resolved' && key !== 'mappingReadable' && key !== 'error') fact[key] = record[key];
+            }
+            return fact;
+          }).sort((left: any, right: any) => {
+            const leftIdentity = String(left.channelIdentity ?? '');
+            const rightIdentity = String(right.channelIdentity ?? '');
+            if (leftIdentity < rightIdentity) return -1;
+            if (leftIdentity > rightIdentity) return 1;
+            const leftJson = canonicalJson(left);
+            const rightJson = canonicalJson(right);
+            return leftJson < rightJson ? -1 : (leftJson > rightJson ? 1 : 0);
+          });
+          return canonicalize({
+            scopeCount: data.scopeCount,
+            explicitTargetCount: data.explicitTargetCount,
+            recordCount: data.recordCount,
+            recordLimit: data.recordLimit,
+            scopes: data.scopes.map((scope: any) => ({
+              scopeIndex: scope.scopeIndex,
+              devicePath: scope.devicePath,
+              recursive: scope.recursive,
+              rootName: scope.rootName,
+              recordCount: scope.recordCount,
+            })),
+            records,
+          });
+        };
 
         const appSegments = sanApp.split('/');
         const restPath = `/plc/engineering/api/v2/devices/${appSegments.map(encodeURIComponent).join('/')}/symbol-config`;
-        const readBoundedResponseBody = async (response: Response): Promise<{ body: string; rawPayloadByteCount: number }> => {
+        const readBoundedResponseBody = async (response: Response): Promise<{ body: string; rawPayloadByteCount: number; rawPayloadSha256: string }> => {
           const maximumBytes = 8 * 1024 * 1024;
           if (!response.body || typeof response.body.getReader !== 'function') {
             throw new Error('Symbol Configuration REST GET exposed no readable response body stream.');
@@ -194,23 +230,26 @@
           } finally {
             try { reader.releaseLock(); } catch { /* best effort */ }
           }
+          const rawPayload = Buffer.concat(chunks, rawPayloadByteCount);
           return {
-            body: Buffer.concat(chunks, rawPayloadByteCount).toString('utf8'),
+            body: rawPayload.toString('utf8'),
             rawPayloadByteCount,
+            rawPayloadSha256: require('crypto').createHash('sha256').update(rawPayload).digest('hex'),
           };
         };
-        const readSymbolConfig = async (): Promise<{ httpStatus: number; rawPayloadByteCount: number; payload: any; canonicalJson: string }> => {
+        const readSymbolConfig = async (): Promise<{ httpStatus: number; rawPayloadByteCount: number; rawPayloadSha256: string; payload: any; canonicalJson: string }> => {
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), 30_000);
           let response: Response;
           let body: string;
           let rawPayloadByteCount: number;
+          let rawPayloadSha256: string;
           try {
             // PLE's local extension validates the HTTP Host header.  The
             // loopback address reaches the listener but is rejected with
             // HTTP 400; the documented localhost authority is required.
             response = await fetch(`http://localhost:9002${restPath}`, { method: 'GET', signal: controller.signal });
-            ({ body, rawPayloadByteCount } = await readBoundedResponseBody(response));
+            ({ body, rawPayloadByteCount, rawPayloadSha256 } = await readBoundedResponseBody(response));
           } finally {
             clearTimeout(timer);
           }
@@ -222,7 +261,7 @@
           }
           try {
             const payload = canonicalize(JSON.parse(body));
-            return { httpStatus: response.status, rawPayloadByteCount, payload, canonicalJson: canonicalJson(payload) };
+            return { httpStatus: response.status, rawPayloadByteCount, rawPayloadSha256, payload, canonicalJson: canonicalJson(payload) };
           } catch {
             // PLE 2.6.8 labels this response application/json, but valid IEC
             // type text may contain quotes that the extension does not escape.
@@ -233,68 +272,86 @@
             return {
               httpStatus: response.status,
               rawPayloadByteCount,
+              rawPayloadSha256,
               payload: normalizedText,
               canonicalJson: JSON.stringify(normalizedText),
             };
           }
         };
 
-        // A Clean Build makes PLE rebuild Symbol Configuration asynchronously.
-        // The first successful REST response can therefore be a transient,
-        // incomplete payload even though the project is clean.  Discard exactly
-        // one bounded warm-up read, then retain the strict authoritative
-        // double-read gate below.  A difference between the two authoritative
-        // reads still fails closed.
-        await readSymbolConfig();
+        const summarizeSymbolRead = (value: { httpStatus: number; rawPayloadByteCount: number; rawPayloadSha256: string; canonicalJson: string }) => ({
+          httpStatus: value.httpStatus,
+          rawPayloadByteCount: value.rawPayloadByteCount,
+          rawPayloadSha256: value.rawPayloadSha256,
+          canonicalPayloadByteCount: Buffer.byteLength(value.canonicalJson, 'utf8'),
+          canonicalPayloadSha256: hashUtf8(value.canonicalJson),
+        });
+        // A Clean Build makes PLE rebuild Symbol Configuration asynchronously,
+        // sometimes through more than one successful but incomplete response.
+        // Require a bounded pair of consecutive equal settle reads, discard the
+        // whole settle phase, then retain the independent authoritative
+        // triple-read and final ScriptEngine mapping/dirty guard below.
+        const maximumSettleReads = 4;
+        const settleObservations: Array<Record<string, any>> = [];
+        let previousSettle: { canonicalJson: string } | null = null;
+        let settledSymbol: { httpStatus: number; rawPayloadByteCount: number; rawPayloadSha256: string; payload: any; canonicalJson: string } | null = null;
+        for (let index = 0; index < maximumSettleReads; index += 1) {
+          const current = await readSymbolConfig();
+          settleObservations.push(summarizeSymbolRead(current));
+          if (previousSettle !== null && previousSettle.canonicalJson === current.canonicalJson) {
+            settledSymbol = current;
+            break;
+          }
+          previousSettle = current;
+          if (index + 1 < maximumSettleReads) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 250));
+          }
+        }
+        if (settledSymbol === null) {
+          throw new Error(
+            `Symbol Configuration did not settle within ${maximumSettleReads} bounded reads; ` +
+            `observations=${JSON.stringify(settleObservations)}.`
+          );
+        }
         const mappingBefore = await readMappings();
         const symbolBefore = await readSymbolConfig();
         const mappingAfter = await readMappings();
         const symbolAfter = await readSymbolConfig();
-        // The final ScriptEngine probe intentionally runs after every REST
-        // read.  It closes the race where an unsaved IDE edit could occur
-        // after mappingAfter and otherwise be sealed as a clean snapshot.
         const mappingFinal = await readMappings();
-        const mappingStable = canonicalJson({ scopes: mappingBefore.scopes, records: mappingBefore.mappings }) ===
-            canonicalJson({ scopes: mappingAfter.scopes, records: mappingAfter.mappings }) &&
-          canonicalJson({ scopes: mappingAfter.scopes, records: mappingAfter.mappings }) ===
-            canonicalJson({ scopes: mappingFinal.scopes, records: mappingFinal.mappings });
-        const symbolStable = symbolBefore.canonicalJson === symbolAfter.canonicalJson;
-        if (!mappingStable || !symbolStable || mappingBefore.projectFilePath !== mappingAfter.projectFilePath ||
-            mappingAfter.projectFilePath !== mappingFinal.projectFilePath ||
-            mappingBefore.projectDirty !== mappingAfter.projectDirty ||
-            mappingAfter.projectDirty !== mappingFinal.projectDirty) {
-          throw new Error('Project, I/O mapping, or Symbol Configuration facts changed during the double-read snapshot.');
+        const symbolFinal = await readSymbolConfig();
+        // This last ScriptEngine probe intentionally runs after every REST
+        // read.  It closes the race where an unsaved IDE edit could occur
+        // after symbolFinal and otherwise be sealed as a clean snapshot.
+        const mappingGuard = await readMappings();
+        const mappingFacts = projectMappingFacts(mappingBefore);
+        const mappingAfterFacts = projectMappingFacts(mappingAfter);
+        const mappingFinalFacts = projectMappingFacts(mappingFinal);
+        const mappingGuardFacts = projectMappingFacts(mappingGuard);
+        const mappingHashes = [
+          sha256(mappingFacts),
+          sha256(mappingAfterFacts),
+          sha256(mappingFinalFacts),
+          sha256(mappingGuardFacts),
+        ];
+        const mappingStable = mappingHashes.every((value) => value === mappingHashes[0]);
+        const authoritativeSymbols = [symbolBefore, symbolAfter, symbolFinal];
+        const symbolSummaries = [summarizeSymbolRead(settledSymbol), ...authoritativeSymbols.map(summarizeSymbolRead)];
+        const symbolStable = authoritativeSymbols.every((value) => value.canonicalJson === symbolBefore.canonicalJson);
+        const normalizedProjectPaths = [mappingBefore, mappingAfter, mappingFinal, mappingGuard]
+          .map((item) => path.resolve(item.projectFilePath).toLowerCase());
+        const projectIdentityStable = normalizedProjectPaths.every((value) => value === path.resolve(escProj).toLowerCase());
+        const dirtyStable = [mappingBefore, mappingAfter, mappingFinal, mappingGuard].every((item) => item.projectDirty === false);
+        if (!mappingStable || !symbolStable || !projectIdentityStable || !dirtyStable) {
+          const unstableComponents: string[] = [];
+          if (!mappingStable) unstableComponents.push('mappingFacts');
+          if (!symbolStable) unstableComponents.push('symbolConfig');
+          if (!projectIdentityStable) unstableComponents.push('projectIdentity');
+          if (!dirtyStable) unstableComponents.push('dirtyState');
+          throw new Error(
+            `Semantic snapshot authoritative stability failed; unstableComponents=${unstableComponents.join(',')}; ` +
+            `mappingSha256=${mappingHashes.join(',')}; symbolReads=${JSON.stringify(symbolSummaries)}.`
+          );
         }
-
-        const mappingRecords = mappingBefore.mappings.map((record: any) => {
-          const fact: Record<string, any> = {};
-          for (const key of Object.keys(record)) {
-            if (key !== 'resolved' && key !== 'mappingReadable' && key !== 'error') fact[key] = record[key];
-          }
-          return fact;
-        }).sort((left: any, right: any) => {
-          const leftIdentity = String(left.channelIdentity ?? '');
-          const rightIdentity = String(right.channelIdentity ?? '');
-          if (leftIdentity < rightIdentity) return -1;
-          if (leftIdentity > rightIdentity) return 1;
-          const leftJson = canonicalJson(left);
-          const rightJson = canonicalJson(right);
-          return leftJson < rightJson ? -1 : (leftJson > rightJson ? 1 : 0);
-        });
-        const mappingFacts = canonicalize({
-          scopeCount: mappingBefore.scopeCount,
-          explicitTargetCount: mappingBefore.explicitTargetCount,
-          recordCount: mappingBefore.recordCount,
-          recordLimit: mappingBefore.recordLimit,
-          scopes: mappingBefore.scopes.map((scope: any) => ({
-            scopeIndex: scope.scopeIndex,
-            devicePath: scope.devicePath,
-            recursive: scope.recursive,
-            rootName: scope.rootName,
-            recordCount: scope.recordCount,
-          })),
-          records: mappingRecords,
-        });
         const symbolPayloadSha256 = require('crypto')
           .createHash('sha256')
           .update(symbolBefore.canonicalJson, 'utf8')
@@ -312,19 +369,22 @@
           producer,
           adapterPatchId: contractId,
           capturedAtUtc: new Date().toISOString(),
-          projectFilePath: mappingBefore.projectFilePath,
+          projectFilePath: escProj,
           dirtyStateVerified: true,
           projectDirty: false,
           recordsComplete: true,
           stableAcrossRead: true,
           sources: {
-            mapping: 'PLE ScriptEngine double-read plus final dirty-state guard',
+            mapping: 'PLE ScriptEngine semantic-projection triple-read plus final mapping/dirty guard',
             symbolConfig: {
-              source: 'PLE REST api v2 warm-up plus authoritative double-read',
+              source: 'PLE REST api v2 bounded settle plus authoritative triple-read',
               applicationPath: sanApp,
               endpointPath: restPath,
               httpStatus: symbolBefore.httpStatus,
               rawPayloadByteCount: symbolBefore.rawPayloadByteCount,
+              rawPayloadSha256: symbolBefore.rawPayloadSha256,
+              settleReadCount: settleObservations.length,
+              authoritativeReadCount: 3,
             },
           },
           canonicalFacts,

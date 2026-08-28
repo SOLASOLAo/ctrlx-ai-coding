@@ -147,7 +147,7 @@ Station、`Std`、`.project` 或闭源资料，目标目录已存在时会拒绝
 - [ ] 阶段 4:仿真 → 真机下载调试
 - [x] 产品化基础:可复用项目初始化器、Post-export Stage 1 审计队列、Stage 2 PlanOnly ledger 和 Codex Skill
 - [x] 产品化 MCP 技术通道:Controlled Runner P1.1、P1.2a client、P1.2b interactive Broker、受控 adapter、fresh Build、typed warning 与真实 PLE semantic snapshot
-- [ ] 产品化 MCP 基线验收:先消除 `PLE_WARNING_OUTPUT_TRUNCATED` 并取得完整告警全集，再进行人工 warning/semantic baseline + 新 immutable action 复验；其后再推进 project_health/change set 与正式 SFC/Symbol/I/O 工具
+- [ ] 产品化 MCP 基线验收:完整 0 errors / 4 warnings 与 warning candidate 已取得；下一次真实 Export 须生成 semantic candidate，之后完成人工 warning/semantic baseline，并用后续新 immutable action 复验；其后再推进 project_health/change set 与正式 SFC/Symbol/I/O 工具
 
 ## 版权说明
 

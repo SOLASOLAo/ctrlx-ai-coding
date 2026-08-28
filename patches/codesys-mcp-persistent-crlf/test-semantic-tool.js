@@ -195,16 +195,21 @@ async function main() {
   const projectPath = path.resolve('semantic-fixture.project');
   const mapping = mappingResult(projectPath, vector.canonicalFactsInput.mapping);
   const transientWarmupPayload = { transient: 'discard this incomplete first read' };
+  const secondTransientPayload = { transient: 'discard this second incomplete read' };
   const response = await invokeTool(mapping, [
     transientWarmupPayload,
+    secondTransientPayload,
+    vector.symbolPayloadInput,
+    vector.symbolPayloadInput,
+    vector.symbolPayloadInput,
     vector.symbolPayloadInput,
     vector.symbolPayloadInput,
   ]);
   assert.strictEqual(response.isError, false, response.content[0].text);
-  assert.strictEqual(response.fetchUris.length, 3,
-    'one bounded Symbol warm-up read must precede the authoritative double-read');
-  assert.strictEqual(response.executorCalls, 3,
-    'the final ScriptEngine dirty-state guard must run after both REST reads');
+  assert.strictEqual(response.fetchUris.length, 7,
+    'bounded Symbol settling must precede three interleaved authoritative reads');
+  assert.strictEqual(response.executorCalls, 4,
+    'the final ScriptEngine mapping/dirty guard must run after every REST read');
   assert(response.fetchUris.every((uri) => uri.startsWith('http://localhost:9002/')),
     'PLE REST calls must use the localhost authority accepted by the extension');
   assert(response.fetchUris.every((uri) => !uri.startsWith('http://127.0.0.1:9002/')),
@@ -217,16 +222,130 @@ async function main() {
   assert.strictEqual(payload.hashes.mappingSha256, vector.expectedMappingSha256);
   assert.strictEqual(payload.hashes.symbolConfigSha256, vector.expectedSymbolConfigSha256);
   assert.strictEqual(payload.hashes.snapshotSha256, vector.expectedSnapshotSha256);
+  assert.strictEqual(
+    payload.sources.symbolConfig.rawPayloadSha256,
+    crypto.createHash('sha256').update(JSON.stringify(vector.symbolPayloadInput), 'utf8').digest('hex'),
+    'the authoritative raw Symbol body hash must be surfaced without exposing the body'
+  );
   assert(!response.content[0].text.includes('discard this incomplete first read'),
-    'the discarded warm-up payload must not influence the authoritative snapshot');
+    'the discarded settle payload must not influence the authoritative snapshot');
+  assert(!response.content[0].text.includes('discard this second incomplete read'),
+    'all discarded settle payloads must stay outside the authoritative snapshot');
+  assert.strictEqual(payload.sources.symbolConfig.settleReadCount, 4);
+  assert.strictEqual(payload.sources.symbolConfig.authoritativeReadCount, 3);
+
+  const neverSettles = await invokeTool(mapping, [
+    { generation: 1 },
+    { generation: 2 },
+    { generation: 3 },
+    { generation: 4 },
+  ]);
+  assert.strictEqual(neverSettles.isError, true,
+    'four unequal bounded settle reads must fail closed');
+  assert.strictEqual(neverSettles.fetchUris.length, 4);
+  assert.strictEqual(neverSettles.executorCalls, 0,
+    'mapping reads must not begin before Symbol settling succeeds');
+  const neverSettlesPayload = JSON.parse(neverSettles.content[0].text);
+  assert(neverSettlesPayload.reason.includes('did not settle within 4 bounded reads'));
+  assert(!neverSettlesPayload.reason.includes('generation'),
+    'settle diagnostics must contain hashes and sizes, never raw Symbol payloads');
 
   const changed = await invokeTool(mapping, [
+    vector.symbolPayloadInput,
     vector.symbolPayloadInput,
     vector.symbolPayloadInput,
     { changed: true },
   ]);
   assert.strictEqual(changed.isError, true);
-  assert.strictEqual(JSON.parse(changed.content[0].text).reasonCode, 'SEMANTIC_SNAPSHOT_FAILED');
+  const changedPayload = JSON.parse(changed.content[0].text);
+  assert.strictEqual(changedPayload.reasonCode, 'SEMANTIC_SNAPSHOT_FAILED');
+  assert(changedPayload.reason.includes('unstableComponents=symbolConfig'),
+    'authoritative Symbol drift must be identified without exposing its payload');
+
+  const postSettleTransition = await invokeTool(mapping, [
+    { settledWarmup: true },
+    { settledWarmup: true },
+    vector.symbolPayloadInput,
+    vector.symbolPayloadInput,
+    vector.symbolPayloadInput,
+  ]);
+  assert.strictEqual(postSettleTransition.isError, false, postSettleTransition.content[0].text);
+  assert.deepStrictEqual(
+    JSON.parse(postSettleTransition.content[0].text).canonicalFacts,
+    vector.canonicalFactsInput,
+    'settle observations must be discarded before the three independent authoritative reads'
+  );
+
+  const mappingNoise2 = JSON.parse(JSON.stringify(mapping));
+  mappingNoise2.projectFilePath = mappingNoise2.projectFilePath.toUpperCase();
+  mappingNoise2.scopes = mappingNoise2.scopes.map((scope) => ({
+    ...scope,
+    recordStart: scope.recordStart + 100,
+  }));
+  mappingNoise2.mappings = mappingNoise2.mappings.slice().reverse().map((record) => {
+    const copy = { ...record, resolved: true, mappingReadable: true };
+    delete copy.error;
+    return copy;
+  });
+  const mappingNoise3 = JSON.parse(JSON.stringify(mapping));
+  mappingNoise3.mappings = mappingNoise3.mappings.map((record) => ({ ...record, error: '' }));
+  const semanticProjectionStable = await invokeTool(
+    mapping,
+    [vector.symbolPayloadInput, vector.symbolPayloadInput, vector.symbolPayloadInput, vector.symbolPayloadInput],
+    { mappingDataSequence: [mapping, mappingNoise2, mappingNoise3] }
+  );
+  assert.strictEqual(semanticProjectionStable.isError, false, semanticProjectionStable.content[0].text);
+  assert.strictEqual(semanticProjectionStable.executorCalls, 4);
+
+  const contradictoryMapping = JSON.parse(JSON.stringify(mapping));
+  contradictoryMapping.mappings[0].mappingReadable = false;
+  contradictoryMapping.mappings[0].error = 'fixture contradiction';
+  const contradictoryMappingResponse = await invokeTool(
+    contradictoryMapping,
+    [vector.symbolPayloadInput, vector.symbolPayloadInput]
+  );
+  assert.strictEqual(contradictoryMappingResponse.isError, true,
+    'recordsComplete must not hide an unresolved or unreadable mapping record');
+  assert(JSON.parse(contradictoryMappingResponse.content[0].text).reason.includes('contract is incomplete'));
+
+  const contradictoryScope = JSON.parse(JSON.stringify(mapping));
+  contradictoryScope.scopes[0].resolved = false;
+  contradictoryScope.scopes[0].error = 'fixture contradiction';
+  const contradictoryScopeResponse = await invokeTool(
+    contradictoryScope,
+    [vector.symbolPayloadInput, vector.symbolPayloadInput]
+  );
+  assert.strictEqual(contradictoryScopeResponse.isError, true,
+    'recordsComplete must not hide an unresolved scope');
+  assert(JSON.parse(contradictoryScopeResponse.content[0].text).reason.includes('contract is incomplete'));
+
+  const changedMapping = JSON.parse(JSON.stringify(mapping));
+  changedMapping.mappings[0].actualVariable = 'Application.SemanticallyChanged';
+  const semanticProjectionChanged = await invokeTool(
+    mapping,
+    [vector.symbolPayloadInput, vector.symbolPayloadInput, vector.symbolPayloadInput, vector.symbolPayloadInput],
+    { mappingDataSequence: [mapping, changedMapping, changedMapping] }
+  );
+  assert.strictEqual(semanticProjectionChanged.isError, true,
+    'a field that is sealed into mapping facts must still fail closed');
+  const semanticProjectionFailure = JSON.parse(semanticProjectionChanged.content[0].text);
+  assert(semanticProjectionFailure.reason.includes('unstableComponents=mappingFacts'));
+  assert(semanticProjectionFailure.reason.includes('mappingSha256='));
+  assert(!semanticProjectionFailure.reason.includes('SemanticallyChanged'),
+    'mapping diagnostics must contain hashes, never mapping values');
+
+  const postMappingFinalSymbolDrift = await invokeTool(mapping, [
+    vector.symbolPayloadInput,
+    vector.symbolPayloadInput,
+    vector.symbolPayloadInput,
+    vector.symbolPayloadInput,
+    { changedAfterMappingFinal: true },
+  ]);
+  assert.strictEqual(postMappingFinalSymbolDrift.isError, true,
+    'Symbol drift during mappingFinal must be caught by symbolFinal');
+  assert(JSON.parse(postMappingFinalSymbolDrift.content[0].text).reason.includes('unstableComponents=symbolConfig'));
+  assert.strictEqual(postMappingFinalSymbolDrift.executorCalls, 4,
+    'the final mapping/dirty guard must still run after symbolFinal');
 
   const dirtyFinalMapping = {
     ...mapping,
@@ -236,12 +355,12 @@ async function main() {
   const dirtyAfterSecondMapping = await invokeTool(
     mapping,
     [vector.symbolPayloadInput, vector.symbolPayloadInput, vector.symbolPayloadInput],
-    { mappingDataSequence: [mapping, mapping, dirtyFinalMapping] }
+    { mappingDataSequence: [mapping, mapping, mapping, dirtyFinalMapping] }
   );
   assert.strictEqual(dirtyAfterSecondMapping.isError, true,
-    'an edit after mappingAfter must be rejected by the final ScriptEngine probe');
-  assert.strictEqual(dirtyAfterSecondMapping.executorCalls, 3);
-  assert.strictEqual(dirtyAfterSecondMapping.fetchUris.length, 3);
+    'an edit after symbolFinal must be rejected by the final ScriptEngine probe');
+  assert.strictEqual(dirtyAfterSecondMapping.executorCalls, 4);
+  assert.strictEqual(dirtyAfterSecondMapping.fetchUris.length, 5);
 
   const malformedPlePayload = '{\r\n  "variableType": "STRING := "quoted IEC text""\r\n}';
   const malformedResponse = await invokeTool(
@@ -258,11 +377,11 @@ async function main() {
 
   const changedMalformed = await invokeTool(
     mapping,
-    [malformedPlePayload, malformedPlePayload, malformedPlePayload + 'changed'],
+    [malformedPlePayload, malformedPlePayload, malformedPlePayload, malformedPlePayload + 'changed'],
     { rawSymbolBodies: true }
   );
   assert.strictEqual(changedMalformed.isError, true,
-    'opaque Symbol text must still pass the same double-read stability gate');
+    'opaque Symbol text must still pass the same authoritative stability gate');
 
   const largeFacts = {
     scopeCount: 1,
@@ -368,7 +487,7 @@ async function main() {
     '480 KiB compact response must remain below the 1 MiB MCP JSON-line cap after worst-case escaping'
   );
 
-  console.log('semantic tool final-dirty/stream-timeout/8-MiB/compact-canonical regression: OK');
+  console.log('semantic tool bounded-settle/projection/final-dirty/stream-timeout/8-MiB regression: OK');
 }
 
 main().catch((error) => {

@@ -1039,13 +1039,19 @@ function PatchSemanticSnapshotServer([string]$serverFile, [bool]$isTypeScript) {
   $previousCanonicalSha256 = if ($isTypeScript) {
     @(
       "323252B84E184AEC7D575B00F6B00D4E3CF7FB2ACD510E5135647E579852190D",
-      "C5FC1BE0854A5DF18AAFD324EC23E1741D1D53EFC3F19B17FBA9FBD9C26629BB"
+      "C5FC1BE0854A5DF18AAFD324EC23E1741D1D53EFC3F19B17FBA9FBD9C26629BB",
+      "238F88786D3878D2FAFF10179BC09DB7659C6E312D06CB72BCA014C60A7BA367",
+      "1C700DEB348E8D83F1EE3F99A170E78DD58684E1D747504E3E388911304F8783",
+      "23463CE7689EBFC77BC305F605C5DB48905797E5B5B53560441E711FBFA72253"
     )
   } else {
     @(
       "8B25D694A683530B619A4083C998E0BE8C5C5E08582679BD6806D78955FFEEFB",
       "245F78590E91F44AE8F7473476E595353ADB783289D5DA798A915A24C3C5ACB8",
-      "638ECEB77E46C9A7F71A389BB26B23609CFA42839FEEA08793787A0F837CE8EF"
+      "638ECEB77E46C9A7F71A389BB26B23609CFA42839FEEA08793787A0F837CE8EF",
+      "F47D04A93F96492EA0745F847746DD56FCF8CDCC45AB20D6888720622554CE56",
+      "DCEA15D4271006F72780B50D3CA75045F1DA623989F4DCEE350E8FC4B8D07214",
+      "1FBA3EF0C6A1474E710CD4E0E0FD62083ED4EAEDF0D5F89A93D99C84B3391915"
     )
   }
   $currentBlockSha256 = GetTextSha256 $currentBlock
@@ -1074,9 +1080,15 @@ function PatchSemanticSnapshotServer([string]$serverFile, [bool]$isTypeScript) {
     $source.Contains("const mappingBefore = await readMappings();") -and
     $source.Contains("const mappingAfter = await readMappings();") -and
     $source.Contains("const mappingFinal = await readMappings();") -and
+    $source.Contains("const mappingGuard = await readMappings();") -and
+    $source.Contains("const projectMappingFacts =") -and
+    $source.Contains("const maximumSettleReads = 4;") -and
     $source.Contains("const symbolBefore = await readSymbolConfig();") -and
     $source.Contains("const symbolAfter = await readSymbolConfig();") -and
-    $source.Contains("PLE REST api v2 warm-up plus authoritative double-read") -and
+    $source.Contains("const symbolFinal = await readSymbolConfig();") -and
+    $source.Contains("PLE REST api v2 bounded settle plus authoritative triple-read") -and
+    $source.Contains("settleReadCount:") -and
+    $source.Contains("authoritativeReadCount: 3") -and
     $source.Contains("data.dirtyCheckCount === 2") -and
     $source.Contains("const readBoundedResponseBody =") -and
     $source.Contains("response.body.getReader") -and

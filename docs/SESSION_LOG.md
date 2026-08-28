@@ -274,6 +274,27 @@
 - 原 action 已以 `BLOCKED` evidence 封口且不可复用。完整 warning evidence 已生成待人审
   candidate；semantic candidate 必须由下一次真实 Export 产生的新 action 使用修复后的适配器生成。
 
+### 2026-08-28 · Second real Export action and semantic-projection stabilization
+
+- 第二次真实 CpStudio request `fa0c5fa1-3fff-4b3c-a8d3-05f590538fb4` 生成并执行 immutable
+  action `cpstudio-stage2-fa0c5fa1-3fff-4b3c-a8d3-05f590538fb4-d8fa7348-0001`。Clean Build
+  为 **0 errors / 4 warnings**，四条均为完整 `OPC.UA.DA` warning；工程文件与 structure SHA
+  前后完全一致，没有任何在线操作。
+- action 在 semantic snapshot 双读稳定性处失败关闭；旧证据把 Project、Mapping 与 Symbol
+  合并成同一错误，因此不能反推本次具体变化层。代码审查同时发现原适配器比较 raw mapping
+  arrays/scopes，而最终封存的是去掉 `resolved/mappingReadable/error` 并排序后的语义投影；
+  raw 顺序或内部字段变化会造成假阳性。一次 Symbol warm-up 也不足以覆盖多阶段异步重建。
+- 新适配器把 mapping 读取统一投影为最终 canonical facts 后比较 SHA；工程 identity 使用
+  action 路径的规范化大小写；Symbol 最多做 4 次有界 settle 并要求连续两读一致，之后丢弃
+  settle 数据并执行三组 Mapping/Symbol 交叉权威读取，最后再做一次 Mapping/dirty guard。
+  这样同时关闭 mapping raw 表示噪声和最后一次 mapping 期间 Symbol 变化的 TOCTOU 窗口；
+  REST timeout、streaming body cap 与 compact MCP response cap 均未放宽。
+- 失败诊断只包含不稳定组件名、记录大小与 SHA，不携带 mapping records 或 Symbol body。
+  多阶段 Symbol、永不收敛、mapping 内部噪声、真实 mapping 语义变化和 final dirty 等离线回归
+  均通过；完整 adapter readiness 及全局安装/`-Check` 通过。
+- 第二个 action 已封口且不可重跑；warning candidate 可生成，semantic candidate 仍需下一次
+  真实 Export 的新 action。之后仍须独立人工审阅并创建正式 baseline，再用后续新 action 复验。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |
