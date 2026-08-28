@@ -123,7 +123,13 @@ internal sealed class HostRuntime
             }
             else
             {
-                statusStore.DeleteIfOwned(hostInstanceId);
+                var now = DateTimeOffset.UtcNow;
+                Publish(
+                    HostStates.Stopped,
+                    "HOST_STOPPED",
+                    ProbeAgent(identity),
+                    new HostActionStatus(),
+                    now);
                 log.Write("HOST_STOPPED", HostStates.Stopped, "HOST_STOPPED", hostInstanceId);
             }
         }

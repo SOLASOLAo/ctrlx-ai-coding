@@ -42,6 +42,7 @@ internal static class HostCli
             return command switch
             {
                 "run" => await new HostRuntime(paths).RunAsync(cancellation.Token).ConfigureAwait(false),
+                "self-check" => RunSelfCheck(paths),
                 "status" => RunStatus(paths),
                 "stop" => await RunStopAsync(paths, cancellation.Token).ConfigureAwait(false),
                 "logs" => RunLogs(paths),
@@ -88,6 +89,28 @@ internal static class HostCli
         }
     }
 
+    private static int RunSelfCheck(HostRuntimePaths paths)
+    {
+        var process = HostProcessIdentity.CaptureCurrentInteractive();
+        var hostAssembly = Path.GetFullPath(typeof(HostCli).Assembly.Location);
+        var coreAssembly = Path.GetFullPath(typeof(RunnerHash).Assembly.Location);
+        WriteJson(new JsonObject
+        {
+            ["schemaVersion"] = HostConstants.StatusSchemaVersion,
+            ["kind"] = "ctrlx-opcon-runner-host-self-check",
+            ["engineeringRoot"] = paths.EngineeringRoot,
+            ["rootKey"] = paths.RootKey,
+            ["executablePath"] = process.ExecutablePath,
+            ["executableSha256"] = process.ExecutableSha256,
+            ["hostAssemblyPath"] = hostAssembly,
+            ["hostAssemblySha256"] = RunnerHash.Sha256File(hostAssembly),
+            ["coreAssemblyPath"] = coreAssembly,
+            ["coreAssemblySha256"] = RunnerHash.Sha256File(coreAssembly),
+            ["safety"] = SafetyJson()
+        });
+        return RunnerExitCodes.Done;
+    }
+
     private static int RunStatus(HostRuntimePaths paths)
     {
         var observation = new HostStatusStore(paths).Observe();
@@ -109,6 +132,8 @@ internal static class HostCli
             ["crashRecoveryPending"] = observation.CrashRecoveryPending,
             ["lastHostInstanceId"] = observation.Document?.HostInstanceId,
             ["lastHostPid"] = observation.Document?.HostPid,
+            ["lastExecutablePath"] = observation.Document?.ExecutablePath,
+            ["lastExecutableSha256"] = observation.Document?.ExecutableSha256,
             ["safety"] = SafetyJson()
         });
         return RunnerExitCodes.Done;
@@ -163,6 +188,7 @@ internal static class HostCli
 
             Commands:
               run    --engineering-root <path>
+              self-check --engineering-root <path> [--json]
               status --engineering-root <path> [--json]
               stop   --engineering-root <path> [--json]
               logs   --engineering-root <path> [--json]

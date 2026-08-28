@@ -18,6 +18,7 @@ internal static class Program
         var tests = new (string Name, Func<Task> Run)[]
         {
             ("Host source has no Broker, MCP, PLE, or Node launch path", StaticSafetyBoundaryAsync),
+            ("apphost self-check binds the complete executable and assembly identity", AppHostSelfCheckBindsIdentityAsync),
             ("single owner lease rejects a second Host and can be reacquired", SingleOwnerLeaseAsync),
             ("corrupt status fails run, status, and stop closed", CorruptStatusFailsClosedAsync),
             ("WAITING_FOR_AGENT status rejects an available Agent", WaitingForAgentRejectsAvailableAgentAsync),
@@ -74,6 +75,31 @@ internal static class Program
 
         Console.Error.WriteLine($"Runner Host offline self-test failed: {failures.Count} case(s).");
         return 1;
+    }
+
+    private static async Task AppHostSelfCheckBindsIdentityAsync()
+    {
+        using var fixture = new HostFixture();
+        var result = await HostCommand.RunAppHostAsync(
+            "self-check",
+            fixture.EngineeringRoot,
+            fixture.Paths.RuntimeRoot,
+            CommandTimeout).ConfigureAwait(false);
+        var appHost = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "vcrunner-host.exe"));
+        var hostAssembly = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "vcrunner-host.dll"));
+        var coreAssembly = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "CtrlX.OpCon.Runner.Core.dll"));
+
+        Require(result.ExitCode == RunnerExitCodes.Done &&
+            result.Json?["kind"]?.GetValue<string>() == "ctrlx-opcon-runner-host-self-check" &&
+            string.Equals(result.Json?["executablePath"]?.GetValue<string>(), appHost, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(result.Json?["executableSha256"]?.GetValue<string>(), RunnerHash.Sha256File(appHost), StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(result.Json?["hostAssemblyPath"]?.GetValue<string>(), hostAssembly, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(result.Json?["hostAssemblySha256"]?.GetValue<string>(), RunnerHash.Sha256File(hostAssembly), StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(result.Json?["coreAssemblyPath"]?.GetValue<string>(), coreAssembly, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(result.Json?["coreAssemblySha256"]?.GetValue<string>(), RunnerHash.Sha256File(coreAssembly), StringComparison.OrdinalIgnoreCase),
+            "The windowless apphost self-check did not bind its executable, Host assembly, and Core assembly.");
+        Require(!File.Exists(fixture.Paths.StatusPath),
+            "The apphost self-check created or changed runtime Host state.");
     }
 
     private static Task StaticSafetyBoundaryAsync()
@@ -613,8 +639,13 @@ internal static class Program
         await fixture.WaitForExitAsync(CommandTimeout).ConfigureAwait(false);
         Require(fixture.ExitCode == RunnerExitCodes.Done,
             $"Runner Host did not exit cleanly after stop, exit={fixture.ExitCode}.");
-        Require(!File.Exists(fixture.Paths.StatusPath),
-            "Graceful stop left a live status document behind.");
+        var stoppedTombstone = fixture.Paths.CreateStatusStore().ReadStructured();
+        Require(stoppedTombstone is not null &&
+            stoppedTombstone.State == HostStates.Stopped &&
+            stoppedTombstone.HostInstanceId == firstStatus.HostInstanceId &&
+            stoppedTombstone.ExecutablePath == firstStatus.ExecutablePath &&
+            stoppedTombstone.ExecutableSha256 == firstStatus.ExecutableSha256,
+            "Graceful stop did not preserve the exact validated STOPPED tombstone.");
 
         var secondStop = await HostCommand.RunAsync(
             "stop",
@@ -633,7 +664,10 @@ internal static class Program
             CommandTimeout).ConfigureAwait(false);
         Require(stoppedStatus.ExitCode == RunnerExitCodes.Done &&
             stoppedStatus.Json?["state"]?.GetValue<string>() == HostStates.Stopped &&
-            stoppedStatus.Json?["reasonCode"]?.GetValue<string>() == "HOST_NOT_RUNNING",
+            stoppedStatus.Json?["reasonCode"]?.GetValue<string>() == "HOST_NOT_RUNNING" &&
+            stoppedStatus.Json?["lastHostInstanceId"]?.GetValue<string>() == firstStatus.HostInstanceId &&
+            stoppedStatus.Json?["lastExecutablePath"]?.GetValue<string>() == firstStatus.ExecutablePath &&
+            stoppedStatus.Json?["lastExecutableSha256"]?.GetValue<string>() == firstStatus.ExecutableSha256,
             "Status after graceful stop must deterministically report STOPPED.");
 
         var logText = string.Join(
@@ -1583,6 +1617,63 @@ internal static class HostCommand
             }
         }
 
+        return new HostCommandResult(process.ExitCode, stdout, stderr, json);
+    }
+
+    public static async Task<HostCommandResult> RunAppHostAsync(
+        string command,
+        string engineeringRoot,
+        string runtimeRoot,
+        TimeSpan timeout)
+    {
+        var appHost = Path.Combine(AppContext.BaseDirectory, "vcrunner-host.exe");
+        if (!File.Exists(appHost))
+        {
+            throw new InvalidOperationException($"Runner Host apphost was not copied beside SelfTest: {appHost}");
+        }
+
+        var info = new ProcessStartInfo
+        {
+            FileName = appHost,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        info.ArgumentList.Add(command);
+        info.ArgumentList.Add("--engineering-root");
+        info.ArgumentList.Add(engineeringRoot);
+        info.ArgumentList.Add("--runtime-root");
+        info.ArgumentList.Add(runtimeRoot);
+        info.ArgumentList.Add("--json");
+        info.Environment["CTRLX_OPCON_RUNNER_HOST_TEST_MODE"] = "1";
+        info.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+        using var process = Process.Start(info)
+            ?? throw new InvalidOperationException("Failed to start the isolated Runner Host apphost.");
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        using var cancellation = new CancellationTokenSource(timeout);
+        try
+        {
+            await process.WaitForExitAsync(cancellation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: false);
+                await process.WaitForExitAsync().ConfigureAwait(false);
+            }
+            throw new TimeoutException($"Runner Host apphost command timed out: {command}");
+        }
+
+        var stdout = await stdoutTask.ConfigureAwait(false);
+        var stderr = await stderrTask.ConfigureAwait(false);
+        JsonNode? json = null;
+        if (!string.IsNullOrWhiteSpace(stdout))
+        {
+            json = JsonNode.Parse(stdout);
+        }
         return new HostCommandResult(process.ExitCode, stdout, stderr, json);
     }
 

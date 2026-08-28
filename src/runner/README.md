@@ -1,7 +1,8 @@
 # Controlled Runner
 
 This directory contains the .NET 8 control plane, action client, explicit
-interactive Broker and current-user background Host through Runner P1.3b.
+interactive Broker and the completed P1.3c technical implementation of the
+current-user background Host.
 
 ## Implemented P1.2b boundary
 
@@ -16,8 +17,8 @@ interactive Broker and current-user background Host through Runner P1.3b.
   path/hash, Windows session and exact engineering/station/profile/project
   identity before connecting. Callers cannot override the Pipe name or PID.
 - This is validation inside the current Windows user boundary, not protection
-  from malicious code already running as that user. A product release still
-  needs a controlled install location and signed/release-bound Broker identity.
+  from malicious code already running as that user. P1.4 still needs controlled
+  team installation, signing/ACLs and signed/release-bound Broker identity.
 - The Broker Pipe is current-user only. The Broker accepts only the typed
   `inspect_and_build` and `verify_after_export_2` actions. There is no generic
   MCP tool call and `apply_change_set_and_build` remains blocked.
@@ -59,7 +60,7 @@ Station010 action subsequently passed the full offline contract: 0 errors,
 checkpoint and unchanged project/structure hashes. P1.2 is closed; this does
 not claim simulation, download or physical-PLC acceptance.
 
-## Implemented P1.3a/P1.3b Host boundary
+## Implemented P1.3a/P1.3b and P1.3c Host boundary
 
 - `vcrunner-host` is a current-user, interactive-session background process
   with `run`, `status`, `stop` and `logs` commands. It owns one project-scoped
@@ -77,18 +78,47 @@ not claim simulation, download or physical-PLC acceptance.
   after this Host activation. Historical terminal work is quarantined; an older
   open claim remains recoverable, and a result completed after activation stays
   visible instead of being rediscovered or rerun.
-- With a pending action and no validated same-session Agent, the Host remains `WAITING_FOR_AGENT` and
-  leaves the action pending. After a terminal result is sealed, it remains
-  `WAITING_FOR_COORDINATOR` until Stage 2 ingests the evidence and advances the
-  operation ledger.
+- With a pending action and no validated same-session Agent, the Host remains
+  `WAITING_FOR_AGENT` and leaves the action pending.
+- P1.3c fully revalidates a terminal result, binds the sealed evidence to the
+  result SHA-256 while holding a read-only lock, and invokes only the
+  release-bound offline Stage 2 coordinator. A legal terminal result without
+  evidence remains `WAITING_FOR_COORDINATOR` for manual review and is never
+  rerun. Coordinator busy uses bounded backoff; any other fresh ledger issue
+  blocks automatic advancement.
 - The interactive Broker remains a separately and explicitly started owner of
   MCP/PLE. The Host does not start Broker, Node, MCP or PLE and has no connect,
   download, runtime-control, variable-write or FORCE surface.
-- The project wrapper starts the Host through an exact current-user Scheduled
-  Task by default. Raw process start is an explicit development-only escape
-  hatch and is never used by the normal lifecycle.
-- P1.3b is complete. P1.3c remains open for coordinator/evidence ingestion and
-  stable product installation, upgrade and rollback.
+- The project wrapper installs a content-addressed immutable release containing
+  exactly five runtime files. The current-user Scheduled Task action points to
+  the exact active-release `vcrunner-host.exe`; its description records the
+  `releaseId` and manifest SHA-256. Explicit lifecycle commands validate the
+  five-file manifest and use the apphost self-check on start, switch and safe
+  uninstall paths. The AtLogOn task itself directly launches its action and
+  does not independently preflight `.deps.json` or `.runtimeconfig.json`.
+- The durable pending deployment journal and reconciler passed offline
+  failpoint coverage plus reference-workstation breakpoint/process-kill tests.
+  Upgrade and exact rollback, corrupt-candidate rejection, ordinary failure
+  recovery and safe uninstall with a missing `deployment.json` also passed.
+- The production default Stage 2 ingestor passed six fixture E2E cases: Host
+  default ingestion, valid DONE, valid BLOCKED, a real exclusive workflow
+  ledger lock mapped to busy without mutation, evidence SHA drift rejection,
+  and evidence-less manual review.
+- The completed reference-workstation P1.3c acceptance ended with active release
+  `faa27c1d79415996ddcd524833160c57ea23ac63888f17b853487a81b46ab0f1`,
+  previous release
+  `ac89b28f9a93a61c10b5bd7731c3b5b83288169a105c62eb4218a30c119f4b51`,
+  and state `WAITING_FOR_ACTION`.
+- P1.4 remains open for team distribution, signing/ACLs, controlled
+  installation and a five-file prelaunch bootstrap before AtLogOn starts the
+  Host.
+
+The template wrapper exposes the release lifecycle explicitly:
+
+```powershell
+.\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Install
+.\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Rollback
+```
 
 ## Build and offline tests
 
@@ -100,13 +130,17 @@ dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.SelfTest\CtrlX.OpCon.Runn
 dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Broker.EngineeringSelfTest\CtrlX.OpCon.Runner.Broker.EngineeringSelfTest.csproj -c Release
 dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Broker.SelfTest\CtrlX.OpCon.Runner.Broker.SelfTest.csproj -c Release
 dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Host.SelfTest\CtrlX.OpCon.Runner.Host.SelfTest.csproj -c Release
+dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest.csproj -c Release
 ```
 
 The SelfTests use local fixtures, fake engineering sessions and local named
-pipes. They do not start PLE, MCP or any other engineering tool. P1.3b offline
-fixtures cover activation filtering, legacy recovery, terminal-result
-visibility, no-rerun behavior and reparse-point rejection; they do not claim
-real-PLE or physical-PLC acceptance. The Runner stress cases use a deterministic submit/query
+pipes. They do not start PLE, MCP or any other engineering tool. Host fixtures
+cover activation filtering, legacy recovery, terminal-result visibility,
+no-rerun behavior, reparse rejection, evidence SHA/lock rules, legal
+evidence-less review, ledger-issue blocking and busy backoff. The dedicated
+Stage2Ingestor SelfTest runs six E2E fixtures through the production PowerShell
+coordinator, including a real exclusive ledger lock and no-mutation checks.
+These tests do not claim real-PLE or physical-PLC acceptance. The Runner stress cases use a deterministic submit/query
 handshake rather than a 250 ms scheduling assumption. Atomic Broker JSON
 renames retry only the bounded Windows access/sharing/lock violations and still
 fail closed after about 230 ms; immutable create races retain the stable
@@ -168,8 +202,11 @@ dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
 
 The P1.2 code, protocol, persistence, identity gates and fixed Build sequence
 have passed offline tests and the final real-PLE offline action. P1.3a/P1.3b add
-the background Host lifecycle and automatic immutable-action consumer without
-changing that engineering boundary. P1.3b itself has only offline fixture
-coverage; no simulation, download, runtime control, variable write, FORCE or
-physical-PLC acceptance is claimed. P1.3c remains open for
-coordinator/evidence ingestion and stable install/upgrade/rollback.
+the background Host lifecycle and immutable-action consumer; P1.3c completes
+automatic result/evidence ingestion, production-ingestor E2E, durable
+deployment recovery and the immutable release lifecycle without changing that
+engineering boundary. P1.3c technical implementation and reference-workstation
+acceptance are complete, but no new simulation, download, runtime control,
+variable write, FORCE, physical-PLC or real-PLE acceptance is claimed. P1.4
+remains open for team release, signing/ACLs, controlled installation and the
+AtLogOn five-file prelaunch bootstrap.

@@ -9,7 +9,7 @@
 3. HMI 产品化；
 4. 商业交付。
 
-本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面和 P1.2 工程 action 执行器已经完成；Station010 的正式 warning/semantic baseline、Build 前本机内容寻址 checkpoint 与全新 immutable action 均已复验，结果为 0 errors / 4 warnings、456 mapping，Symbol 和工程/结构哈希稳定。P1.3a Host 生命周期和 P1.3b 自动 action consumer 已实现；P1.3b 只有纯离线 fixture 验证，不新增真机/真实 PLE 验收声明。P1.3c 尚未完成。
+本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面和 P1.2 工程 action 执行器已经完成；Station010 的正式 warning/semantic baseline、Build 前本机内容寻址 checkpoint 与全新 immutable action 均已复验，结果为 0 errors / 4 warnings、456 mapping，Symbol 和工程/结构哈希稳定。P1.3a Host 生命周期、P1.3b 自动 action consumer，以及 P1.3c 自动 result/evidence 摄取、production ingestor、durable deployment/recovery 和 immutable release 生命周期均已实现并完成参考工作站验收。P1.4 的团队发行安全与 AtLogOn prelaunch bootstrap 尚未完成。P1.3c 新增验收不表示真机或新的真实 PLE 验收。
 
 `codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2b 由交互用户会话中的唯一 Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次 action 都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
 
@@ -29,8 +29,8 @@
   identity，调用者不能传入 Pipe/PID。Pipe 使用 `CurrentUserOnly`，Broker 同时反查
   client PID/session。
 - 这些校验防止误连和跨会话混用，但不防御同一 Windows 用户下的恶意进程；同一
-  Windows 用户是本阶段明确的本地信任边界。受控安装、签名与 release-bound Broker
-  identity 留到商业化安全阶段。
+  Windows 用户是本阶段明确的本地信任边界。团队发行、签名/ACL、受控安装与
+  release-bound Broker identity 统一进入 P1.4。
 - durable operation journal 持久化 actionId/action SHA/idempotency/state/history；
   exact replay 不重复执行。store 层区分 pre-dispatch cancel 与 engineering call 开始后
   继续完成，但当前公开 Pipe contract 仅开放 submit/query；进程中断则进入
@@ -61,7 +61,7 @@
   access/sharing/lock violation 做 6 次、总计约 230 ms 的有界短重试；耗尽后仍抛出，
   immutable 创建竞态继续映射为 `BROKER_IMMUTABLE_STATE_EXISTS`，临时文件照常清理。
 
-### P1.3a/P1.3b current-user Runner Host（2026-08-28）
+### P1.3a/P1.3b 与 P1.3c current-user Runner Host（2026-08-28，已完成）
 
 - 已实现 current-user interactive Host：单项目 owner、心跳/状态、受控停止、限定目录的
   JSONL 日志保留，以及可选的当前用户 AtLogOn Scheduled Task。
@@ -71,12 +71,41 @@
   发布的 immutable action。activation 前的历史已终态工作被隔离；旧 open claim 仍可恢复，
   且 activation 后完成的恢复结果持续可见，不会在下一轮扫描消失或重复执行。
 - 有待处理 action 且同会话 Agent 不存在时状态为 `WAITING_FOR_AGENT`，action 保持 pending，不会伪造终态；没有 action 时为 `WAITING_FOR_ACTION`，
-  也不会自动启动工程工具。action 终态落盘后 Host 保持 `WAITING_FOR_COORDINATOR`。
-- P1.3b 已完成自动 action 消费的离线实现，没有新增真机或真实 PLE 验收声明。P1.3c
-  尚未完成：下一步是 coordinator/evidence ingestion、完整 payload pin，以及稳定安装目录、
-  升级/回滚和团队发行。
+  也不会自动启动工程工具。
+- P1.3c 已实现自动 result/evidence 摄取：terminal result 与 sealed evidence 先完成 SHA 绑定和
+  只读锁校验，再由 release-bound 的纯离线 Stage 2 coordinator 推进 ledger；合法无 evidence
+  终态保持 `WAITING_FOR_COORDINATOR` 等待人工复核且不重跑。coordinator busy 使用有界退避，
+  任一其他 fresh ledger 异常都会阻断自动推进。该路径不要求 Agent，不启动 Broker/MCP/PLE/Node，
+  也没有在线操作。
+- production 默认 ingestor 的 6 项 fixture E2E 已通过：Host 默认摄取、有效 DONE、有效
+  BLOCKED、真实 workflow ledger 独占锁映射为 busy 且 operation/evidence/action 零 mutation、
+  evidence SHA 漂移拒绝，以及无 evidence UNKNOWN 的人工复核。标准回归命令为：
+
+  ```powershell
+  dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest.csproj -c Release
+  ```
+
+- Host runtime 以五文件内容寻址 immutable release 安装。Scheduled Task action 精确指向 active
+  release 的 `vcrunner-host.exe`，description 记录 `releaseId + manifest SHA-256`；wrapper 的显式
+  lifecycle 校验五文件 manifest，并在启动、切换和安全卸载路径执行 apphost self-check。AtLogOn
+  自身直接启动该 action，不会先独立预检 `.deps.json`/`.runtimeconfig.json`。
+- durable deployment journal/reconcile、真实断点/强杀、升级及精确 rollback、损坏拒绝、普通
+  失败恢复，以及 `deployment.json` 缺失时基于 exact task-derived immutable release 的安全卸载
+  均已在参考工作站通过。最终 active 为
+  `faa27c1d79415996ddcd524833160c57ea23ac63888f17b853487a81b46ab0f1`，previous 为
+  `ac89b28f9a93a61c10b5bd7731c3b5b83288169a105c62eb4218a30c119f4b51`，Host 为
+  `WAITING_FOR_ACTION`。P1.3c 技术实现和参考工作站验收完成。
 - Scheduled Task 使用 WinExe GUI-subsystem apphost，后台启动不弹控制台；
   `Status/Stop/Logs` 经 `dotnet + DLL` 保留命令行输出。本机无黑窗生命周期验收已通过。
+
+### P1.4 团队发行与 AtLogOn bootstrap（未完成）
+
+- 建立团队可重复的受控安装与发行流程，不再把参考工作站的 current-user 安装视为团队交付；
+- 为发行物和关键本地状态补齐签名、ACL 与升级来源门禁；
+- 在 AtLogOn 真正启动 Host 前增加五文件 runtime closure bootstrap，显式验证 exe、Host DLL、
+  Core DLL、`.deps.json` 与 `.runtimeconfig.json`。P1.3c wrapper 的显式 manifest/self-check 不能
+  冒充这一 prelaunch 门禁；
+- 完成团队工作站安装、升级、回滚和交接验收。以上全部完成前，P1.4 保持未完成。
 
 显式启动与只读状态/客户端命令：
 
@@ -94,6 +123,12 @@ dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
 dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
   execute-action --engineering-root '<ai-root>' --action-path '<action.json>' `
   --expected-sha256 '<64-hex-sha256>' --broker-action-timeout-ms 1800000 --json
+
+.\templates\ctrlx-opcon-project\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 `
+  -Command Install -EngineeringRoot '<ai-root>'
+
+.\templates\ctrlx-opcon-project\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 `
+  -Command Rollback -EngineeringRoot '<ai-root>'
 ```
 
 这些 `start` 命令只用于受控交互式 acceptance；Broker 是唯一可显式持有 MCP/PLE 的

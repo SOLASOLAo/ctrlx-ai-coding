@@ -562,7 +562,8 @@ System.Environment.Exit(0)
 <li>Stage 2 的纯离线 runner evidence 封装器不执行 PLE/MCP/REST；它复核 action/Stage 1/ownership/关键 Station 指纹、Build 新鲜度、当前 PLC SHA 和 semantic proofs，并以固定算法生成 warning 签名多重集。live engineering action 由显式启动的 interactive Broker 执行，该 Broker 是唯一 persistent MCP/PLE owner。</li>
 <li>P1.1 已提供 OS 排他运行租约；P1.2 client/action 与 Broker session/action serialization 分别提供跨进程和执行期门禁。条件 Export #2 仍只在记录到 Symbol/后处理需求时进入人工同步点。</li>
 <li>current-user Pipe/registration、PID/session/executable/project identity 校验用于防止误连和跨会话混用，但不防御同一 Windows 用户下的恶意进程；商业发行仍需受控安装和签名/release-bound Broker identity。evidence 是哈希绑定的审计证据，不是加密签名。</li>
-<li>后续产品化重点是完整 warning population、无身份用户确认 baseline 与新 immutable action 复验；通过后再推进 P1.3 Host、<code>project_health</code>、<code>compile_project_v2</code>、受控 change set、FORCE 生命周期及正式 Symbol/I/O/SFC 接口。</li>
+<li>完整 warning population、去身份用户确认 baseline 与新 immutable action 已于 2026-08-28 完成复验；P1.3a/b Host 已落地。P1.3c 的自动 result/evidence 摄取、SHA 绑定/只读锁、合法无 evidence 终态人工复核、busy 有界退避和其他 ledger 异常阻断均已实现；production 默认 ingestor 的 6 项 fixture E2E（含真实 workflow ledger 独占锁及零 mutation 复核）已通过。五文件内容寻址 immutable release、durable deployment journal/reconcile、真实断点/强杀恢复、升级与精确 <code>Rollback</code>、损坏拒绝、普通失败恢复，以及 <code>deployment.json</code> 缺失时基于精确 task pin 的安全卸载也已完成参考工作站验收。P1.3c 技术实现和参考工作站验收至此完成；Host 不启动 Broker/MCP/PLE/Node 或在线操作，该验收不新增真实 PLE、仿真或真机结论。</li>
+<li>Scheduled Task action 精确指向 active release 的 <code>vcrunner-host.exe</code>，description 记录 <code>releaseId + manifest SHA-256</code>。wrapper 的显式 lifecycle 校验 manifest/五文件 payload，并在启动、切换和安全卸载路径执行 apphost self-check；AtLogOn 任务自身直接执行 action，不会先独立校验 <code>.deps.json</code> 或 <code>.runtimeconfig.json</code>。参考工作站当前 active 为 <code>faa27c1d79415996ddcd524833160c57ea23ac63888f17b853487a81b46ab0f1</code>、previous 为 <code>ac89b28f9a93a61c10b5bd7731c3b5b83288169a105c62eb4218a30c119f4b51</code>，Host 为 <code>WAITING_FOR_ACTION</code>。团队发行、签名/ACL、受控安装和 AtLogOn 启动前五文件 bootstrap 属于未完成的 P1.4；其后再推进 <code>project_health</code>、<code>compile_project_v2</code>、受控 change set、FORCE 生命周期及正式 Symbol/I/O/SFC 接口。</li>
 </ul>
 <h2 id="102-runner-baseline-2026-08-28">10.2 Runner baseline 审阅边界（2026-08-28）</h2>
 <ul>
@@ -573,7 +574,7 @@ System.Environment.Exit(0)
 <li>确认证据必须是 <code>docs/reviews/</code> 下单独、简短且脱敏的决定记录；candidate、AI triage、reviews index、目录外文件及其改名/逐字副本均不能作为 evidence。Stage 1/2 对确认文件只做一次有界读取，严格 UTF-8、内容检查和 action-bound SHA 均来自同一 byte snapshot。</li>
 <li>warning baseline、semantic scope 和 semantic baseline 同样按各自上限单次读取，并用同一 bytes 完成 SHA 与 JSON 解析。畸形 Post-export 请求的失败记录不得保存 raw/original payload，只保留 1 MiB 上限内的字节数、SHA-256 和固定安全诊断元数据。</li>
 <li>正式 baseline 的 project/profile、scope、candidate hashes、review evidence path/SHA 任一变化都使旧 action 失效；必须回到 Stage 1 创建新的 operation/action。</li>
-<li>P1.2 只有在用户明确确认且新 immutable action 复验通过后才能标为完成；此前不启动 P1.3 Windows Runner Host 产品化。</li>
+<li>本条门禁已于 2026-08-28 满足，P1.2 已正式完成；P1.3a/b 因而可以推进。该规则继续适用于未来 baseline 变更：没有新的用户确认与 immutable action 复验，不得把变化后的基线视为正式可用。</li>
 </ul>
 <hr />
 <h2 id="11-faq">11. 故障排查 FAQ</h2>

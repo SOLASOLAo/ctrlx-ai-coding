@@ -36,6 +36,9 @@
    .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Status
    .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Doctor
    .\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Status
+   .\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Install -WhatIf
+   .\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Install
+   .\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Rollback -WhatIf
    ```
 
 CpStudio Export #1 的离线报告可交给
@@ -56,15 +59,24 @@ Export #2。
 P1.3a/P1.3b Host 是独立的当前用户后台进程：除单实例、heartbeat/status、日志和
 崩溃恢复外，还会自动发现并消费本次 activation 后由权威 ledger 发布的 immutable
 `currentAction`。历史已终态工作被隔离，旧 open claim 可恢复；有待处理 action 且 Broker
-未显式启动时保持 `WAITING_FOR_AGENT`，没有 action 时保持 `WAITING_FOR_ACTION`。action
-终态落盘后保持 `WAITING_FOR_COORDINATOR`，等待尚未实现的
-coordinator/evidence ingestion 推进 ledger。Host 不启动 Broker、Node、MCP、PLE，也不执行
-在线 PLC 操作。P1.3b 已实现；P1.3c 尚待 coordinator/evidence ingestion、稳定安装、
-完整 payload pin、升级和回滚。Scheduled Task 使用无控制台 apphost，`Status/Stop/Logs`
-经 `dotnet + DLL` 保留命令行输出。构建后可用
-`scripts/runner/Invoke-CtrlXOpconRunnerHost.ps1` 执行 `Start/Stop/Status/Logs`；
-`Install/Uninstall` 只管理该项目派生的当前用户登录任务，修改前可先加 `-WhatIf`。
-重建或升级 Host 必须按 `Uninstall → Build → Install → Start`，不要覆盖正在运行的二进制。
+未显式启动时保持 `WAITING_FOR_AGENT`，没有 action 时保持 `WAITING_FOR_ACTION`。
+
+P1.3c 自动 result/evidence 摄取也随骨架提供：terminal result 和 sealed evidence 经 SHA 绑定及
+只读锁校验后，由 release-bound 的纯离线 Stage 2 coordinator 推进 ledger；合法无 evidence
+终态保持 `WAITING_FOR_COORDINATOR` 等待人工复核且绝不重跑。busy 使用有界退避，任何其他
+fresh ledger 异常都会阻断推进。Host 不启动 Broker、Node、MCP、PLE，也不执行在线 PLC 操作。
+
+Host runtime 使用五文件、内容寻址的 immutable release；Scheduled Task action 精确指向 active
+release exe，description 记录 `releaseId + manifest SHA-256`。构建后可用 wrapper 执行
+`Install/Start/Stop/Status/Logs/Rollback`：
+`Install` 同时负责首次安装和升级，`Rollback` 切回精确 previous release，普通切换失败会恢复
+原 task/release/运行状态；`Uninstall` 仅用于移除本项目任务。修改前可先加 `-WhatIf`。
+通用 P1.3c 的 production 默认 ingestor 6 项 E2E（含真实 ledger lock）、durable
+journal/reconcile、真实断点/强杀、升级回滚、损坏拒绝及 missing-deployment 安全卸载均已在
+参考工作站通过；每个新工位仍需单独验证。显式 lifecycle 校验五文件 manifest/self-check；
+AtLogOn 自身直接启动 action，不预检 deps/runtimeconfig。团队发行、签名/ACL、受控安装和
+AtLogOn 五文件 prelaunch bootstrap 属于未完成的 P1.4。Scheduled Task 使用无控制台 apphost，
+`Status/Stop/Logs` 经 `dotnet + DLL`。
 
 `RUNNER_ACCEPTANCE_CONTRACT: clean-compile + complete-warning-set + explicit-user-confirmation; missing-baseline => bootstrap-blocked`
 

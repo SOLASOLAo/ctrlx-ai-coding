@@ -163,6 +163,7 @@ try {
             'scripts\cpstudio\Run-OfflinePostExportCheck.cmd',
             'scripts\runner\Invoke-CtrlXOpconRunner.ps1',
             'scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1',
+            'scripts\runner\RunnerHostDeployment.psm1',
             'scripts\runner\README.md',
             'tools\runner\CtrlX.OpCon.Runner.Core\CtrlX.OpCon.Runner.Core.csproj',
             'tools\runner\CtrlX.OpCon.Runner.Core\RunnerExecutor.cs',
@@ -213,6 +214,10 @@ try {
     $generatedHostWrapper = [System.IO.File]::ReadAllText((Join-Path $outputPath 'scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1'))
     Assert-True -Condition $generatedHostWrapper.Contains('Get-HostLaunch') -Message 'Generated project is missing the controlled Runner Host launcher.'
     Assert-True -Condition $generatedHostWrapper.Contains('-LogonType Interactive') -Message 'Generated Host task is not restricted to an interactive user token.'
+    Assert-True -Condition $generatedHostWrapper.Contains('Get-InstalledHostLaunch') -Message 'Generated Host does not resolve an immutable installed release.'
+    $generatedDeploymentModule = [System.IO.File]::ReadAllText((Join-Path $outputPath 'scripts\runner\RunnerHostDeployment.psm1'))
+    Assert-True -Condition $generatedDeploymentModule.Contains('CtrlX.OpCon.Runner.Core.dll') -Message 'Generated Host release manifest omits its Core dependency.'
+    Assert-True -Condition $generatedDeploymentModule.Contains('previousReleaseId') -Message 'Generated Host deployment does not preserve rollback state.'
 
     $productRunnerRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\src\runner'))
     $productRunnerFiles = @(Get-ChildItem -LiteralPath $productRunnerRoot -Recurse -File |

@@ -51,9 +51,15 @@ interactive Broker 离线基础已随骨架提供；Broker 使用 Named Pipe v2�
 validated registration、durable submit/query 和单 owner 租约，并必须由交互用户显式启动。
 P1.3a/P1.3b current-user Host 可在后台提供单实例、状态、日志和崩溃恢复，并自动发现、
 消费本次 activation 后的 immutable `currentAction`。历史已终态工作隔离，旧 open claim
-可恢复；缺少有效同会话 Agent 时 `WAITING_FOR_AGENT` 是正常等待状态。action 终态后保持
-`WAITING_FOR_COORDINATOR`，不得绕过尚未实现的 coordinator/evidence ingestion 直接修改
-ledger。Host 绝不启动 Broker、Node、MCP、PLE，也不执行在线 PLC 操作。
+可恢复；缺少有效同会话 Agent 时 `WAITING_FOR_AGENT` 是正常等待状态。P1.3c 对 terminal
+result/evidence 做 SHA 绑定和只读锁校验，再调用 release-bound 的纯离线 Stage 2 coordinator
+推进 ledger；合法无 evidence 终态保持 `WAITING_FOR_COORDINATOR` 等待人工复核且不重跑，
+busy 有界退避，任一其他 fresh ledger 异常阻断。Host 绝不启动 Broker、Node、MCP、PLE，
+也不执行在线 PLC 操作。Host 以五文件内容寻址 immutable release 安装；task action 必须精确
+指向 active release exe，description 记录 `releaseId + manifest SHA-256`。显式 lifecycle 校验
+五文件 manifest/self-check，但 AtLogOn 自身不会预检 `.deps.json`/`.runtimeconfig.json`。
+通用 P1.3c 技术实现和参考工作站验收已完成；团队发行、签名/ACL、受控安装及 AtLogOn 启动前
+五文件 bootstrap 属于尚未完成的 P1.4。
 在受控 adapter、语义证据 producer 及真实 PLE 离线 acceptance 通过前，生产 action 必须失败关闭。
 
 ## 6. PLC ST 风格
@@ -79,4 +85,4 @@ THEN
 - [ ] 用显式 `clean_compile_project` 建立首次离线编译与完整 warning 签名基线；
 - [ ] 配置并验证 CpStudio Post-export Stage 1 请求与 Stage 2 PlanOnly ledger。
 - [ ] 验证本工位受控 adapter、语义证据 producer 和真实 PLE 离线 acceptance；完成前不得将生产 action 标记成功。
-- [ ] 验证 P1.3b Host 的 activation 后 action 消费、历史隔离、旧 claim 恢复和 `WAITING_FOR_COORDINATOR`；P1.3c 仍待 coordinator ingestion 与稳定安装/升级/回滚。
+- [ ] 验证本工位 P1.3b/P1.3c Host 的 activation 后 action 消费、历史隔离、旧 claim 恢复、自动 evidence 摄取与合法无 evidence 人工复核；记录 immutable release 的 `Install`/`Rollback`、durable reconcile、损坏拒绝和安全卸载。通用 P1.3c 已完成，P1.4 团队发行/签名/ACL/受控安装/AtLogOn 五文件 bootstrap 仍待完成。

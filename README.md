@@ -43,7 +43,7 @@ CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型�
 | 分工 | 用户做骨架(CpStudio),AI 做 PLC 代码细节 |
 | 项目模板 | ✅ 新项目初始化器 + Stage 1 离线审计队列 + Stage 2 PlanOnly operation ledger |
 | Codex Skill | ✅ `ctrlx-opcon-engineering`，源码可版本化、安装可校验 |
-| Controlled Runner | ✅ P1.1/P1.2 与 P1.3a/P1.3b 已实现；🚧 P1.3c 尚未完成 |
+| Controlled Runner | ✅ P1.1/P1.2 与 P1.3a/P1.3b/P1.3c 技术实现及参考工作站验收完成；🚧 团队发行安全与 AtLogOn bootstrap 进入 P1.4 |
 | 产品化计划 | `docs/mcp_productization_roadmap.md` |
 
 Stage 2 是哈希绑定、可恢复的 PlanOnly 协调器；P1.2 interactive Broker 使用
@@ -56,13 +56,38 @@ P1.3a/P1.3b 新增 `vcrunner-host`：当前用户后台单实例、heartbeat/sta
 有界 JSONL 日志与崩溃恢复，并自动发现、消费 Host activation 后由权威 ledger 发布的
 immutable `currentAction`。activation 前的历史已终态工作不会被当成新任务；旧 open claim
 仍可恢复且恢复后的结果持续可见。有待处理 action 且没有有效 Agent 时保持 `WAITING_FOR_AGENT`，
-没有 action 时保持 `WAITING_FOR_ACTION`；action 终态
-落盘后保持 `WAITING_FOR_COORDINATOR`，等待后续 coordinator/evidence ingestion 推进 ledger。
-Host 不启动 Broker、Node、MCP、PLE，也不执行任何在线 PLC 操作。P1.3b 已完成；
-P1.3c 尚未完成，下一步是 coordinator/evidence ingestion，以及稳定安装、升级和回滚。
-Host 登录任务使用 WinExe GUI-subsystem apphost，因此后台启动不弹控制台；
-`Status/Stop/Logs` 则经 `dotnet + DLL` 保留命令行输出。完整 payload pin 仍属于 P1.3c。
-重建或升级 Host 时按 `Uninstall → Build → Install → Start`，不要覆盖运行中的二进制。
+没有 action 时保持 `WAITING_FOR_ACTION`。
+
+P1.3c 已实现自动 result/evidence 摄取：Host 对 terminal result 和 sealed evidence 重新执行
+SHA 绑定及只读文件锁校验，再调用 release-bound 的纯离线 Stage 2 coordinator 推进 ledger；
+合法的无 evidence 终态保持 `WAITING_FOR_COORDINATOR` 等待人工复核，不重跑 action；Stage 2
+忙时有界退避，存在其他 fresh ledger 异常时阻断推进。该路径不需要 Agent，也不启动 Broker、
+Node、MCP、PLE，且不执行任何在线 PLC 操作。production 默认 ingestor 的 6 项 fixture E2E
+均已通过，覆盖 Host 默认摄取、DONE、BLOCKED、真实 workflow ledger 独占锁映射为 busy 且零
+mutation、evidence SHA 漂移拒绝，以及无 evidence 的人工复核。
+
+Host runtime 已发布为五文件、内容寻址的 immutable release。Scheduled Task action 精确指向
+active release 的 `vcrunner-host.exe`，description 记录 `releaseId + manifest SHA-256`；wrapper
+的显式 lifecycle 会校验五文件 manifest，并在启动、切换和安全卸载路径执行 apphost self-check。
+AtLogOn 任务自身只是直接启动该 action，不会先独立校验 `.deps.json` 或
+`.runtimeconfig.json`。durable deployment journal/reconcile，以及真实断点/强杀、升级回滚、
+损坏拒绝和 `deployment.json` 缺失时的安全卸载均已在参考工作站通过。当前 active release 为
+`faa27c1d79415996ddcd524833160c57ea23ac63888f17b853487a81b46ab0f1`，previous release 为
+`ac89b28f9a93a61c10b5bd7731c3b5b83288169a105c62eb4218a30c119f4b51`，Host 为
+`WAITING_FOR_ACTION`。P1.3c 技术实现和参考工作站验收至此完成；该结果不新增真机或真实 PLE
+验收声明。团队发行、签名/ACL、受控安装及 AtLogOn 启动前的五文件 bootstrap 属于尚未完成的
+P1.4。
+
+```powershell
+.\templates\ctrlx-opcon-project\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 `
+  -Command Install -EngineeringRoot '<ai-root>'
+.\templates\ctrlx-opcon-project\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 `
+  -Command Rollback -EngineeringRoot '<ai-root>'
+
+dotnet run --project `
+  .\tests\runner\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest.csproj `
+  -c Release
+```
 
 ## 创建新工站 AI 旁车
 
@@ -145,8 +170,9 @@ Station、`Std`、`.project` 或闭源资料，目标目录已存在时会拒绝
 - [ ] 阶段 4:仿真 → 真机下载调试
 - [x] 产品化基础:可复用项目初始化器、Post-export Stage 1 审计队列、Stage 2 PlanOnly ledger 和 Codex Skill
 - [x] 产品化 MCP 技术通道:Controlled Runner P1.1、P1.2a client、P1.2b interactive Broker、受控 adapter、fresh Build、typed warning 与真实 PLE semantic snapshot
-- [x] 产品化 Host P1.3b：activation 后 immutable `currentAction` 自动发现/消费、历史隔离、旧 claim 恢复、无 Agent 等待和 `WAITING_FOR_COORDINATOR`
-- [ ] 产品化 P1.3c：coordinator/evidence ingestion、完整 payload pin、稳定安装、升级/回滚；随后再推进 project_health/change set 与正式 SFC/Symbol/I/O 工具
+- [x] 产品化 Host P1.3b：activation 后 immutable `currentAction` 自动发现/消费、历史隔离、旧 claim 恢复和无 Agent 等待
+- [x] 产品化 Host P1.3c：自动 result/evidence 摄取、production ingestor 6 项 E2E、durable deployment journal/reconcile，以及 immutable release 的真实强杀/升级回滚/损坏拒绝/安全卸载验收
+- [ ] 产品化 Host P1.4：团队发行、签名/ACL、受控安装和 AtLogOn 启动前五文件 bootstrap；随后再推进 project_health/change set 与正式 SFC/Symbol/I/O 工具
 
 ## 版权说明
 

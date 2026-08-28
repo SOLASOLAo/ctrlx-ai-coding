@@ -81,7 +81,7 @@ baseline-bootstrap `BLOCKED` reason and can never turn a clean compile into a
 successful Stage 2 result. `apply_change_set_and_build` remains unsupported and
 returns `BLOCKED_UNSUPPORTED_ACTION`.
 
-## P1.3a/P1.3b current-user background Host
+## P1.3a/P1.3b/P1.3c current-user background Host
 
 Build the Host once from the checked-in source, then use its thin PowerShell
 entry for lifecycle and read-only status:
@@ -94,11 +94,21 @@ dotnet build .\tools\runner\CtrlX.OpCon.Runner.Host\CtrlX.OpCon.Runner.Host.cspr
 .\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Start
 .\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Logs
 .\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Stop
+.\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Rollback -WhatIf
+.\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Rollback
 ```
 
-`Install` registers one current-user `AtLogOn` Scheduled Task; `Uninstall`
-stops only this exact project Host and removes only its derived task. Preview
-either mutation with `-WhatIf` first.
+`Install` publishes the exact five-file runtime as a content-addressed immutable
+release, then registers or upgrades one current-user `AtLogOn` Scheduled Task.
+The task action points to the exact active-release `vcrunner-host.exe`, and its
+description records the `releaseId` and manifest SHA-256. Explicit lifecycle
+commands validate the five-file manifest and use the apphost self-check on
+start, switch and safe-uninstall paths. The AtLogOn task itself directly starts
+that action; it does not independently preflight `.deps.json` or
+`.runtimeconfig.json`. `Rollback` switches to the exact previous release; an
+ordinary failed switch restores the source task/release/running state.
+`Uninstall` stops only this project Host and removes only its derived task.
+Preview mutations with `-WhatIf` first.
 
 Default `Start` requires that exact validated task. A raw hidden process may be
 used only with explicit `-DevelopmentProcess` during development testing.
@@ -110,12 +120,34 @@ in `WAITING_FOR_AGENT`; with no action it stays in `WAITING_FOR_ACTION`.
 P1.3b also discovers and consumes immutable `currentAction` entries published
 after Host activation. Historical terminal work is quarantined; an older open
 claim remains recoverable, and a recovery result completed after activation
-stays visible. A terminal result leaves the Host in `WAITING_FOR_COORDINATOR`
-until coordinator/evidence ingestion advances the ledger. P1.3b is complete;
-P1.3c remains open for that ingestion path and stable install/upgrade/rollback.
+stays visible. P1.3c fully revalidates a terminal result and, under an evidence
+SHA binding and read-only lock, invokes only the release-bound offline Stage 2
+coordinator. Legal evidence-less terminal results remain
+`WAITING_FOR_COORDINATOR` for manual review and are not rerun. Busy uses bounded
+backoff and any other fresh ledger issue blocks advancement.
+
+P1.3c technical implementation and reference-workstation acceptance are
+complete. The production default ingestor passed six fixture E2E cases,
+including a real exclusive workflow ledger lock with no mutation. Durable
+journal/reconcile, real breakpoint/process-kill recovery, upgrade and exact
+rollback, corrupt-candidate rejection, ordinary failure recovery and safe
+missing-deployment uninstall also passed. The final reference state was active
+release `faa27c1d79415996ddcd524833160c57ea23ac63888f17b853487a81b46ab0f1`,
+previous release
+`ac89b28f9a93a61c10b5bd7731c3b5b83288169a105c62eb4218a30c119f4b51`, and
+`WAITING_FOR_ACTION`. This does not claim a new real-PLE or physical-PLC
+acceptance. P1.4 remains incomplete for team distribution, signing/ACLs,
+controlled installation and an AtLogOn five-file prelaunch bootstrap.
+
+The upstream release gate includes this production-ingestor regression (the
+methodology SelfTest project is not copied into an initialized sidecar):
+
+```powershell
+dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest.csproj -c Release
+```
 
 ## Safety boundary
 
-P1.1, P1.2a and the P1.3a/P1.3b Host contain no connect, download, runtime start/stop,
+P1.1, P1.2a and the P1.3a/P1.3b/P1.3c Host contain no connect, download, runtime start/stop,
 variable write or FORCE capability. The action client and Host have no command
 that launches PLE/MCP/Broker and no generic tool-execution surface.

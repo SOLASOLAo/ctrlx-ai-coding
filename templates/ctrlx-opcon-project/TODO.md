@@ -22,8 +22,10 @@
 - [ ] 验证本机 Scheduled Task 使用无控制台 apphost，`Status/Stop/Logs` 经 `dotnet + DLL`，启动时不新增 WindowsTerminal/OpenConsole/conhost；
 - [ ] 构建并验证 P1.3b Host：单实例、`Start/Stop/Status/Logs`、崩溃恢复，以及 activation 后 immutable `currentAction` 的自动发现/消费；
 - [ ] 有待处理 action 且 Broker 未启动时确认 Host 为 `WAITING_FOR_AGENT`，无 action 时为 `WAITING_FOR_ACTION`，并确认不新增 Broker/Node/MCP/PLE 进程；旧 open claim 可恢复，历史已终态工作不重跑；
-- [ ] 确认 action 终态落盘后 Host 为 `WAITING_FOR_COORDINATOR`；待通用工具补齐 coordinator/evidence ingestion 后，再验证 ledger 自动推进；
-- [ ] 待 P1.3c 补齐 coordinator/evidence ingestion、完整 payload pin、稳定安装目录、升级和回滚后，完成本工作站部署验证；P1.3c 完成前不得标记产品化 Host 已交付；
+- [ ] 验证 P1.3c 自动 result/evidence 摄取：SHA 绑定与只读锁、Stage 2 ledger 自动推进、合法无 evidence 终态保持 `WAITING_FOR_COORDINATOR`、busy 有界退避，以及任一其他 fresh ledger 异常阻断；
+- [ ] 构建五文件 Host runtime；依次执行 `Install -WhatIf`、`Install`、`Start/Status`、升级 `Install` 和 `Rollback -WhatIf`/`Rollback`，记录 task 的 active/previous `releaseId`、manifest SHA、最终状态及普通切换失败恢复；
+- [ ] 在本工位复验通用 P1.3c：production ingestor、durable journal/reconcile、强杀恢复、升级回滚、损坏拒绝及 missing-deployment 安全卸载；记录 active/previous release 与最终 Host 状态；
+- [ ] P1.4 完成前保持团队发行未交付：签名/ACL、受控安装和 AtLogOn 启动前五文件 bootstrap 均须单独验收；
 - [ ] 安装并 `-Check` 本工位受控 adapter，配置 semantic scope，用显式 Clean Build 取得完整且未截断的 warning 集合，由项目负责人一次确认 candidates（不采集姓名/工号），再用新的 immutable action 完成真实 PLE 离线 acceptance；缺 baseline 时必须以对应 bootstrap `BLOCKED` 失败关闭；
 - [ ] 记录导出批次、回读结果、编译证据和 baseline 审阅证据。
 

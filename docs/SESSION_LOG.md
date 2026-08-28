@@ -340,8 +340,57 @@
 - Scheduled Task 改为启动 WinExe GUI-subsystem apphost；`Status/Stop/Logs` 保持经
   `dotnet + DLL` 调用。完成 stop/uninstall/build/install/start 后 Host 为 `WAITING_FOR_ACTION`。
 - Host 无子进程，验证前后未新增 WindowsTerminal/OpenConsole/conhost，22 个既有
-  claim/result marker 未变化。P1.3c 仍未完成，coordinator/evidence ingestion、
-  完整 payload pin 与稳定安装/升级/回滚继续作为后续，不扩展本轮范围。
+  claim/result marker 未变化。该早期检查点当时尚未完成 P1.3c，coordinator/evidence
+  ingestion、完整 payload pin 与稳定安装/升级/回滚留给随后收口，不扩展本轮范围。
+
+## 2026-08-28 P1.3c 自动摄取与 immutable release 生命周期
+
+- 在上述历史检查点之后，Host 已补齐自动 result/evidence 摄取：只接受 fully verified
+  terminal result，以 result 中的 expected evidence SHA-256 为绑定，并在只读文件锁期间调用
+  release-bound 的纯离线 Stage 2 coordinator。合法无 evidence 终态保持
+  `WAITING_FOR_COORDINATOR` 人工复核且不重跑；busy 有界退避，任何其他 fresh ledger 异常阻断。
+- Host runtime 固定为五文件内容寻址 immutable release。Scheduled Task 同时 pin 精确
+  `releaseId` 与 manifest SHA-256；`Install` 已覆盖首次安装和升级，`Rollback` 已覆盖精确上一
+  release，普通切换故障注入会自动恢复源 task/release/运行状态。
+- 本机完成 stop/build/install/start、升级、rollback、再次升级和失败恢复阶段性验收。当时 active release
+  为 `d19514130c55b14f9bb43890db0b8d1e4114af2bccd44665cec2396dd1357248`，previous release
+  为 `e80f3023f23e414603f6a4f0778b2f5bbdac1b2d63d0002c90ff9a59a51f8cc7`，active manifest
+  SHA-256 为 `88C4AF0755A1F3A18C125689FA83AC6252DDCBC06C33EB253427B89622B8F37E`，Host 最终为
+  `WAITING_FOR_ACTION`；P1.3c 收口后的当前 release 见下一节。
+- 本轮 Host/Stage 2 路径没有启动 Broker、MCP、PLE、Node 或在线 PLC 操作，也不新增真实 PLE、
+  仿真或真机验收声明。该检查点当时仍缺 release 切换强杀窗口的 durable deployment
+  journal/reconcile、production ingestor 完整 fixture E2E 和团队发行门禁；后续收口见下一节。
+
+## 2026-08-28 P1.3c durable recovery 与 production ingestor 收口
+
+- production 默认 Stage 2 ingestor 的独立 SelfTest 已以真实 PowerShell coordinator 路径完成 6 项
+  fixture E2E：Host 默认摄取、有效 DONE、有效 BLOCKED、真实 workflow ledger 独占锁映射为
+  `STAGE2_COORDINATOR_BUSY` 且 operation/evidence/action 零 mutation、evidence SHA 漂移拒绝，
+  以及无 evidence UNKNOWN 保持人工复核。标准命令为：
+
+  ```powershell
+  dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest.csproj -c Release
+  ```
+
+- release 切换现以 durable pending journal 记录阶段并在下次显式 lifecycle 入口 reconcile。纯离线
+  failpoint matrix 与参考工作站真实断点/进程强杀均已覆盖切换窗口；升级、精确 rollback、损坏候选
+  拒绝及普通故障恢复通过，journal 不会在未证明 source/target 终态时被删除。
+- 显式 `Uninstall` 复用 fail-closed task 校验：root、current user、action 和 settings 必须精确；只对
+  已知 legacy build-output task 容忍 stale binary description pin，已禁用的中断卸载不会被重新启用。
+  `deployment.json` 缺失时，仅可从 task 的精确 `releaseId + manifest SHA-256` 反推 immutable
+  release，并在 manifest/五文件 payload 完整校验后安全卸载；unknown/tampered task 阻断。
+- Scheduled Task action 精确指向 active release 的 `payload\vcrunner-host.exe`，description 记录
+  releaseId 与 manifest SHA。wrapper 的显式 lifecycle 校验五文件 manifest，并在启动、切换和
+  安全卸载路径执行 apphost self-check；AtLogOn 任务自身直接启动 action，不会预先独立检查
+  `.deps.json`/`.runtimeconfig.json`。
+- 参考工作站最终 active release 为
+  `faa27c1d79415996ddcd524833160c57ea23ac63888f17b853487a81b46ab0f1`，active manifest SHA-256
+  为 `20c15444dd84bd85859c8c56f47ff47fd39d027034c60d02ccbc4158e0714395`；previous release 为
+  `ac89b28f9a93a61c10b5bd7731c3b5b83288169a105c62eb4218a30c119f4b51`，Host 为
+  `WAITING_FOR_ACTION`。P1.3c 技术实现和参考工作站验收完成；本轮未启动 PLE/MCP/Broker/Node
+  或执行在线 PLC 操作，不新增真实 PLE、仿真或真机验收声明。
+- 团队发行、签名/ACL、受控安装，以及在 AtLogOn 真正启动 Host 前校验五文件 runtime closure 的
+  bootstrap 进入 P1.4，当前未完成。
 
 ## 关键决策清单
 
@@ -378,6 +427,8 @@
 | D32 | **baseline 不采集个人身份**；删除 reviewer 姓名/工号，改为 `confirmedByUser: true`，机器自动生成 reviewId/time/path/SHA；仍保留独立确认记录、漂移检测和新 action 复验 | 08-28 |
 | D33 | **工程树瞬时未就绪只做窄范围有界重试**；有效前快照前禁止 Build，终态 action 不自动重放；recoverable baseline 不得靠提交 `.project` 二进制绕过 | 08-28 |
 | D34 | **recoverable baseline 使用 Build 前本机内容寻址 checkpoint**；范围是当前用户/本机，同 SHA 复用、损坏不覆盖、源漂移在 Build 前失败关闭，不再要求 Git HEAD 包含 `.project` | 08-28 |
+| D35 | **Host 自动 evidence 摄取和部署都必须保持可验证边界**；terminal result 绑定 evidence SHA/只读锁，合法无 evidence 只等待人工复核；runtime 以五文件 immutable release 安装，task action 指向 exact release exe、description 记录 manifest；P1.3c 只在 durable journal/reconcile、production ingestor E2E 和真实强杀恢复通过后关闭 | 08-28 |
+| D36 | **P1.3c 技术实现与参考工作站验收完成不等于团队发行完成**；签名/ACL、受控安装和 AtLogOn 启动前五文件 bootstrap 统一进入 P1.4。显式 lifecycle 的 manifest/self-check 不能冒充 AtLogOn 自身的预检 | 08-28 |
 
 ## 待办 / 下一步
 
@@ -385,7 +436,7 @@
 2. warning-limit、Clean Build、adapter/Broker schema 与真实 candidate 生成均已通过；当前 candidates 来自 request `cb1af562-25e6-4523-b2d8-037751d9433d`，禁止复用旧 action 或自动晋升；
 3. 正式 warning/semantic baselines、本机内容寻址 checkpoint 与全新 immutable action 均已验证；P1.2 已关闭，写工程 action 仍保持未开放；
 4. 继续用已配置的真实 CpStudio Post-export hook 处理后续变更；任何 baseline 或 scope 漂移都必须新建 action；
-5. 按 `docs/mcp_productization_roadmap.md` 继续通用健康检查、结构化编译和 change set；`apply_change_set_and_build` 在 payload/readback/恢复门禁完成前保持关闭；
+5. P1.3c 已关闭；按 `docs/mcp_productization_roadmap.md` 推进 P1.4 团队发行、签名/ACL、受控安装和 AtLogOn 五文件 bootstrap，再继续通用健康检查、结构化编译和 change set；`apply_change_set_and_build` 在 payload/readback/恢复门禁完成前保持关闭；
 6. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；
 7. **路线④**:开发机已就绪,P0~P2 完成(继承 PreemptRt);执行转入 **FreePLCDemo**(v4 安装 → P4 集成);
    交接见 `route4-rtpreempt-openplc/HANDOVER.md` §7。
