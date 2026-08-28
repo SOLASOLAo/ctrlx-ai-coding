@@ -140,6 +140,7 @@ try {
             'scripts\cpstudio\Invoke-PostExportEngineering.ps1',
             'scripts\cpstudio\New-PostExportRunnerEvidence.ps1',
             'scripts\cpstudio\New-EngineeringSemanticBaselineCandidate.ps1',
+            'scripts\cpstudio\Approve-PostExportBaselines.ps1',
             'scripts\cpstudio\Invoke-OfflinePostExportCheck.ps1',
             'scripts\cpstudio\offline_mcp_build.cjs',
             'scripts\cpstudio\Run-OfflinePostExportCheck.cmd',
@@ -159,6 +160,7 @@ try {
             'tests\cpstudio\Test-PostExportEngineering.ps1',
             'tests\cpstudio\Test-PostExportRunnerEvidence.ps1',
             'tests\cpstudio\Test-EngineeringSemanticBaselineCandidate.ps1',
+            'tests\cpstudio\Test-ApprovePostExportBaselines.ps1',
             'tests\cpstudio\semantic-canonical-vectors.json',
             'tests\cpstudio\Test-OfflinePostExportCheck.ps1',
             'tests\runner\Test-CtrlXOpconRunner.ps1',
@@ -197,7 +199,7 @@ try {
         [System.IO.File]::ReadAllText((Join-Path $outputPath 'docs\project_structure.md'))
     ) -join "`n"
     Assert-True -Condition $generatedControlDocs.Contains('Named Pipe v2') -Message 'Generated documentation does not describe the P1.2b Named Pipe v2 foundation.'
-    Assert-True -Condition ($generatedControlDocs.Contains('RUNNER_ACCEPTANCE_CONTRACT: clean-compile + complete-warning-set + independent-review; missing-baseline => bootstrap-blocked') -and $generatedControlDocs.Contains('clean_compile_project')) -Message 'Generated documentation omits the clean-build, warning-completeness, independent-review, or baseline-bootstrap failure-closed boundary.'
+    Assert-True -Condition ($generatedControlDocs.Contains('RUNNER_ACCEPTANCE_CONTRACT: clean-compile + complete-warning-set + explicit-user-confirmation; missing-baseline => bootstrap-blocked') -and $generatedControlDocs.Contains('clean_compile_project')) -Message 'Generated documentation omits the clean-build, warning-completeness, user-confirmation, or baseline-bootstrap failure-closed boundary.'
     Assert-True -Condition (-not $generatedControlDocs.Contains('BLOCKED_CAPABILITY_NOT_IMPLEMENTED')) -Message 'Generated documentation retained the obsolete pre-adapter capability blocker.'
     Assert-True -Condition (-not [regex]::IsMatch($generatedControlDocs, '(?i)Named Pipe v1|P1\.2b[^\r\n]{0,100}Agent/Broker (尚未实现|完成前，不会自行)|live runner[^\r\n]{0,100}尚未实现')) -Message 'Generated documentation regressed to the pre-Broker P1.2 status.'
 

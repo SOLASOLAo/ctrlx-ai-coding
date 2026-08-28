@@ -930,12 +930,20 @@ internal static class BrokerSemanticAcceptance
         JsonObject actionReference,
         JsonObject review)
     {
-        RequireOnly(review, "semantic baseline review", "reviewId", "reviewer", "reviewedAtUtc", "evidencePath", "evidenceSha256");
+        RequireOnly(review, "semantic baseline review", "reviewId", "confirmedByUser", "reviewedAtUtc", "evidencePath", "evidenceSha256");
         var reviewId = RequiredString(review, "reviewId", "semantic baseline review");
-        var reviewer = RequiredString(review, "reviewer", "semantic baseline review");
-        if (!IsSafeIdentifier(reviewId) || reviewer.Length > 160 || reviewer.Any(char.IsControl))
+        if (!IsSafeIdentifier(reviewId))
         {
-            throw new SemanticProofException("SEMANTIC_BASELINE_REVIEW_INVALID", "Semantic review identity is invalid.");
+            throw new SemanticProofException("SEMANTIC_BASELINE_REVIEW_INVALID", "Semantic review identifier is invalid.");
+        }
+
+        if (review["confirmedByUser"] is not JsonValue confirmationValue ||
+            !confirmationValue.TryGetValue<bool>(out var confirmedByUser) ||
+            !confirmedByUser)
+        {
+            throw new SemanticProofException(
+                "SEMANTIC_BASELINE_REVIEW_INVALID",
+                "Semantic baseline must carry explicit user confirmation.");
         }
 
         if (!DateTimeOffset.TryParse(
@@ -974,7 +982,7 @@ internal static class BrokerSemanticAcceptance
         return new JsonObject
         {
             ["reviewId"] = reviewId,
-            ["reviewer"] = reviewer,
+            ["confirmedByUser"] = true,
             ["reviewedAtUtc"] = reviewedAt.ToUniversalTime().ToString("O"),
             ["evidencePath"] = evidenceRelative,
             ["evidenceSha256"] = evidenceSha
@@ -1757,17 +1765,25 @@ internal static class BrokerSemanticAcceptance
             review,
             "warning baseline review",
             "reviewId",
-            "reviewer",
+            "confirmedByUser",
             "reviewedAtUtc",
             "evidencePath",
             "evidenceSha256");
         var reviewId = RequiredString(review, "reviewId", "warning baseline review");
-        var reviewer = RequiredString(review, "reviewer", "warning baseline review");
-        if (!IsSafeIdentifier(reviewId) || reviewer.Length > 160 || reviewer.Any(char.IsControl))
+        if (!IsSafeIdentifier(reviewId))
         {
             throw new SemanticProofException(
                 "WARNING_BASELINE_REVIEW_INVALID",
-                "Warning review provenance contains an invalid identifier.");
+                "Warning review identifier is invalid.");
+        }
+
+        if (review["confirmedByUser"] is not JsonValue confirmationValue ||
+            !confirmationValue.TryGetValue<bool>(out var confirmedByUser) ||
+            !confirmedByUser)
+        {
+            throw new SemanticProofException(
+                "WARNING_BASELINE_REVIEW_INVALID",
+                "Warning baseline must carry explicit user confirmation.");
         }
 
         if (!DateTimeOffset.TryParse(
@@ -1800,7 +1816,7 @@ internal static class BrokerSemanticAcceptance
         return new JsonObject
         {
             ["reviewId"] = reviewId,
-            ["reviewer"] = reviewer,
+            ["confirmedByUser"] = true,
             ["reviewedAtUtc"] = reviewedAt.ToUniversalTime().ToString("O"),
             ["evidencePath"] = evidenceRelative,
             ["evidenceSha256"] = evidenceSha

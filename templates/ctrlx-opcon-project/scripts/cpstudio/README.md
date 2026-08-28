@@ -80,7 +80,7 @@ station. It performs only:
 
 It does not run the live snapshot, I/O/Symbol repair, compile or code merge.
 Those remain an explicit second stage in the one active engineering session
-after a person or Codex reviews the offline report.
+after the offline report receives explicit confirmation.
 
 ## Stage 2 PlanOnly coordinator
 
@@ -142,8 +142,9 @@ not an ownership manifest. Stage 1 always reports it separately. When it is
 absent, `inspect_and_build` is still emitted so a fresh warning multiset can be
 collected, but the operation stops at `BLOCKED` and cannot reach `DONE`.
 
-After a person reviews the fresh warning records, create the file with this
-strict schema (replace the sample values with the reviewed project facts):
+After the fresh warning records are confirmed once, create the file with this
+strict schema. Personal identity is not collected; review ID and time are
+machine-generated:
 
 ```json
 {
@@ -159,7 +160,7 @@ strict schema (replace the sample values with the reviewed project facts):
   ],
   "review": {
     "reviewId": "warning-review-2026-08-27",
-    "reviewer": "reviewer name",
+    "confirmedByUser": true,
     "reviewedAtUtc": "2026-08-27T08:00:00Z",
     "evidencePath": "docs/reviews/warning-review-2026-08-27.md",
     "evidenceSha256": "FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210"
@@ -172,8 +173,20 @@ must resolve inside it. Stage 1 and Stage 2 verify both file hashes, exact
 project/profile, exact signature multiset, strict properties, and absence of
 secret-bearing fields. Any later baseline or evidence drift invalidates the
 immutable action; run Stage 1 again to create a newly bound operation.
-Review evidence is a small, sanitized, tracked file under `docs/reviews/`;
+Confirmation evidence is a small, sanitized, tracked file under `docs/reviews/`;
 do not place it under ignored runtime `data/` directories.
+
+Approve one matched warning/semantic candidate pair with a single explicit
+confirmation. The command verifies their action, project, counts and canonical
+hashes, then generates both baselines plus the sanitized confirmation record;
+it never asks for a name or employee number. Run it from PowerShell 7:
+
+```powershell
+.\scripts\cpstudio\Approve-PostExportBaselines.ps1 `
+  -WarningCandidatePath .\docs\reviews\<warning-candidate>.json `
+  -SemanticCandidatePath .\docs\reviews\<semantic-candidate>.json `
+  -ConfirmedByUser
+```
 
 ### Engineering semantic scope and reviewed baseline
 
@@ -204,8 +217,10 @@ content and binds its path and SHA-256 into every immutable action as
 
 `config/engineering-semantic-baseline.json` is optional during bootstrap. A
 missing baseline still permits `inspect_and_build` to call
-`get_ctrlx_semantic_snapshot`, but the operation blocks before `DONE` until a
-person reviews the snapshot and creates a new action. The reviewed baseline is
+`get_ctrlx_semantic_snapshot`, but the operation blocks before `DONE` until the
+matched warning/semantic candidates receive one explicit identity-free confirmation.
+After the formal baselines are created, use a new Export and immutable action for
+verification. The reviewed baseline is
 strictly limited to project/scope SHA, canonical I/O mapping facts, and Symbol
 payload hash/byte-count/shape summary; raw Symbol payload and credentials are
 forbidden. It uses kind `ctrlx-opcon-engineering-semantic-baseline`, canonical
@@ -368,10 +383,12 @@ drift, path traversal, and secret-like content fail closed.
 This command never creates or overwrites
 `config/engineering-semantic-baseline.json`. Its output kind is
 `ctrlx-opcon-engineering-semantic-baseline-candidate`, its review state is
-`pending-human-review`, and automatic promotion is explicitly false. Review the
-mapping records and Symbol summary, create independent review evidence, then
-prepare a separate formal baseline and a new immutable action. Untyped warning
-diagnostics are not converted into a warning baseline by this tool.
+`pending-human-review`, and automatic promotion is explicitly false. Pair it
+with the warning candidate from the same action and run
+`Approve-PostExportBaselines.ps1 -ConfirmedByUser`; the tool creates both formal
+baselines and one sanitized confirmation record atomically, without collecting
+identity. Then use a new Export and immutable action. Untyped warning diagnostics
+are not converted into a warning baseline by the candidate tool.
 
 ## Warning-signature baseline review candidate
 

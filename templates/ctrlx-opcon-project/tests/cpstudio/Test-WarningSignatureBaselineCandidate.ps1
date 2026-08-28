@@ -206,6 +206,7 @@ try {
     Assert-True ($candidate.kind -eq 'ctrlx-opcon-warning-signature-baseline-candidate') 'Candidate kind is not fail-closed.'
     Assert-True ($candidate.review.state -eq 'pending-human-review') 'Candidate review state is not pending.'
     Assert-True (-not [bool]$candidate.review.automaticPromotionAllowed) 'Candidate permits automatic promotion.'
+    Assert-True ((@($candidate.review.requiredUserInputs) -join ',') -eq 'confirmedByUser') 'Candidate user-input contract requires more than explicit Boolean user confirmation.'
     Assert-True (-not [bool]$candidate.warningReview.compilerOutputTruncated) 'Non-truncated fixture was marked truncated.'
     Assert-True (@($candidate.review.reviewBlockers).Count -eq 0) 'Non-truncated fixture has review blockers.'
     Assert-True ($candidate.review.targetBaselinePath -eq 'config/warning-signature-baseline.json') 'Candidate target baseline path drifted.'

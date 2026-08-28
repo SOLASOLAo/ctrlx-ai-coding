@@ -906,10 +906,14 @@ function Assert-WarningBaselineReference {
     $review = Get-PropertyValue -Object $baseline -Name 'review'
     Assert-ExactPropertySet `
         -Object $review `
-        -ExpectedNames @('reviewId', 'reviewer', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256') `
+        -ExpectedNames @('reviewId', 'confirmedByUser', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256') `
         -Context 'Reviewed warning signature baseline review'
-    foreach ($requiredReviewString in @('reviewId', 'reviewer', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256')) {
+    foreach ($requiredReviewString in @('reviewId', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256')) {
         $null = Get-RequiredString -Object $review -Name $requiredReviewString -Context 'Reviewed warning signature baseline review'
+    }
+    $confirmedByUser = Get-PropertyValue -Object $review -Name 'confirmedByUser'
+    if (($confirmedByUser -isnot [bool]) -or (-not [bool]$confirmedByUser)) {
+        throw 'Reviewed warning signature baseline confirmedByUser must be the Boolean value true.'
     }
     $reviewedAt = [DateTime]::MinValue
     if ((-not [DateTime]::TryParse([string]$review.reviewedAtUtc, [ref]$reviewedAt)) -or
@@ -1206,9 +1210,13 @@ function Assert-SemanticBaselineReference {
     }
 
     $review = Get-PropertyValue -Object $baseline -Name 'review'
-    Assert-ExactPropertySet -Object $review -ExpectedNames @('reviewId', 'reviewer', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256') -Context 'Reviewed engineering semantic baseline review'
-    foreach ($name in @('reviewId', 'reviewer', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256')) {
+    Assert-ExactPropertySet -Object $review -ExpectedNames @('reviewId', 'confirmedByUser', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256') -Context 'Reviewed engineering semantic baseline review'
+    foreach ($name in @('reviewId', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256')) {
         $null = Get-RequiredString -Object $review -Name $name -Context 'Reviewed engineering semantic baseline review'
+    }
+    $confirmedByUser = Get-PropertyValue -Object $review -Name 'confirmedByUser'
+    if (($confirmedByUser -isnot [bool]) -or (-not [bool]$confirmedByUser)) {
+        throw 'Reviewed engineering semantic baseline confirmedByUser must be the Boolean value true.'
     }
     $reviewedAt = [DateTime]::MinValue
     if ((-not [DateTime]::TryParse([string]$review.reviewedAtUtc, [ref]$reviewedAt)) -or

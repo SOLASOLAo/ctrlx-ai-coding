@@ -362,10 +362,10 @@ tools:
             [ordered]@{ sha256 = ('A' * 64); occurrences = 1 }
         )
         review             = [ordered]@{
-            reviewId      = 'queue-fixture-review-v1'
-            reviewer      = 'Queue Self Test'
-            reviewedAtUtc = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')
-            evidencePath  = 'docs/reviews/warning-baseline-review.md'
+            reviewId       = 'queue-fixture-review-v1'
+            confirmedByUser = $true
+            reviewedAtUtc  = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')
+            evidencePath   = 'docs/reviews/warning-baseline-review.md'
             evidenceSha256 = $reviewEvidenceSha
         }
     }
@@ -424,12 +424,30 @@ tools:
         }
         review = [ordered]@{
             reviewId = 'queue-semantic-review-v1'
-            reviewer = 'Queue Self Test'
+            confirmedByUser = $true
             reviewedAtUtc = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')
             evidencePath = 'docs/reviews/engineering-semantic-review.md'
             evidenceSha256 = $semanticReviewEvidenceSha
         }
     }
+    Write-Utf8NoBom -Path $semanticBaselinePath -Text (($reviewedSemanticBaseline | ConvertTo-Json -Depth 30) + [Environment]::NewLine)
+
+    $reviewedBaseline.review.confirmedByUser = $false
+    Write-Utf8NoBom -Path $warningBaselinePath -Text (($reviewedBaseline | ConvertTo-Json -Depth 12) + [Environment]::NewLine)
+    Assert-Stage1Rejected -Writer $writer -Consumer $consumer -EngineeringRoot $engineeringRoot -StationRoot $stationRoot -QueueRoot $queueRoot -ReportRoot $reportRoot -PlcProject $plcProject -ExpectedMessageFragment 'confirmedByUser must be the Boolean value true' -Description 'Warning baseline with confirmedByUser=false'
+    $reviewedBaseline.review.confirmedByUser = 'true'
+    Write-Utf8NoBom -Path $warningBaselinePath -Text (($reviewedBaseline | ConvertTo-Json -Depth 12) + [Environment]::NewLine)
+    Assert-Stage1Rejected -Writer $writer -Consumer $consumer -EngineeringRoot $engineeringRoot -StationRoot $stationRoot -QueueRoot $queueRoot -ReportRoot $reportRoot -PlcProject $plcProject -ExpectedMessageFragment 'confirmedByUser must be the Boolean value true' -Description 'Warning baseline with string confirmedByUser'
+    $reviewedBaseline.review.confirmedByUser = $true
+    Write-Utf8NoBom -Path $warningBaselinePath -Text (($reviewedBaseline | ConvertTo-Json -Depth 12) + [Environment]::NewLine)
+
+    $reviewedSemanticBaseline.review.confirmedByUser = $false
+    Write-Utf8NoBom -Path $semanticBaselinePath -Text (($reviewedSemanticBaseline | ConvertTo-Json -Depth 30) + [Environment]::NewLine)
+    Assert-Stage1Rejected -Writer $writer -Consumer $consumer -EngineeringRoot $engineeringRoot -StationRoot $stationRoot -QueueRoot $queueRoot -ReportRoot $reportRoot -PlcProject $plcProject -ExpectedMessageFragment 'confirmedByUser must be the Boolean value true' -Description 'Semantic baseline with confirmedByUser=false'
+    $reviewedSemanticBaseline.review.confirmedByUser = 'true'
+    Write-Utf8NoBom -Path $semanticBaselinePath -Text (($reviewedSemanticBaseline | ConvertTo-Json -Depth 30) + [Environment]::NewLine)
+    Assert-Stage1Rejected -Writer $writer -Consumer $consumer -EngineeringRoot $engineeringRoot -StationRoot $stationRoot -QueueRoot $queueRoot -ReportRoot $reportRoot -PlcProject $plcProject -ExpectedMessageFragment 'confirmedByUser must be the Boolean value true' -Description 'Semantic baseline with string confirmedByUser'
+    $reviewedSemanticBaseline.review.confirmedByUser = $true
     Write-Utf8NoBom -Path $semanticBaselinePath -Text (($reviewedSemanticBaseline | ConvertTo-Json -Depth 30) + [Environment]::NewLine)
 
     # A baseline candidate or AI triage is generated review material, not an

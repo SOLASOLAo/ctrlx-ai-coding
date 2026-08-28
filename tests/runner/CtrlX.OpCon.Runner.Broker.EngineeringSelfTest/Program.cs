@@ -27,6 +27,8 @@ internal static class Program
             ("external project mismatch is not altered or shut down", ExternalProjectMismatchIsRejectedAsync),
             ("owned PLE shutdown failure propagates after MCP cleanup", OwnedPleShutdownFailurePropagatesAsync),
             ("fresh Build plus all independent semantic proofs succeeds", CompleteSemanticEvidenceSucceedsAsync),
+            ("warning baseline requires explicit user confirmation", WarningReviewRequiresExplicitConfirmationAsync),
+            ("semantic baseline confirmation must be Boolean true", SemanticReviewConfirmationTypeIsStrictAsync),
             ("missing reviewed semantic baseline still snapshots then blocks", SemanticBootstrapCollectsThenBlocksAsync),
             ("warning bootstrap captures current multiset then blocks", WarningBootstrapCollectsThenBlocksAsync),
             ("PLE warning truncation sentinel cannot satisfy a reviewed baseline", WarningTruncationSentinelBlocksReviewedBaselineAsync),
@@ -289,6 +291,46 @@ internal static class Program
         {
             Require(proofs[name]?["verified"]?.GetValue<bool>() == true, $"Proof {name} was not verified.");
         }
+    }
+
+    private static async Task WarningReviewRequiresExplicitConfirmationAsync()
+    {
+        using var fixture = new Fixture();
+        fixture.SetWarningReviewConfirmation(JsonValue.Create(false)!);
+        var rpc = ExecutionRpc(fixture, "warning-review-not-confirmed");
+        rpc.CompileResponseFactory = () => FreshCompile(fixture.ProjectPath);
+        rpc.SemanticResponseFactory = () => fixture.CreateSemanticSnapshot();
+        await using var session = new BrokerEngineeringSession(rpc, fixture.Options);
+        var runtime = await session.StartAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var outcome = await session.ExecuteAsync(
+            fixture.CreateAction("inspect_and_build"),
+            runtime,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Require(outcome.TerminalState == "BLOCKED" &&
+            outcome.ReasonCode == "WARNING_BASELINE_REVIEW_INVALID",
+            $"A warning baseline without explicit user confirmation must be rejected; actual={outcome.ReasonCode}.");
+    }
+
+    private static async Task SemanticReviewConfirmationTypeIsStrictAsync()
+    {
+        using var fixture = new Fixture();
+        fixture.SetSemanticReviewConfirmation(JsonValue.Create("true")!);
+        var rpc = ExecutionRpc(fixture, "semantic-review-confirmation-wrong-type");
+        rpc.CompileResponseFactory = () => FreshCompile(fixture.ProjectPath);
+        rpc.SemanticResponseFactory = () => fixture.CreateSemanticSnapshot();
+        await using var session = new BrokerEngineeringSession(rpc, fixture.Options);
+        var runtime = await session.StartAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var outcome = await session.ExecuteAsync(
+            fixture.CreateAction("inspect_and_build"),
+            runtime,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Require(outcome.TerminalState == "BLOCKED" &&
+            outcome.ReasonCode == "SEMANTIC_BASELINE_REVIEW_INVALID",
+            $"A non-Boolean semantic user confirmation must be rejected; actual={outcome.ReasonCode}.");
     }
 
     private static async Task SemanticBootstrapCollectsThenBlocksAsync()
@@ -1318,7 +1360,6 @@ internal sealed class Fixture : IDisposable
             ["signatures"] = new JsonArray(),
             ["review"] = Review(
                 "warning-review-0001",
-                "Runner self-test reviewer",
                 "data/evidence/warning-review.txt",
                 RunnerHash.Sha256File(warningEvidencePath))
         });
@@ -1334,7 +1375,6 @@ internal sealed class Fixture : IDisposable
             ["hashes"] = SemanticHashes(canonicalFacts),
             ["review"] = Review(
                 "semantic-review-0001",
-                "Runner self-test reviewer",
                 "data/evidence/semantic-review.txt",
                 RunnerHash.Sha256File(semanticEvidencePath))
         });
@@ -1385,6 +1425,12 @@ internal sealed class Fixture : IDisposable
 
     public void OverwriteSemanticBaseline(string content) => File.WriteAllText(semanticBaselinePath, content);
 
+    public void SetWarningReviewConfirmation(JsonNode value) =>
+        SetReviewConfirmation(warningBaselinePath, value);
+
+    public void SetSemanticReviewConfirmation(JsonNode value) =>
+        SetReviewConfirmation(semanticBaselinePath, value);
+
     public void SetWarningBaseline(params string[] warningRecords)
     {
         var counts = new SortedDictionary<string, int>(StringComparer.Ordinal);
@@ -1413,7 +1459,6 @@ internal sealed class Fixture : IDisposable
                 }).ToArray()),
             ["review"] = Review(
                 "warning-review-0001",
-                "Runner self-test reviewer",
                 "data/evidence/warning-review.txt",
                 RunnerHash.Sha256File(warningEvidencePath))
         });
@@ -1649,16 +1694,25 @@ internal sealed class Fixture : IDisposable
 
     private JsonObject Review(
         string reviewId,
-        string reviewer,
         string evidencePath,
         string evidenceSha256) => new()
     {
         ["reviewId"] = reviewId,
-        ["reviewer"] = reviewer,
+        ["confirmedByUser"] = true,
         ["reviewedAtUtc"] = reviewTime.ToString("O"),
         ["evidencePath"] = evidencePath,
         ["evidenceSha256"] = evidenceSha256
     };
+
+    private static void SetReviewConfirmation(string baselinePath, JsonNode value)
+    {
+        var baseline = JsonNode.Parse(File.ReadAllText(baselinePath)) as JsonObject
+            ?? throw new InvalidOperationException("Fixture baseline is invalid.");
+        var review = baseline["review"] as JsonObject
+            ?? throw new InvalidOperationException("Fixture baseline review is missing.");
+        review["confirmedByUser"] = value.DeepClone();
+        WriteJson(baselinePath, baseline);
+    }
 
     private static JsonObject ReviewedReference(
         string relativePath,

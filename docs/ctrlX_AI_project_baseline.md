@@ -273,7 +273,7 @@ args = ["--codesys-path", "C:\\ctrlXWORKS\\ctrlXPLCEngineering\\PLE_V_0206\\Stud
 - 受控 adapter 返回 same-call `buildId`、固定类别 typed warnings，并递归采集声明 scope 下的 ctrlX connector I/O Mapping 与 Application Symbol Configuration 摘要。PLE REST 必须使用 `localhost`；Symbol payload 若因 IEC 文本未转义而不是合法 JSON，只在 adapter 内做有界规范化/哈希，原始 payload 不跨 MCP。
 - Station010 实测 fresh Build 为 **0 errors / 101 条可见 warnings**；其中包含 PLE 的 `>100 warnings` 截断哨兵，所以这不证明完整告警全集。semantic snapshot 为 456 条 mapping facts（438 bound / 18 unbound）。mapping SHA-256 为 `491B719C...A5086`，Symbol SHA-256 为 `3FE32193...E686F`。
 - PLC project 与结构哈希在 action 前后完全一致；未修改 PLC/IO/ST，未连接 PLC、下载、启停 runtime、写变量或 FORCE。
-- 没有经人工审阅的 warning/semantic baseline 时，action 必须以 bootstrap `BLOCKED` 结束。Runner 可以生成 deterministic candidate，但不得自动晋升为正式 baseline；正式文件必须绑定 reviewer 和独立 evidence hash，并通过新的 immutable action 复验。包含截断哨兵的 warning population 由 Broker、Stage 1、Stage 2 和 evidence sealer 以 `PLE_WARNING_OUTPUT_TRUNCATED` 失败关闭，不能批准为正式 baseline。
+- 没有经用户明确确认的 warning/semantic baseline 时，action 必须以 bootstrap `BLOCKED` 结束。Runner 可以生成 deterministic candidate，但不得自动晋升为正式 baseline；正式文件只记录 `confirmedByUser: true`、机器生成的时间/ID 和独立 evidence hash，不采集姓名或工号，并通过新的 immutable action 复验。包含截断哨兵的 warning population 由 Broker、Stage 1、Stage 2 和 evidence sealer 以 `PLE_WARNING_OUTPUT_TRUNCATED` 失败关闭，不能批准为正式 baseline。
 
 ---
 
@@ -349,18 +349,18 @@ ctrlX-PLC-Engineering.exe --profile="ctrlX PLC 2.6.8" --noUI --runscript="脚本
 - Stage 2 的纯离线 runner evidence 封装器不执行 PLE/MCP/REST；它复核 action/Stage 1/ownership/关键 Station 指纹、Build 新鲜度、当前 PLC SHA 和 semantic proofs，并以固定算法生成 warning 签名多重集。live engineering action 由显式启动的 interactive Broker 执行，该 Broker 是唯一 persistent MCP/PLE owner。
 - P1.1 已提供 OS 排他运行租约；P1.2 client/action 与 Broker session/action serialization 分别提供跨进程和执行期门禁。条件 Export #2 仍只在记录到 Symbol/后处理需求时进入人工同步点。
 - current-user Pipe/registration、PID/session/executable/project identity 校验用于防止误连和跨会话混用，但不防御同一 Windows 用户下的恶意进程；商业发行仍需受控安装和签名/release-bound Broker identity。evidence 是哈希绑定的审计证据，不是加密签名。
-- 后续产品化重点是完整 warning population、独立人工 baseline 验收与新 immutable action 复验；通过后再推进 P1.3 Host、`project_health`、`compile_project_v2`、受控 change set、FORCE 生命周期及正式 Symbol/I/O/SFC 接口。
+- 后续产品化重点是完整 warning population、无身份用户确认 baseline 与新 immutable action 复验；通过后再推进 P1.3 Host、`project_health`、`compile_project_v2`、受控 change set、FORCE 生命周期及正式 Symbol/I/O/SFC 接口。
 
 ## 10.2 Runner baseline 审阅边界（2026-08-28）
 
 - 真实 PLE 技术通道通过不等于工程 `DONE`；Build 0 errors 也不等于 warning、I/O mapping 或 Symbol 语义已经被批准。
 - warning candidate 保存当前 warning signature multiset；semantic candidate 保存 scope 绑定的 mapping facts 与 Symbol 摘要。两者只能进入 `docs/reviews/`，状态必须是 `pending-human-review`。
 - `review.reviewBlockers` 含 `PLE_WARNING_OUTPUT_TRUNCATED` 时，当前 warning 集合不完整，禁止建立正式 warning baseline。已确认 100 条来自 PLE 工程 `Compile Options` 的编译器生成上限，而不是 MCP/ScriptEngine 的读取分页。先在隔离工程副本中通过官方 REST 对 `CompileOptionsEditor.maxCompilerWarnings=<no limit>` 完成 GET/PUT/readback/Build/回滚验证，再由新 action 生成新候选；不得手改 `.project`、`.opt`、注册表或插件文件。
-- AI/脚本不得替人填写 reviewer、reviewedAtUtc 或独立 evidence，也不得把 candidate 重命名为 `config/*-baseline.json`。
-- 独立人审 evidence 必须是 `docs/reviews/` 下单独的人工文档；candidate、AI triage、reviews index、目录外文件及其改名/逐字副本均不能作为 evidence。Stage 1/2 对 review 文件只做一次有界读取，严格 UTF-8、内容检查和 action-bound SHA 均来自同一 byte snapshot。
+- 只有用户明确确认候选结论后，工具才能写入 `confirmedByUser: true`；`reviewId`、`reviewedAtUtc`、evidence 路径与 SHA 均由工具生成，不采集或要求姓名、工号。candidate 仍不得直接重命名为 `config/*-baseline.json`。
+- 确认证据必须是 `docs/reviews/` 下单独、简短且脱敏的决定记录；candidate、AI triage、reviews index、目录外文件及其改名/逐字副本均不能作为 evidence。Stage 1/2 对确认文件只做一次有界读取，严格 UTF-8、内容检查和 action-bound SHA 均来自同一 byte snapshot。
 - warning baseline、semantic scope 和 semantic baseline 同样按各自上限单次读取，并用同一 bytes 完成 SHA 与 JSON 解析。畸形 Post-export 请求的失败记录不得保存 raw/original payload，只保留 1 MiB 上限内的字节数、SHA-256 和固定安全诊断元数据。
 - 正式 baseline 的 project/profile、scope、candidate hashes、review evidence path/SHA 任一变化都使旧 action 失效；必须回到 Stage 1 创建新的 operation/action。
-- P1.2 只有在人工审阅完成且新 immutable action 复验通过后才能标为完成；此前不启动 P1.3 Windows Runner Host 产品化。
+- P1.2 只有在用户明确确认且新 immutable action 复验通过后才能标为完成；此前不启动 P1.3 Windows Runner Host 产品化。
 
 ---
 

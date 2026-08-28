@@ -287,6 +287,7 @@ try {
     Assert-True ($candidate.kind -eq 'ctrlx-opcon-engineering-semantic-baseline-candidate') 'Candidate kind is not fail-closed.'
     Assert-True ($candidate.review.state -eq 'pending-human-review') 'Candidate review state is not pending.'
     Assert-True (-not [bool]$candidate.review.automaticPromotionAllowed) 'Candidate permits automatic promotion.'
+    Assert-True ((@($candidate.review.requiredUserInputs) -join ',') -eq 'confirmedByUser') 'Candidate user-input contract requires more than explicit Boolean user confirmation.'
     Assert-True ($candidate.hashes.mappingSha256 -eq $mappingSha) 'Candidate mapping hash drifted.'
     Assert-True ($candidate.hashes.symbolConfigSha256 -eq $symbolSha) 'Candidate Symbol hash drifted.'
     Assert-True ($candidate.scopeSha256 -eq ((Get-FileHash -LiteralPath $scopePath -Algorithm SHA256).Hash.ToLowerInvariant())) 'Candidate did not bind the scope bytes.'

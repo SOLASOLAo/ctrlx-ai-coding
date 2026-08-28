@@ -46,13 +46,13 @@ current-user validated registration、Named Pipe v2、durable submit/query、单
 owner 和 typed action allowlist。它必须显式启动，action wrapper 不会自行启动
 PLE、MCP 或 Broker。参考环境中的受控 adapter、显式 `clean_compile_project` 和只读 semantic
 snapshot 技术通道已经实测；新工位仍须安装并校验 adapter、配置 semantic scope、用显式
-Clean Build 取得完整且未截断的 warning 集合、建立绑定独立人工证据的正式 warning/semantic
-baseline，并以新 immutable action 完成本工位离线验收。缺 baseline 时必须以对应 bootstrap
+Clean Build 取得完整且未截断的 warning 集合、执行一次不采集身份的显式用户确认并建立正式
+warning/semantic baseline，并以新的 Export/immutable action 完成本工位离线验收。缺 baseline 时必须以对应 bootstrap
 `BLOCKED` 结束，不会伪造成功证据。`apply_change_set_and_build` 仍不支持。只有 Symbol/后处理
 证据明确要求时才安排
 Export #2。
 
-`RUNNER_ACCEPTANCE_CONTRACT: clean-compile + complete-warning-set + independent-review; missing-baseline => bootstrap-blocked`
+`RUNNER_ACCEPTANCE_CONTRACT: clean-compile + complete-warning-set + explicit-user-confirmation; missing-baseline => bootstrap-blocked`
 
 ## 目录
 

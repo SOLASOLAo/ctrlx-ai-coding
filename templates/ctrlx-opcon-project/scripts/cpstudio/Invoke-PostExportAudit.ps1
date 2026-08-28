@@ -590,12 +590,16 @@ function Get-WarningBaselineAudit {
 
     Assert-ExactPropertySet `
         -Object $baseline.review `
-        -ExpectedNames @('reviewId', 'reviewer', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256') `
+        -ExpectedNames @('reviewId', 'confirmedByUser', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256') `
         -Context 'Warning signature baseline review'
-    foreach ($requiredReviewString in @('reviewId', 'reviewer', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256')) {
+    foreach ($requiredReviewString in @('reviewId', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256')) {
         if ([string]::IsNullOrWhiteSpace([string]$baseline.review.$requiredReviewString)) {
             throw "Warning signature baseline review is missing '$requiredReviewString'."
         }
+    }
+    if (($baseline.review.confirmedByUser -isnot [bool]) -or
+        (-not [bool]$baseline.review.confirmedByUser)) {
+        throw 'Warning signature baseline confirmedByUser must be the Boolean value true.'
     }
     $reviewedAt = [DateTime]::MinValue
     if ((-not [DateTime]::TryParse([string]$baseline.review.reviewedAtUtc, [ref]$reviewedAt)) -or
@@ -929,12 +933,16 @@ function Get-SemanticBaselineAudit {
 
         Assert-ExactPropertySet `
             -Object $baseline.review `
-            -ExpectedNames @('reviewId', 'reviewer', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256') `
+            -ExpectedNames @('reviewId', 'confirmedByUser', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256') `
             -Context 'Engineering semantic baseline review'
-        foreach ($requiredReviewString in @('reviewId', 'reviewer', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256')) {
+        foreach ($requiredReviewString in @('reviewId', 'reviewedAtUtc', 'evidencePath', 'evidenceSha256')) {
             if ([string]::IsNullOrWhiteSpace([string]$baseline.review.$requiredReviewString)) {
                 throw "Engineering semantic baseline review is missing '$requiredReviewString'."
             }
+        }
+        if (($baseline.review.confirmedByUser -isnot [bool]) -or
+            (-not [bool]$baseline.review.confirmedByUser)) {
+            throw 'Engineering semantic baseline confirmedByUser must be the Boolean value true.'
         }
         $reviewedAt = [DateTime]::MinValue
         if ((-not [DateTime]::TryParse([string]$baseline.review.reviewedAtUtc, [ref]$reviewedAt)) -or

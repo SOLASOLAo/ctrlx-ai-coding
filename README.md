@@ -43,7 +43,7 @@ CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型�
 | 分工 | 用户做骨架(CpStudio),AI 做 PLC 代码细节 |
 | 项目模板 | ✅ 新项目初始化器 + Stage 1 离线审计队列 + Stage 2 PlanOnly operation ledger |
 | Codex Skill | ✅ `ctrlx-opcon-engineering`，源码可版本化、安装可校验 |
-| Controlled Runner | ✅ P1.1、P1.2a、P1.2b Broker 与真实 PLE 技术通道；⏳ 完整 warning population、warning/semantic baseline 人审及新 action 复验 |
+| Controlled Runner | ✅ P1.1、P1.2a、P1.2b Broker、真实 PLE 技术通道及无身份确认正式 baseline；⏳ 新 Export/action 复验 |
 | 产品化计划 | `docs/mcp_productization_roadmap.md` |
 
 Stage 2 已实现为哈希绑定、可恢复的 PlanOnly 协调器，只生成 action 并校验
@@ -57,14 +57,15 @@ mapping facts，工程哈希前后不变且无在线动作。当前 warning cand
 隔离副本已通过官方 REST 完成 `maxCompilerWarnings: 100 → <no limit> → 100` 的读写回滚；
 REST PUT 回滚后内存工程仍 dirty，必须关闭不保存并重开。另已新增并安装显式
 `clean_compile_project`（一次 `application.clean()` + 一次 `application.build()`，不保存）。
-下一步是重启扩展，在可丢弃隔离副本保存 `<no limit>`、重开并连续执行两次 Clean Build，
-再进行 warning/semantic baseline 人审及新 action 复验。完成前 action 仍按设计停在
-baseline-bootstrap `BLOCKED`；不得把技术通道跑通冒充最终工程验收成功。
+隔离副本的连续 Clean Build、真实 Export candidates 和用户确认均已完成；正式
+warning/semantic baselines 已由受控工具原子建立，不采集个人身份。当前只剩一次新的
+正常 CpStudio Export 和全新 immutable action 复验。完成前不得把技术通道跑通冒充
+最终工程验收成功。
 
-提交前失败关闭审查也已收口：独立人审证据、scope/baseline 均采用同字节有界
-校验与 SHA 绑定；candidate/AI triage 不能冒充人审；semantic adapter 在全部 REST
+提交前失败关闭审查也已收口：用户确认记录、scope/baseline 均采用同字节有界
+校验与 SHA 绑定；candidate/AI triage 不能冒充确认；baseline 不采集姓名/工号；semantic adapter 在全部 REST
 读取后执行最终 dirty probe，并限制 30 s/8 MiB；畸形请求与证据生成不会持久化或
-回显凭据。该加固只提高证据可信度，不绕过当前 warning 截断和人工 baseline 门禁。
+回显凭据。该加固只提高证据可信度；下一步仍须用新的正常 Export/action 验证已建立的正式 baseline。
 
 ## 创建新工站 AI 旁车
 
@@ -147,7 +148,7 @@ Station、`Std`、`.project` 或闭源资料，目标目录已存在时会拒绝
 - [ ] 阶段 4:仿真 → 真机下载调试
 - [x] 产品化基础:可复用项目初始化器、Post-export Stage 1 审计队列、Stage 2 PlanOnly ledger 和 Codex Skill
 - [x] 产品化 MCP 技术通道:Controlled Runner P1.1、P1.2a client、P1.2b interactive Broker、受控 adapter、fresh Build、typed warning 与真实 PLE semantic snapshot
-- [ ] 产品化 MCP 基线验收:完整 0 errors / 4 warnings 与 warning candidate 已取得；下一次真实 Export 须生成 semantic candidate，之后完成人工 warning/semantic baseline，并用后续新 immutable action 复验；其后再推进 project_health/change set 与正式 SFC/Symbol/I/O 工具
+- [ ] 产品化 MCP 基线验收:完整 0 errors / 4 warnings、warning/semantic candidates 和无身份单次确认正式 baseline 已完成；下一次真实 Export 生成全新 immutable action 并复验，之后再推进 project_health/change set 与正式 SFC/Symbol/I/O 工具
 
 ## 版权说明
 

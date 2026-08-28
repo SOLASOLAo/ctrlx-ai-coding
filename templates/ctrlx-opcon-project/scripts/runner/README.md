@@ -75,7 +75,7 @@ The controlled MCP ownership/fresh-Build adapter and read-only semantic snapshot
 channel have passed a real offline PLE action in the reference environment. A
 new workstation must still install and verify the controlled adapter, configure
 its semantic scope, capture a complete non-truncated warning population, bind
-independent human review evidence and formal warning/semantic baselines, and run
+explicit project-owner confirmation evidence and formal warning/semantic baselines, and run
 its own offline acceptance action. Missing baselines return the corresponding
 baseline-bootstrap `BLOCKED` reason and can never turn a clean compile into a
 successful Stage 2 result. `apply_change_set_and_build` remains unsupported and

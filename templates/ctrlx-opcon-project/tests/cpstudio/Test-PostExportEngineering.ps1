@@ -834,7 +834,7 @@ tools:
         signatures         = @(Get-FixtureWarningSignatures)
         review             = [ordered]@{
             reviewId       = 'stage2-fixture-review-v1'
-            reviewer       = 'Stage2 Self Test'
+            confirmedByUser = $true
             reviewedAtUtc  = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')
             evidencePath   = 'docs/reviews/warning-baseline-review.md'
             evidenceSha256 = Get-Sha256 -Path $warningReviewPath
@@ -896,7 +896,7 @@ tools:
             snapshotSha256 = Get-CanonicalJsonElementSha256 -Element $semanticCanonicalFacts
         }
         review = [ordered]@{
-            reviewId = 'stage2-semantic-review-v1'; reviewer = 'Stage2 Self Test'; reviewedAtUtc = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')
+            reviewId = 'stage2-semantic-review-v1'; confirmedByUser = $true; reviewedAtUtc = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')
             evidencePath = 'docs/reviews/engineering-semantic-review.md'; evidenceSha256 = Get-Sha256 -Path $semanticReviewPath
         }
     }
@@ -922,6 +922,46 @@ tools:
     }
     Assert-True -Condition (-not [string]::IsNullOrWhiteSpace([string]$whatIfResult.operationId)) -Message 'WhatIf did not compute an operationId.'
     Assert-True -Condition ((Get-FileFingerprintMap -Root $operationRoot).Count -eq 0) -Message 'WhatIf wrote an operation file.'
+
+    $warningBaselineDocument.review.confirmedByUser = $false
+    Write-JsonFile -Path $warningBaselinePath -Value $warningBaselineDocument
+    $warningFalseAudit = Join-Path $reportRoot 'warning-confirmed-false.json'
+    $null = New-Stage1AuditReport -Path $warningFalseAudit -RequestId ('warning-confirmed-false-' + [guid]::NewGuid().ToString('N')) -RequestedAtUtc $baseTime.AddSeconds(-4) -EngineeringRoot $engineeringRoot -StationRoot $stationRoot -PlcProject $plcProject
+    $warningFalseRejected = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        AuditReport = $warningFalseAudit; EngineeringRoot = $engineeringRoot; OperationRoot = $operationRoot
+    }
+    Assert-True -Condition ($warningFalseRejected.rejected -and ([string]$warningFalseRejected.message).Contains('confirmedByUser must be the Boolean value true')) -Message 'Stage2 accepted a warning baseline with confirmedByUser=false.'
+
+    $warningBaselineDocument.review.confirmedByUser = 'true'
+    Write-JsonFile -Path $warningBaselinePath -Value $warningBaselineDocument
+    $warningStringAudit = Join-Path $reportRoot 'warning-confirmed-string.json'
+    $null = New-Stage1AuditReport -Path $warningStringAudit -RequestId ('warning-confirmed-string-' + [guid]::NewGuid().ToString('N')) -RequestedAtUtc $baseTime.AddSeconds(-3) -EngineeringRoot $engineeringRoot -StationRoot $stationRoot -PlcProject $plcProject
+    $warningStringRejected = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        AuditReport = $warningStringAudit; EngineeringRoot = $engineeringRoot; OperationRoot = $operationRoot
+    }
+    Assert-True -Condition ($warningStringRejected.rejected -and ([string]$warningStringRejected.message).Contains('confirmedByUser must be the Boolean value true')) -Message 'Stage2 accepted a warning baseline with string confirmedByUser.'
+    $warningBaselineDocument.review.confirmedByUser = $true
+    Write-JsonFile -Path $warningBaselinePath -Value $warningBaselineDocument
+
+    $semanticBaselineDocument.review.confirmedByUser = $false
+    Write-JsonFile -Path $semanticBaselinePath -Value $semanticBaselineDocument
+    $semanticFalseAudit = Join-Path $reportRoot 'semantic-confirmed-false.json'
+    $null = New-Stage1AuditReport -Path $semanticFalseAudit -RequestId ('semantic-confirmed-false-' + [guid]::NewGuid().ToString('N')) -RequestedAtUtc $baseTime.AddSeconds(-2) -EngineeringRoot $engineeringRoot -StationRoot $stationRoot -PlcProject $plcProject
+    $semanticFalseRejected = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        AuditReport = $semanticFalseAudit; EngineeringRoot = $engineeringRoot; OperationRoot = $operationRoot
+    }
+    Assert-True -Condition ($semanticFalseRejected.rejected -and ([string]$semanticFalseRejected.message).Contains('confirmedByUser must be the Boolean value true')) -Message 'Stage2 accepted a semantic baseline with confirmedByUser=false.'
+
+    $semanticBaselineDocument.review.confirmedByUser = 'true'
+    Write-JsonFile -Path $semanticBaselinePath -Value $semanticBaselineDocument
+    $semanticStringAudit = Join-Path $reportRoot 'semantic-confirmed-string.json'
+    $null = New-Stage1AuditReport -Path $semanticStringAudit -RequestId ('semantic-confirmed-string-' + [guid]::NewGuid().ToString('N')) -RequestedAtUtc $baseTime.AddSeconds(-1) -EngineeringRoot $engineeringRoot -StationRoot $stationRoot -PlcProject $plcProject
+    $semanticStringRejected = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        AuditReport = $semanticStringAudit; EngineeringRoot = $engineeringRoot; OperationRoot = $operationRoot
+    }
+    Assert-True -Condition ($semanticStringRejected.rejected -and ([string]$semanticStringRejected.message).Contains('confirmedByUser must be the Boolean value true')) -Message 'Stage2 accepted a semantic baseline with string confirmedByUser.'
+    $semanticBaselineDocument.review.confirmedByUser = $true
+    Write-JsonFile -Path $semanticBaselinePath -Value $semanticBaselineDocument
 
     # Stage2 independently revalidates the review artifact instead of trusting
     # a Stage1 hash reference. Generated candidates/AI triage stay invalid even

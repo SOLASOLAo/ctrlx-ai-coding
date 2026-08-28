@@ -654,7 +654,7 @@ $candidate = [ordered]@{
         state = 'pending-human-review'
         automaticPromotionAllowed = $false
         reviewBlockers = [object[]]$reviewBlockers.ToArray()
-        requiredHumanInputs = @('reviewId', 'reviewer', 'reviewedAtUtc', 'independentEvidencePath', 'independentEvidenceSha256')
+        requiredUserInputs = @('confirmedByUser')
         targetBaselinePath = 'config/warning-signature-baseline.json'
     }
 }

@@ -315,6 +315,12 @@
   `3FE32193B8EAC6FE03662F92BC2EF5AFF0827131C7C7226A2154FD6F2C8E686F`。自动化技术门禁已完成；
   正式 baseline 仍必须由独立人工证据建立，并由另一个新 Export/action 复验。
 
+## 2026-08-28 无身份正式 baseline 建立
+
+- 新增通用 `Approve-PostExportBaselines.ps1`：用户只做一次明确确认，工具校验两个候选的 project/action/count/hash 后，原子生成两份正式 baseline 和去身份确认记录；不要求或保存姓名、工号。
+- Station010 正式记录为 4 条 warning / 1 个签名、456 条 mapping / 18 个当前不用的 unbound，review ID 为 `approval-3761fac2d36b-074f9525c2c7`。两份 baseline 绑定同一确认记录和 SHA。
+- PowerShell 7 的审批、Stage 1、Stage 2、candidate、evidence、静态回归通过；本轮没有启动 PLE/MCP 或执行任何在线操作。最终 P1.2 验收只剩新的正常 Export 和全新 immutable action。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |
@@ -341,18 +347,19 @@
 | D23 | **Stage 2 先采用 PlanOnly operation ledger**；action/evidence 必须哈希绑定，协调器不启动 PLE/MCP/REST；live runner 与跨进程 MCP 租约后续实现 | 08-22 |
 | D24 | **Runner 分为控制面和唯一会话执行面**；P1.1 默认不启动 PLE/MCP，P1.2 由交互会话 Agent/Broker 独占 stdio/PLE，Windows Service 不从 Session 0 启动 PLE | 08-27 |
 | D25 | **P1.2b 使用显式 interactive Broker + protocol v2 current-user validated registration + durable submit/query**；同一 Windows 用户是当前信任边界；当前只允许 typed inspect/verify 和固定离线 Build，写工程/在线功能继续关闭，真实 PLE acceptance 单独执行 | 08-27 |
-| D26 | **工程 baseline 必须由人基于独立证据审阅**；Runner 只能生成 deterministic candidate，禁止自动晋升；正式 warning/semantic baseline 必须绑定 reviewer/evidence hash，并由新的 immutable action 复验 | 08-28 |
+| D26 | **工程 baseline 必须经过用户明确确认**；Runner 只能生成 deterministic candidate，禁止自动晋升；正式 warning/semantic baseline 必须绑定确认记录/evidence hash，并由新的 immutable action 复验 | 08-28 |
 | D27 | **截断的 PLE warning population 永不允许成为正式 baseline**；Broker、Stage 1、Stage 2 与 evidence sealer 均以 `PLE_WARNING_OUTPUT_TRUNCATED` 失败关闭 | 08-28 |
 | D28 | **所有可批准证据必须同字节校验并有界读取**；AI candidate/triage 不能充当独立人审，semantic snapshot 必须在最终 REST 读取后再次证明工程 clean/stable | 08-28 |
 | D29 | **普通 `application.build()` 不是语义重建证明**；正式 baseline 必须使用独立 `clean_compile_project`（恰好一次 clean + 一次 build），warning-limit REST PUT 后必须关闭不保存并重开 | 08-28 |
 | D30 | **Runner 的正式编译证据必须来自 Broker 受控的 `clean_compile_project`**；手工隔离 Clean Build 只关闭技术完整性门禁，不能替代新的 immutable action/candidate 或独立人工 baseline 审阅 | 08-28 |
 | D31 | **Adapter 与 Broker acceptance 的证据 schema 必须作为一个版本化合同同步演进**；source 字面量、新增证明字段和上限都要有真实 action 与故障注入回归，旧 action 失败后只能由新 Export/action 验证修复 | 08-28 |
+| D32 | **baseline 不采集个人身份**；删除 reviewer 姓名/工号，改为 `confirmedByUser: true`，机器自动生成 reviewId/time/path/SHA；仍保留独立确认记录、漂移检测和新 action 复验 | 08-28 |
 
 ## 待办 / 下一步
 
 1. 新项目使用统一初始化器创建 AI 旁车；用户继续在 CpStudio 维护模型/标准对象/HMI，AI 维护 ownership 声明的 PLC 增量；
 2. warning-limit、Clean Build、adapter/Broker schema 与真实 candidate 生成均已通过；当前 candidates 来自 request `cb1af562-25e6-4523-b2d8-037751d9433d`，禁止复用旧 action 或自动晋升；
-3. 用户独立审阅 4 条完整 warning、456 条 mapping（特别是 18 个 unbound）和 Symbol summary，创建绑定独立审阅证据的正式 baseline，再以新的 Export/immutable action 复验；完成前不扩展写工程 action；
+3. 用户确认的正式 warning/semantic baselines 已按无个人身份合同建立；下一步以新的正常 Export/immutable action 复验，完成前不扩展写工程 action；
 4. 继续用已配置的真实 CpStudio Post-export hook 验证 Stage 1/Stage 2/Runner 闭环，任何 baseline 或 scope 漂移都必须新建 action；
 5. 按 `docs/mcp_productization_roadmap.md` 继续通用健康检查、结构化编译和 change set；`apply_change_set_and_build` 在 payload/readback/恢复门禁完成前保持关闭；
 6. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；

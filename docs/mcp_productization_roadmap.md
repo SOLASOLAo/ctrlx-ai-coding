@@ -9,7 +9,7 @@
 3. HMI 产品化；
 4. 商业交付。
 
-本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client、P1.2b Broker、受控 adapter、typed warning 与 semantic snapshot 的真实 PLE 技术通道已跑通。隔离 warning-limit REST 事务和显式 `clean_compile_project` 已实现并安装；可丢弃隔离副本的 `<no limit>` 保存—重开—连续两次 Clean Build 已取得一致且完整的 0 errors / 4 warnings，Broker/evidence 集成和全部 PowerShell 7 离线回归也已通过。两次新的真实 Export action 又暴露并修复了 Symbol 多阶段重建和 raw mapping 表示噪声造成的稳定性误判。生产闭环仍需由下一次真实 Export 取得 semantic candidate、完成人工 baseline 审阅与正式绑定，并用新的 immutable action 复验。
+本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client、P1.2b Broker、受控 adapter、typed warning 与 semantic snapshot 的真实 PLE 技术通道已跑通。隔离 warning-limit REST 事务和显式 `clean_compile_project` 已实现并安装；可丢弃隔离副本的 `<no limit>` 保存—重开—连续两次 Clean Build 已取得一致且完整的 0 errors / 4 warnings，Broker/evidence 集成和全部 PowerShell 7 离线回归也已通过。后续真实 Export action 暴露并修复了 Symbol 多阶段重建、raw mapping 表示噪声及 adapter/Broker schema 漂移；完整 warning/semantic candidates 已生成，项目负责人已确认 18 个 unbound 当前不用、4 条 warning 暂不处理，正式 baseline 也已通过无个人身份的单次确认工具建立。当前只剩新的正常 Export/immutable action 复验。
 
 `codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2b 由交互用户会话中的唯一 Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次 action 都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
 
@@ -39,11 +39,11 @@
   persistent session + exact project 核验 → 前指纹 → 单次 `clean_compile_project` 的同次结构化
   summary（含 correlation token、时间与 preflight）→ session/project 再核验 → 后指纹
   稳定性检查 → terminal observation。缓存型 `get_compile_messages` 不参与 fresh 成功
-  判定。缺少经人工审阅的 warning/semantic baseline 时返回对应 bootstrap `BLOCKED`；
+  判定。缺少经用户明确确认的 warning/semantic baseline 时返回对应 bootstrap `BLOCKED`；
   检测到 PLE 告警输出截断时以 `PLE_WARNING_OUTPUT_TRUNCATED` 失败关闭。
   无 generic MCP surface，也无在线命令。
-- 提交前独立审查加固已完成：人审证据只能来自 `docs/reviews/` 下的独立文档，AI
-  candidate/triage 及改名副本不得作为 review；review/scope/baseline 均用同一有界
+- 提交前确认链加固已完成：确认证据只能来自 `docs/reviews/` 下的独立文档，AI
+  candidate/triage 及改名副本不得作为 confirmation；review/scope/baseline 均用同一有界
   bytes 完成校验、SHA 与解析；semantic adapter 在最多 4 次 Symbol 有界收敛后执行三组
   Mapping/Symbol 交叉权威读取，mapping 只比较最终封存的语义投影，并在全部 REST 读取后
   执行最终 Mapping/dirty guard；REST body 使用 30 s 全程 timeout + 8 MiB streaming cap。
@@ -52,13 +52,13 @@
   Broker/evidence 的显式 Clean Build 集成以及 Runner/Broker/Engineering/Stage/evidence/
   candidate/initializer 离线回归均已在 PowerShell 7 下通过。另有一次
   真实 Station010 PLE 离线 action 完成 0 errors / 101 条可见 warnings 与 456 条 mapping
-  facts 采集，PLC/结构哈希前后不变；它因缺少人工 baseline 正确停在 `BLOCKED`。
+  facts 采集，PLC/结构哈希前后不变；它因缺少用户确认 baseline 正确停在 `BLOCKED`。
   该历史 warning candidate 含 `PLE_WARNING_OUTPUT_TRUNCATED`，不能直接批准为正式
   baseline。隔离副本连续两次显式 Clean Build 已取得相同的完整 0 errors / 4 条
   `OPC.UA.DA` warning。后续两次真实 Export action 均再次取得完整 0 errors / 4 warnings；
-  warning candidate 已生成，但 semantic candidate 因适配器稳定性失败尚未生成。修复后的
-  semantic adapter 已通过离线回归和全局安装检查，仍需另一次真实 Export action 验证；
-  人工 baseline 也尚未建立。这不表示仿真、下载或真机已验收。
+  warning candidate 已生成；修复后的 semantic adapter 与 Broker 合同已通过另一次真实
+  Export action，完整 semantic candidate 也已生成。用户确认与正式 baseline 已完成，
+  仅后续新的正常 Export/action 复验仍待收口。这不表示仿真、下载或真机已验收。
 - Runner 的 protocol v2 timeout fixture 通过 submit/query 明确握手并由客户端 3 秒
   deadline 决定 pending，不再依赖 250 ms 调度窗口。Broker atomic JSON 仅对 Windows
   access/sharing/lock violation 做 6 次、总计约 230 ms 的有界短重试；耗尽后仍抛出，
@@ -229,7 +229,7 @@ P1.2b Broker 已固定使用一次 `clean_compile_project`，只接受该次调�
 summary，并校验 Clean/Build 各一次、correlation、preflight/postflight、session/project、
 完整 typed warning 与前后指纹；缓存型 `get_compile_messages` 只可作人工补充显示，不能
 证明 fresh Build。这里定义的通用 `compile_project_v2` 多模式产品接口仍未完成；当前
-Clean Build 合同尚待新的正式 immutable Station010 action/candidate 和人工 baseline 复验。
+Clean Build 合同及正式 baseline 已建立，尚待新的 immutable Station010 action 复验。
 
 验收标准：
 

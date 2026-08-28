@@ -820,7 +820,7 @@ $candidate = [ordered]@{
     review = [ordered]@{
         state = 'pending-human-review'
         automaticPromotionAllowed = $false
-        requiredHumanInputs = @('reviewId', 'reviewer', 'reviewedAtUtc', 'independentEvidencePath', 'independentEvidenceSha256')
+        requiredUserInputs = @('confirmedByUser')
         targetBaselinePath = 'config/engineering-semantic-baseline.json'
     }
 }
