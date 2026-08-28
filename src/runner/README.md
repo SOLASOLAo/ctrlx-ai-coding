@@ -28,7 +28,8 @@ interactive Broker for Runner P1.2.
   `UNKNOWN_REVIEW_REQUIRED` rather than being repeated automatically.
 
 The fixed offline engineering sequence is: verify the persistent session and
-exact open project; capture project file/structure fingerprints; call
+exact open project; capture project file/structure fingerprints; create and
+read back an immutable, current-user local, content-addressed project checkpoint; call
 `clean_compile_project` once; require its same-call structured summary (including a
 correlation token, timestamps, exactly one Clean plus one Build, exact
 contract/producer/adapter identity, project identity and dirty-state proofs
@@ -43,6 +44,11 @@ one byte buffer for SHA-256 plus JSON parsing. Missing or incomplete proof,
 including PLE warning truncation, terminates as a stable `BLOCKED` reason rather
 than a fabricated success. The sequence contains no connect, download, runtime
 start/stop, variable write or FORCE operation.
+
+The checkpoint is created before Build under the Broker identity root and keyed
+by the PLC project SHA-256. An existing exact blob is reused; a corrupt blob or
+source drift blocks the action before Build and is never repaired by overwrite.
+It is a same-user local recovery artifact, not a Git commit or cross-machine backup.
 
 As of 2026-08-28 the globally installed adapter matches the controlled patch.
 A disposable same-byte copy survived save/reopen with an unlimited warning

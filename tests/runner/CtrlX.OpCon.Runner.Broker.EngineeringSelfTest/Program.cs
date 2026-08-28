@@ -1,10 +1,10 @@
-using System.Diagnostics;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using CtrlX.OpCon.Runner.Broker;
+using CtrlX.OpCon.Runner.Broker.Infrastructure;
 using CtrlX.OpCon.Runner.Broker.Mcp;
 using CtrlX.OpCon.Runner.Broker.Session;
 using CtrlX.OpCon.Runner.Core;
@@ -27,7 +27,8 @@ internal static class Program
             ("external project mismatch is not altered or shut down", ExternalProjectMismatchIsRejectedAsync),
             ("owned PLE shutdown failure propagates after MCP cleanup", OwnedPleShutdownFailurePropagatesAsync),
             ("transient project structure loading is retried", TransientProjectStructureLoadingIsRetriedAsync),
-            ("fresh Build plus all independent semantic proofs succeeds", CompleteSemanticEvidenceSucceedsAsync),
+            ("fresh Build creates a verified local checkpoint before compile", CompleteSemanticEvidenceSucceedsAsync),
+            ("identical project SHA reuses one immutable checkpoint", IdenticalCheckpointIsReusedAsync),
             ("warning baseline requires explicit user confirmation", WarningReviewRequiresExplicitConfirmationAsync),
             ("semantic baseline confirmation must be Boolean true", SemanticReviewConfirmationTypeIsStrictAsync),
             ("missing reviewed semantic baseline still snapshots then blocks", SemanticBootstrapCollectsThenBlocksAsync),
@@ -54,7 +55,7 @@ internal static class Program
             ("unknown mapping record field is rejected", UnknownMappingFieldBlocksAsync),
             ("root connector parameter with empty device index is valid", RootConnectorParameterIsValidAsync),
             ("ownership manifest drift cannot be accepted", OwnershipDriftBlocksAsync),
-            ("PLC bytes outside exact Git HEAD cannot be accepted", RecoverableBaselineDriftBlocksAsync),
+            ("corrupt existing checkpoint blocks before Build", CorruptCheckpointBlocksBeforeBuildAsync),
             ("fresh 0/0 Build without adapter evidence stays blocked", FreshZeroBuildStaysBlockedAsync),
             ("clean Build errors produce a failed terminal result", BuildErrorsProduceFailedOutcomeAsync),
             ("clean Build isError must match its error count", BuildToolStatusMustMatchErrorCountAsync),
@@ -266,7 +267,12 @@ internal static class Program
     {
         using var fixture = new Fixture();
         var rpc = ExecutionRpc(fixture, "semantic-success");
-        rpc.CompileResponseFactory = () => FreshCompile(fixture.ProjectPath);
+        var checkpointWasReadyBeforeBuild = false;
+        rpc.CompileResponseFactory = () =>
+        {
+            checkpointWasReadyBeforeBuild = fixture.CheckpointIsExact();
+            return FreshCompile(fixture.ProjectPath);
+        };
         rpc.SemanticResponseFactory = () => fixture.CreateSemanticSnapshot();
         await using var session = new BrokerEngineeringSession(rpc, fixture.Options);
         var runtime = await session.StartAsync(CancellationToken.None).ConfigureAwait(false);
@@ -278,6 +284,8 @@ internal static class Program
 
         Require(outcome.TerminalState == "SUCCEEDED" && outcome.ReasonCode == "BUILD_AND_SEMANTICS_VERIFIED",
             "Complete, matching evidence must be able to succeed.");
+        Require(checkpointWasReadyBeforeBuild,
+            "The exact content-addressed PLC checkpoint must exist before clean_compile_project starts.");
         Require(rpc.Count("get_ctrlx_semantic_snapshot") == 1,
             "Semantic snapshot must be called exactly once after the fresh Build.");
         var result = outcome.Observation["result"] as JsonObject
@@ -292,6 +300,35 @@ internal static class Program
         {
             Require(proofs[name]?["verified"]?.GetValue<bool>() == true, $"Proof {name} was not verified.");
         }
+
+        Require(proofs["recoverableBaseline"]?["producer"]?.GetValue<string>() ==
+                "runner.local-content-addressed-checkpoint" &&
+                proofs["recoverableBaseline"]?["scope"]?.GetValue<string>() == "current-user-local-machine",
+            "Recoverability must come from the current-user local content-addressed checkpoint, not Git HEAD.");
+    }
+
+    private static Task IdenticalCheckpointIsReusedAsync()
+    {
+        using var fixture = new Fixture();
+        var store = fixture.CreateCheckpointStore();
+        var sha = RunnerHash.Sha256File(fixture.ProjectPath);
+        var length = new FileInfo(fixture.ProjectPath).Length;
+
+        var first = store.Ensure(fixture.ProjectPath, sha, length);
+        var checkpointPath = fixture.CheckpointPath(sha);
+        var firstWriteTime = File.GetLastWriteTimeUtc(checkpointPath);
+        var second = store.Ensure(fixture.ProjectPath, sha, length);
+
+        Require(first.CreatedNow && !second.CreatedNow,
+            "The first call must create the checkpoint and the second must reuse it.");
+        Require(first.CheckpointId == second.CheckpointId &&
+                first.RelativePath == second.RelativePath &&
+                File.GetLastWriteTimeUtc(checkpointPath) == firstWriteTime,
+            "Reusing an identical checkpoint must not rewrite or duplicate it.");
+        Require(Directory.EnumerateFiles(fixture.CheckpointRoot, "*.project", SearchOption.AllDirectories).Count() == 1 &&
+                !Directory.EnumerateFiles(fixture.CheckpointRoot, "*.tmp", SearchOption.AllDirectories).Any(),
+            "Content addressing must leave one immutable project blob and no temp files.");
+        return Task.CompletedTask;
     }
 
     private static async Task TransientProjectStructureLoadingIsRetriedAsync()
@@ -916,11 +953,14 @@ internal static class Program
             "Maximum-combination fallback did not round-trip through the real Broker codec.");
     }
 
-    private static async Task RecoverableBaselineDriftBlocksAsync()
+    private static async Task CorruptCheckpointBlocksBeforeBuildAsync()
     {
         using var fixture = new Fixture();
-        File.WriteAllText(fixture.ProjectPath, "fixture-not-at-head");
-        var rpc = ExecutionRpc(fixture, "git-drift");
+        var store = fixture.CreateCheckpointStore();
+        var sha = RunnerHash.Sha256File(fixture.ProjectPath);
+        _ = store.Ensure(fixture.ProjectPath, sha, new FileInfo(fixture.ProjectPath).Length);
+        File.WriteAllText(fixture.CheckpointPath(sha), "corrupt");
+        var rpc = ExecutionRpc(fixture, "checkpoint-corrupt");
         rpc.CompileResponseFactory = () => FreshCompile(fixture.ProjectPath);
         rpc.SemanticResponseFactory = () => fixture.CreateSemanticSnapshot();
         await using var session = new BrokerEngineeringSession(rpc, fixture.Options);
@@ -929,9 +969,11 @@ internal static class Program
         var outcome = await session.ExecuteAsync(
             fixture.CreateAction("inspect_and_build"), runtime, CancellationToken.None).ConfigureAwait(false);
 
-        Require(outcome.TerminalState == "BLOCKED" && outcome.ReasonCode == "RECOVERABLE_BASELINE_NOT_AT_HEAD" &&
-            outcome.Observation["result"]?["semanticProofs"]?["recoverableBaseline"]?["verified"]?.GetValue<bool>() == false,
-            "Working PLC bytes that differ from Git HEAD must block acceptance.");
+        Require(outcome.TerminalState == "BLOCKED" &&
+                outcome.ReasonCode == "RECOVERABLE_CHECKPOINT_CORRUPT" &&
+                rpc.Count("clean_compile_project") == 0 &&
+                rpc.Count("get_ctrlx_semantic_snapshot") == 0,
+            "A corrupt immutable checkpoint must block before Build and must never be overwritten.");
     }
 
     private static FakeRpc ExecutionRpc(Fixture fixture, string sessionId) => FakeRpc.WithStatuses(
@@ -1338,6 +1380,7 @@ internal sealed class Fixture : IDisposable
     {
         EngineeringRoot = Path.Combine(root, "engineering");
         StationRoot = Path.Combine(root, "station");
+        CheckpointRoot = Path.Combine(root, "local-checkpoints");
         Directory.CreateDirectory(EngineeringRoot);
         Directory.CreateDirectory(StationRoot);
         ProjectPath = Path.Combine(StationRoot, "fixture.project");
@@ -1403,12 +1446,6 @@ internal sealed class Fixture : IDisposable
                 RunnerHash.Sha256File(semanticEvidencePath))
         });
 
-        RunGit("init", "--quiet");
-        RunGit("config", "user.email", "runner-selftest@example.invalid");
-        RunGit("config", "user.name", "Runner SelfTest");
-        RunGit("add", "fixture.project");
-        RunGit("commit", "--quiet", "-m", "fixture baseline");
-
         Options = new BrokerHostOptions
         {
             EngineeringRoot = EngineeringRoot,
@@ -1422,7 +1459,8 @@ internal sealed class Fixture : IDisposable
             },
             SessionStartupTimeout = TimeSpan.FromSeconds(10),
             StatusTimeout = TimeSpan.FromSeconds(1),
-            BuildTimeout = TimeSpan.FromMinutes(17)
+            BuildTimeout = TimeSpan.FromMinutes(17),
+            ProjectCheckpointRoot = CheckpointRoot
         };
     }
 
@@ -1430,11 +1468,30 @@ internal sealed class Fixture : IDisposable
 
     public string StationRoot { get; }
 
+    public string CheckpointRoot { get; }
+
     public string ProjectPath { get; }
 
     public string OwnershipPath { get; }
 
     public BrokerHostOptions Options { get; }
+
+    public BrokerProjectCheckpointStore CreateCheckpointStore()
+    {
+        var paths = new BrokerRuntimePaths(EngineeringRoot, StationRoot, Options.Profile, ProjectPath);
+        return new BrokerProjectCheckpointStore(CheckpointRoot, paths.IdentityKey);
+    }
+
+    public string CheckpointPath(string sha256) => CreateCheckpointStore().CheckpointPath(sha256);
+
+    public bool CheckpointIsExact()
+    {
+        var sha = RunnerHash.Sha256File(ProjectPath);
+        var checkpoint = CheckpointPath(sha);
+        return File.Exists(checkpoint) &&
+            new FileInfo(checkpoint).Length == new FileInfo(ProjectPath).Length &&
+            RunnerHash.Sha256File(checkpoint).Equals(sha, StringComparison.OrdinalIgnoreCase);
+    }
 
     public void AtomicSwapWarningBaseline(string content)
     {
@@ -1889,37 +1946,6 @@ internal sealed class Fixture : IDisposable
 
     private static void WriteJson(string path, JsonObject value) =>
         File.WriteAllText(path, value.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-
-    private void RunGit(params string[] arguments)
-    {
-        using var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "git",
-                WorkingDirectory = StationRoot,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            }
-        };
-        foreach (var argument in arguments)
-        {
-            process.StartInfo.ArgumentList.Add(argument);
-        }
-
-        if (!process.Start())
-        {
-            throw new InvalidOperationException("Self-test git process did not start.");
-        }
-
-        process.WaitForExit();
-        if (process.ExitCode != 0)
-        {
-            throw new InvalidOperationException($"Self-test git failed: {process.StandardError.ReadToEnd()}");
-        }
-    }
 
     public void Dispose()
     {

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -6,6 +5,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using CtrlX.OpCon.Runner.Broker.Infrastructure;
 using CtrlX.OpCon.Runner.Core;
 
 namespace CtrlX.OpCon.Runner.Broker.Session;
@@ -185,16 +185,16 @@ internal static class BrokerSemanticAcceptance
         }
     }
 
-    public static async Task<BrokerSemanticProduction> ProduceAsync(
+    public static BrokerSemanticProduction Produce(
         ValidatedRunnerAction action,
         BrokerProjectProofState before,
         BrokerProjectProofState after,
+        BrokerProjectCheckpointProof checkpoint,
         BrokerCompileProofState build,
         BrokerSemanticSnapshotPlan snapshotPlan,
         string? semanticSnapshotText,
         bool semanticSnapshotIsError,
-        DateTimeOffset receivedAtUtc,
-        CancellationToken cancellationToken)
+        DateTimeOffset receivedAtUtc)
     {
         ArgumentNullException.ThrowIfNull(action);
         var diagnostics = new List<string>();
@@ -220,8 +220,7 @@ internal static class BrokerSemanticAcceptance
         var readback = ProduceReadback(before, after, diagnostics);
         proofs["readback"] = readback;
 
-        var recoverable = await ProduceRecoverableBaselineAsync(action, after, diagnostics, cancellationToken)
-            .ConfigureAwait(false);
+        var recoverable = ProduceRecoverableBaseline(after, checkpoint, diagnostics);
         proofs["recoverableBaseline"] = recoverable;
 
         JsonObject warnings;
@@ -466,77 +465,48 @@ internal static class BrokerSemanticAcceptance
         };
     }
 
-    private static async Task<JsonObject> ProduceRecoverableBaselineAsync(
-        ValidatedRunnerAction action,
+    private static JsonObject ProduceRecoverableBaseline(
         BrokerProjectProofState project,
-        ICollection<string> diagnostics,
-        CancellationToken cancellationToken)
+        BrokerProjectCheckpointProof checkpoint,
+        ICollection<string> diagnostics)
     {
-        try
+        const string producer = "runner.local-content-addressed-checkpoint";
+        var expectedId = $"sha256:{project.ProjectSha256.ToLowerInvariant()}";
+        var verified = checkpoint.Verified &&
+            checkpoint.ProjectSha256.Equals(project.ProjectSha256, StringComparison.OrdinalIgnoreCase) &&
+            checkpoint.CheckpointSha256.Equals(project.ProjectSha256, StringComparison.OrdinalIgnoreCase) &&
+            checkpoint.Length == project.Length &&
+            checkpoint.CheckpointId.Equals(expectedId, StringComparison.Ordinal);
+        if (!verified)
         {
-            var repositoryRoot = Path.GetFullPath((await RunGitAsync(
-                    action.StationRoot,
-                    cancellationToken,
-                    "rev-parse",
-                    "--show-toplevel")
-                .ConfigureAwait(false)).Trim());
-            _ = EnsureInside(repositoryRoot, action.PlcProject, "PLC project Git path");
-            var relativeProject = Path.GetRelativePath(repositoryRoot, action.PlcProject).Replace('\\', '/');
-            if (relativeProject.StartsWith("../", StringComparison.Ordinal) || relativeProject == "..")
-            {
-                throw new SemanticProofException(
-                    "RECOVERABLE_BASELINE_PROJECT_OUTSIDE_REPOSITORY",
-                    "PLC project is outside the Station Git repository.");
-            }
-
-            var headCommit = (await RunGitAsync(
-                    repositoryRoot,
-                    cancellationToken,
-                    "rev-parse",
-                    "HEAD")
-                .ConfigureAwait(false)).Trim();
-            var headBlob = (await RunGitAsync(
-                    repositoryRoot,
-                    cancellationToken,
-                    "rev-parse",
-                    $"HEAD:{relativeProject}")
-                .ConfigureAwait(false)).Trim();
-            var workingBlob = (await RunGitAsync(
-                    repositoryRoot,
-                    cancellationToken,
-                    "hash-object",
-                    "--",
-                    action.PlcProject)
-                .ConfigureAwait(false)).Trim();
-            if (!IsGitObjectId(headCommit) || !IsGitObjectId(headBlob) || !IsGitObjectId(workingBlob) ||
-                !headBlob.Equals(workingBlob, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new SemanticProofException(
-                    "RECOVERABLE_BASELINE_NOT_AT_HEAD",
-                    "Current PLC project bytes are not the exact blob stored at Git HEAD.");
-            }
-
-            return new JsonObject
-            {
-                ["producer"] = "runner.git-head-baseline",
-                ["contractVersion"] = 1,
-                ["verified"] = true,
-                ["repositoryRoot"] = repositoryRoot,
-                ["headCommit"] = headCommit,
-                ["projectRelativePath"] = relativeProject,
-                ["headBlobObjectId"] = headBlob,
-                ["workingBlobObjectId"] = workingBlob,
-                ["projectSha256"] = project.ProjectSha256
-            };
-        }
-        catch (Exception exception) when (exception is SemanticProofException or IOException or UnauthorizedAccessException)
-        {
-            var reason = exception is SemanticProofException semantic
-                ? semantic.ReasonCode
-                : "RECOVERABLE_BASELINE_GIT_UNAVAILABLE";
+            var reason = IsSafeIdentifier(checkpoint.FailureReason ?? string.Empty)
+                ? checkpoint.FailureReason!
+                : "RECOVERABLE_CHECKPOINT_PROOF_INVALID";
             diagnostics.Add($"recoverable-baseline:{reason}");
-            return UnverifiedProof("runner.git-head-baseline", reason);
+            var unverified = UnverifiedProof(producer, reason);
+            unverified["scope"] = "current-user-local-machine";
+            unverified["checkpointId"] = checkpoint.CheckpointId;
+            unverified["projectSha256"] = project.ProjectSha256;
+            return unverified;
         }
+
+        return new JsonObject
+        {
+            ["producer"] = producer,
+            ["contractVersion"] = 1,
+            ["verified"] = true,
+            ["scope"] = "current-user-local-machine",
+            ["identityKey"] = checkpoint.IdentityKey,
+            ["checkpointId"] = checkpoint.CheckpointId,
+            ["checkpointRelativePath"] = checkpoint.RelativePath,
+            ["projectSha256"] = project.ProjectSha256,
+            ["checkpointSha256"] = checkpoint.CheckpointSha256,
+            ["sizeBytes"] = checkpoint.Length,
+            ["sourceSnapshotStage"] = "pre-build",
+            ["createdNow"] = checkpoint.CreatedNow,
+            ["atomicWriteVerified"] = checkpoint.AtomicWriteVerified,
+            ["readbackVerified"] = checkpoint.ReadbackVerified
+        };
     }
 
     private static JsonObject ProduceWarningReview(
@@ -1823,81 +1793,6 @@ internal static class BrokerSemanticAcceptance
         };
     }
 
-    private static async Task<string> RunGitAsync(
-        string workingDirectory,
-        CancellationToken cancellationToken,
-        params string[] arguments)
-    {
-        using var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "git",
-                WorkingDirectory = workingDirectory,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            }
-        };
-        process.StartInfo.ArgumentList.Add("-C");
-        process.StartInfo.ArgumentList.Add(workingDirectory);
-        foreach (var argument in arguments)
-        {
-            process.StartInfo.ArgumentList.Add(argument);
-        }
-
-        try
-        {
-            if (!process.Start())
-            {
-                throw new IOException("git process did not start.");
-            }
-        }
-        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
-        {
-            throw new SemanticProofException(
-                "RECOVERABLE_BASELINE_GIT_UNAVAILABLE",
-                "Git is unavailable for recoverable-baseline proof.",
-                exception);
-        }
-
-        var standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var standardError = process.StandardError.ReadToEndAsync(cancellationToken);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(10));
-        try
-        {
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                process.Kill(entireProcessTree: true);
-            }
-            catch (InvalidOperationException)
-            {
-                // The bounded command exited while the timeout was being handled.
-            }
-
-            throw new SemanticProofException(
-                "RECOVERABLE_BASELINE_GIT_TIMEOUT",
-                "Git recoverable-baseline proof exceeded its bounded timeout.");
-        }
-
-        var output = await standardOutput.ConfigureAwait(false);
-        var error = await standardError.ConfigureAwait(false);
-        if (process.ExitCode != 0)
-        {
-            throw new SemanticProofException(
-                "RECOVERABLE_BASELINE_GIT_FAILED",
-                $"Git recoverable-baseline check failed with exit code {process.ExitCode}: {TrimDiagnostic(error)}");
-        }
-
-        return output;
-    }
-
     private static JsonObject UnverifiedProof(string producer, string reasonCode) => new()
     {
         ["producer"] = producer,
@@ -2277,9 +2172,6 @@ internal static class BrokerSemanticAcceptance
     private static bool IsSafeIdentifier(string value) =>
         value.Length is > 0 and <= 128 && value.All(character =>
             char.IsAsciiLetterOrDigit(character) || character is '_' or '.' or '-');
-
-    private static bool IsGitObjectId(string value) =>
-        value.Length is 40 or 64 && value.All(Uri.IsHexDigit);
 
     private static bool SamePath(string left, string right)
     {

@@ -327,6 +327,14 @@
 - 新真实 request `aadf8692-07e0-4862-b525-5dcfd0b78fb0` 的 action 完成 Clean Build **0 errors / 4 warnings**，456 mapping、Symbol 和正式 baseline 全部匹配，工程与结构 SHA 前后不变且无在线操作。
 - action 仅因 `RECOVERABLE_BASELINE_NOT_AT_HEAD` 阻断。当前 Git-blob 证明与 D8 的 `.project` 不入库规则冲突；禁止为变绿而提交二进制或删除门禁，下一步改为可验证、可恢复且不入 Git 的最小合同后再执行新 action。
 
+## 2026-08-28 本机 checkpoint 与 P1.2 最终验收
+
+- recoverable-baseline 已改为 Build 前本机内容寻址 checkpoint。Broker 在有效的工程文件/结构前快照之后、`clean_compile_project` 之前，按当前用户、工程 identity 与 PLC SHA-256 创建不可变 `.project` blob；同 SHA 精确复用，损坏 blob 不覆盖，源工程漂移或 checkpoint 校验失败时 Build 次数保持 0。
+- Broker、Engineering、Runner、项目框架和新项目初始化器回归均通过；生产路径不依赖 Git HEAD、不提交 `.project`，也不自动恢复。恢复范围明确为 `current-user-local-machine`。
+- 精确消费新的 CpStudio request `839ff68c-6ac8-4764-8258-7cef4aa10406` 并执行全新 immutable action `cpstudio-stage2-839ff68c-6ac8-4764-8258-7cef4aa10406-282dae08-0001`。Clean Build 为 **0 errors / 4 warnings**，456 mapping、Symbol 和正式 warning/semantic baseline 全部匹配；PLC/结构哈希前后不变。
+- checkpoint 为 1,991,792 bytes，SHA-256 `8274453076502750908CFC72353EB925A0504805F84B73E28DCD2FCCB18C79FD`，与 action 前后的 PLC 工程一致。operation revision 2 最终为 `DONE`，不要求 Export #2 或修复。
+- 全程无 connect、download、runtime start/stop、变量写入、FORCE、第二 PLE 或 `Std` 修改；Broker/PLE 已关闭且无 `.~u`。P1.2 至此完成，后续进入 P1.3 Windows Runner Host。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |
@@ -361,13 +369,14 @@
 | D31 | **Adapter 与 Broker acceptance 的证据 schema 必须作为一个版本化合同同步演进**；source 字面量、新增证明字段和上限都要有真实 action 与故障注入回归，旧 action 失败后只能由新 Export/action 验证修复 | 08-28 |
 | D32 | **baseline 不采集个人身份**；删除 reviewer 姓名/工号，改为 `confirmedByUser: true`，机器自动生成 reviewId/time/path/SHA；仍保留独立确认记录、漂移检测和新 action 复验 | 08-28 |
 | D33 | **工程树瞬时未就绪只做窄范围有界重试**；有效前快照前禁止 Build，终态 action 不自动重放；recoverable baseline 不得靠提交 `.project` 二进制绕过 | 08-28 |
+| D34 | **recoverable baseline 使用 Build 前本机内容寻址 checkpoint**；范围是当前用户/本机，同 SHA 复用、损坏不覆盖、源漂移在 Build 前失败关闭，不再要求 Git HEAD 包含 `.project` | 08-28 |
 
 ## 待办 / 下一步
 
 1. 新项目使用统一初始化器创建 AI 旁车；用户继续在 CpStudio 维护模型/标准对象/HMI，AI 维护 ownership 声明的 PLC 增量；
 2. warning-limit、Clean Build、adapter/Broker schema 与真实 candidate 生成均已通过；当前 candidates 来自 request `cb1af562-25e6-4523-b2d8-037751d9433d`，禁止复用旧 action 或自动晋升；
-3. 用户确认的正式 warning/semantic baselines 已验证通过；当前只处理 `RECOVERABLE_BASELINE_NOT_AT_HEAD` 与 `.project` 不入库规则的合同冲突，完成前不扩展写工程 action；
-4. 继续用已配置的真实 CpStudio Post-export hook 验证 Stage 1/Stage 2/Runner 闭环，任何 baseline 或 scope 漂移都必须新建 action；
+3. 正式 warning/semantic baselines、本机内容寻址 checkpoint 与全新 immutable action 均已验证；P1.2 已关闭，写工程 action 仍保持未开放；
+4. 继续用已配置的真实 CpStudio Post-export hook 处理后续变更；任何 baseline 或 scope 漂移都必须新建 action；
 5. 按 `docs/mcp_productization_roadmap.md` 继续通用健康检查、结构化编译和 change set；`apply_change_set_and_build` 在 payload/readback/恢复门禁完成前保持关闭；
 6. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；
 7. **路线④**:开发机已就绪,P0~P2 完成(继承 PreemptRt);执行转入 **FreePLCDemo**(v4 安装 → P4 集成);

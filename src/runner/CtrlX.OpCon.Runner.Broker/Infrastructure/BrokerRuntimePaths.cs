@@ -42,6 +42,7 @@ public sealed class BrokerRuntimePaths
         RegistrationRoot = Path.GetDirectoryName(RegistrationPath)
             ?? throw new BrokerInfrastructureException("BROKER_REGISTRATION_PATH_INVALID", "Broker registration path has no parent directory.");
         OperationsRoot = Path.Combine(IdentityRoot, "operations");
+        ProjectCheckpointsRoot = Path.Combine(IdentityRoot, "checkpoints", "plc-projects");
     }
 
     public string EngineeringRoot { get; }
@@ -67,6 +68,8 @@ public sealed class BrokerRuntimePaths
     public string RegistrationPath { get; }
 
     public string OperationsRoot { get; }
+
+    public string ProjectCheckpointsRoot { get; }
 
     public void EnsureCreated()
     {

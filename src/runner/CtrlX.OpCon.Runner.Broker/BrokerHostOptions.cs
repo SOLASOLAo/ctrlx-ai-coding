@@ -26,6 +26,10 @@ public sealed record BrokerHostOptions
 
     public TimeSpan BuildTimeout { get; init; } = TimeSpan.FromMinutes(20);
 
+    // Test seam only. Production always derives the current-user checkpoint
+    // root from BrokerRuntimePaths and never accepts it from an action/client.
+    internal string? ProjectCheckpointRoot { get; init; }
+
     public void Validate()
     {
         RequireDirectory(EngineeringRoot, nameof(EngineeringRoot));

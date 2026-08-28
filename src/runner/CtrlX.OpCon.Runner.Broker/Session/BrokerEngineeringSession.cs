@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using CtrlX.OpCon.Runner.Broker.Infrastructure;
 using CtrlX.OpCon.Runner.Broker.Mcp;
 using CtrlX.OpCon.Runner.Core;
 
@@ -62,6 +63,7 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
 
     private readonly IMcpRpcClient mcp;
     private readonly BrokerHostOptions options;
+    private readonly BrokerProjectCheckpointStore projectCheckpoints;
     private BrokerSessionRuntime? runtime;
     private bool ownsPle;
     private bool stopped;
@@ -71,6 +73,14 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
     {
         this.mcp = mcp ?? throw new ArgumentNullException(nameof(mcp));
         this.options = options ?? throw new ArgumentNullException(nameof(options));
+        var paths = new BrokerRuntimePaths(
+            options.EngineeringRoot,
+            options.StationRoot,
+            options.Profile,
+            options.PlcProject);
+        projectCheckpoints = new BrokerProjectCheckpointStore(
+            options.ProjectCheckpointRoot ?? paths.ProjectCheckpointsRoot,
+            paths.IdentityKey);
     }
 
     public async Task<BrokerSessionRuntime> StartAsync(CancellationToken cancellationToken)
@@ -214,6 +224,39 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
         ArgumentNullException.ThrowIfNull(action);
         ArgumentNullException.ThrowIfNull(expectedSession);
         var before = await CaptureProjectSnapshotAsync(action.PlcProject, cancellationToken).ConfigureAwait(false);
+        var capabilities = new List<string> { "get_codesys_status" };
+        BrokerProjectCheckpointProof checkpoint;
+        try
+        {
+            checkpoint = projectCheckpoints.Ensure(
+                action.PlcProject,
+                before.ProjectSha256,
+                before.Length);
+            projectCheckpoints.VerifySource(
+                action.PlcProject,
+                before.ProjectSha256,
+                before.Length);
+        }
+        catch (BrokerInfrastructureException exception)
+        {
+            var completedAtUtc = DateTimeOffset.UtcNow;
+            var observation = BrokerObservationBuilder.BlockedAfterEngineering(
+                action,
+                "recoverable-checkpoint",
+                exception.ReasonCode,
+                capabilities,
+                completedAtUtc,
+                ["No Build was started because the pre-Build local recovery checkpoint was not verified."]);
+            return BoundedOutcome(
+                action,
+                "BLOCKED",
+                exception.ReasonCode,
+                observation,
+                capabilities,
+                completedAtUtc);
+        }
+
+        capabilities.Add("clean_compile_project");
         var compileRequestedAtUtc = DateTimeOffset.UtcNow;
         var compile = await mcp.CallToolAsync(
             "clean_compile_project",
@@ -239,7 +282,6 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
 
         BrokerSemanticSnapshotPlan? semanticPlan = null;
         McpToolCallResult? semanticSnapshot = null;
-        var capabilities = new List<string> { "get_codesys_status", "clean_compile_project" };
         if (freshBuild is not null)
         {
             if (compile.IsError != (freshBuild.Errors > 0))
@@ -282,6 +324,20 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
             throw new BrokerEngineeringUncertainException(
                 "PROJECT_CHANGED_DURING_BUILD",
                 "PLC project or project structure changed while Build was running.");
+        }
+
+        BrokerProjectCheckpointProof verifiedCheckpoint;
+        try
+        {
+            verifiedCheckpoint = projectCheckpoints.Verify(checkpoint);
+        }
+        catch (BrokerInfrastructureException exception)
+        {
+            verifiedCheckpoint = checkpoint with
+            {
+                ReadbackVerified = false,
+                FailureReason = exception.ReasonCode
+            };
         }
 
         if (freshBuild is null)
@@ -338,7 +394,7 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
                 .Select(record => new BrokerCompileProofRecord(record.Severity, record.Text))
                 .ToArray(),
             freshBuild.DiagnosticRows);
-        var semantic = await BrokerSemanticAcceptance.ProduceAsync(
+        var semantic = BrokerSemanticAcceptance.Produce(
             action,
             new BrokerProjectProofState(
                 before.ProjectSha256,
@@ -350,12 +406,12 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
                 after.Length,
                 after.LastWriteTimeUtc,
                 after.StructureSha256),
+            verifiedCheckpoint,
             buildProof,
             semanticPlan,
             semanticSnapshot is null ? null : JoinText(semanticSnapshot.TextContent),
             semanticSnapshot?.IsError ?? false,
-            completedAt,
-            cancellationToken).ConfigureAwait(false);
+            completedAt);
         if (!semantic.Verified)
         {
             var observation = BrokerObservationBuilder.BlockedAfterEngineering(

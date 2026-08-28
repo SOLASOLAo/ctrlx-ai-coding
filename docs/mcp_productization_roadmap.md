@@ -36,7 +36,8 @@
   继续完成，但当前公开 Pipe contract 仅开放 submit/query；进程中断则进入
   `UNKNOWN_REVIEW_REQUIRED`，不自动重放 Build。
 - 当前 typed allowlist 仅有 `inspect_and_build` 与 `verify_after_export_2`；固定序列为
-  persistent session + exact project 核验 → 前指纹 → 单次 `clean_compile_project` 的同次结构化
+  persistent session + exact project 核验 → 前指纹 → Build 前本机内容寻址 checkpoint 创建及
+  回读 → 单次 `clean_compile_project` 的同次结构化
   summary（含 correlation token、时间与 preflight）→ session/project 再核验 → 后指纹
   稳定性检查 → terminal observation。缓存型 `get_compile_messages` 不参与 fresh 成功
   判定。缺少经用户明确确认的 warning/semantic baseline 时返回对应 bootstrap `BLOCKED`；
@@ -49,17 +50,12 @@
   执行最终 Mapping/dirty guard；REST body 使用 30 s 全程 timeout + 8 MiB streaming cap。
   畸形请求和 evidence/candidate 敏感扫描不会持久化或回显凭据；patcher 语法失败会回滚。
 - `apply_change_set_and_build` 继续返回 `BLOCKED_UNSUPPORTED_ACTION`。2026-08-28
-  Broker/evidence 的显式 Clean Build 集成以及 Runner/Broker/Engineering/Stage/evidence/
-  candidate/initializer 离线回归均已在 PowerShell 7 下通过。另有一次
-  真实 Station010 PLE 离线 action 完成 0 errors / 101 条可见 warnings 与 456 条 mapping
-  facts 采集，PLC/结构哈希前后不变；它因缺少用户确认 baseline 正确停在 `BLOCKED`。
-  该历史 warning candidate 含 `PLE_WARNING_OUTPUT_TRUNCATED`，不能直接批准为正式
-  baseline。隔离副本连续两次显式 Clean Build 已取得相同的完整 0 errors / 4 条
-  `OPC.UA.DA` warning。后续两次真实 Export action 均再次取得完整 0 errors / 4 warnings；
-  warning candidate 已生成；修复后的 semantic adapter 与 Broker 合同已通过另一次真实
-  Export action，完整 semantic candidate 也已生成。用户确认与正式 baseline 已完成；后续新 action
-  已验证 Build、warning、mapping 与 Symbol，但以 `RECOVERABLE_BASELINE_NOT_AT_HEAD` 关闭失败。
-  下一步须提供不提交 `.project` 二进制的最小恢复证明，再用新 action 收口。这不表示仿真、下载或真机已验收。
+  Broker/evidence 的显式 Clean Build、本机内容寻址 checkpoint 与正式 warning/semantic baseline
+  已完成。checkpoint 位于当前用户的 Broker identity 根下，以 PLC SHA-256 寻址；同 SHA 复用，
+  损坏或源漂移在 Build 前失败关闭，不提交 `.project`，也不宣称跨机器恢复。
+  request `839ff68c-6ac8-4764-8258-7cef4aa10406` 的全新 Station010 action 已取得
+  0 errors / 4 条完整 `OPC.UA.DA` warning，456 mapping、Symbol、baseline、checkpoint 与
+  工程/结构哈希全部验证通过。P1.2 离线 action 验收已关闭；这不表示仿真、下载或真机已验收。
 - Runner 的 protocol v2 timeout fixture 通过 submit/query 明确握手并由客户端 3 秒
   deadline 决定 pending，不再依赖 250 ms 调度窗口。Broker atomic JSON 仅对 Windows
   access/sharing/lock violation 做 6 次、总计约 230 ms 的有界短重试；耗尽后仍抛出，
@@ -230,7 +226,8 @@ P1.2b Broker 已固定使用一次 `clean_compile_project`，只接受该次调�
 summary，并校验 Clean/Build 各一次、correlation、preflight/postflight、session/project、
 完整 typed warning 与前后指纹；缓存型 `get_compile_messages` 只可作人工补充显示，不能
 证明 fresh Build。这里定义的通用 `compile_project_v2` 多模式产品接口仍未完成；当前
-Clean Build 合同及正式 baseline 已建立，尚待新的 immutable Station010 action 复验。
+Clean Build 合同、正式 baseline、Build 前 checkpoint 与新的 immutable Station010 action
+复验均已完成。
 
 验收标准：
 
