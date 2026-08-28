@@ -97,7 +97,9 @@ public sealed record RunnerExecutionResult(
     int ExitCode,
     string ResultPath,
     string? ObservationPath,
+    string? ObservationSha256,
     string? EvidencePath,
+    string? EvidenceSha256,
     bool Replayed)
 {
     public JsonObject ToJson() => new()
@@ -110,7 +112,9 @@ public sealed record RunnerExecutionResult(
         ["exitCode"] = ExitCode,
         ["resultPath"] = ResultPath,
         ["observationPath"] = ObservationPath,
+        ["observationSha256"] = ObservationSha256,
         ["evidencePath"] = EvidencePath,
+        ["evidenceSha256"] = EvidenceSha256,
         ["replayed"] = Replayed
     };
 }
@@ -397,6 +401,8 @@ internal static partial class RunnerValidation
 
 internal static class RunnerJson
 {
+    private const int MaximumJsonBytes = 8 * 1024 * 1024;
+
     public static readonly JsonSerializerOptions SerializerOptions = new()
     {
         WriteIndented = true,
@@ -405,9 +411,16 @@ internal static class RunnerJson
 
     public static JsonObject ReadObject(string path, string description)
     {
-        if (!File.Exists(path))
+        var info = new FileInfo(path);
+        if (!info.Exists)
         {
             throw new RunnerGateException("FILE_NOT_FOUND", $"{description} does not exist: {path}");
+        }
+        if (info.Length <= 0 || info.Length > MaximumJsonBytes)
+        {
+            throw new RunnerGateException(
+                "JSON_SIZE_INVALID",
+                $"{description} is empty or exceeds the {MaximumJsonBytes}-byte limit: {path}");
         }
 
         try

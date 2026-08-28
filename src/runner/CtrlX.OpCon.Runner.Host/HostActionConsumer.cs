@@ -43,19 +43,34 @@ internal sealed class HostActionConsumer
     private readonly DateTimeOffset activatedAtUtc;
     private readonly RunnerActionInbox inbox;
     private readonly IHostActionExecutor executor;
+    private readonly IStage2EvidenceIngestor evidenceIngestor;
+    private readonly Func<DateTimeOffset> utcNow;
     private Task<RunnerExecutionResult>? activeTask;
     private RunnerInboxEntry? activeEntry;
+    private Task? activeIngestionTask;
+    private RunnerInboxEntry? activeIngestionEntry;
+    private string? blockedIngestionActionId;
+    private string? blockedIngestionReason;
+    private string? manualReviewActionId;
+    private string? manualReviewReason;
+    private string? busyIngestionActionId;
+    private int busyIngestionAttempts;
+    private DateTimeOffset nextIngestionRetryAtUtc;
 
     public HostActionConsumer(
         string engineeringRoot,
         DateTimeOffset activatedAtUtc,
         RunnerActionInbox? inbox = null,
-        IHostActionExecutor? executor = null)
+        IHostActionExecutor? executor = null,
+        IStage2EvidenceIngestor? evidenceIngestor = null,
+        Func<DateTimeOffset>? utcNow = null)
     {
         this.engineeringRoot = engineeringRoot;
         this.activatedAtUtc = activatedAtUtc;
         this.inbox = inbox ?? new RunnerActionInbox();
         this.executor = executor ?? new HostActionExecutor(engineeringRoot);
+        this.evidenceIngestor = evidenceIngestor ?? new PowerShellStage2EvidenceIngestor(engineeringRoot);
+        this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
     }
 
     public HostActionStatus Tick(bool agentAvailable, CancellationToken cancellationToken)
@@ -107,6 +122,90 @@ internal sealed class HostActionConsumer
             }
         }
 
+        if (activeIngestionTask is not null && activeIngestionEntry is not null)
+        {
+            if (!activeIngestionTask.IsCompleted)
+            {
+                return ForResultEntry(
+                    activeIngestionEntry,
+                    "HOST_COORDINATOR_EXECUTING",
+                    pendingCount: 0,
+                    invalidCount: 0,
+                    legacyIgnoredCount: 0);
+            }
+
+            var completedTask = activeIngestionTask;
+            var completedEntry = activeIngestionEntry;
+            activeIngestionTask = null;
+            activeIngestionEntry = null;
+            try
+            {
+                completedTask.GetAwaiter().GetResult();
+                blockedIngestionActionId = null;
+                blockedIngestionReason = null;
+                manualReviewActionId = null;
+                manualReviewReason = null;
+                busyIngestionActionId = null;
+                busyIngestionAttempts = 0;
+                nextIngestionRetryAtUtc = default;
+                // The ingestor verifies that Stage 2 accepted this exact
+                // action/evidence pair. Rescan the authoritative ledger below
+                // so a newly planned action can proceed without a stale state.
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (RunnerGateException exception) when (exception.ReasonCode == "STAGE2_COORDINATOR_BUSY")
+            {
+                if (busyIngestionActionId != completedEntry.ActionId)
+                {
+                    busyIngestionActionId = completedEntry.ActionId;
+                    busyIngestionAttempts = 0;
+                }
+                busyIngestionAttempts = Math.Min(busyIngestionAttempts + 1, 6);
+                var delaySeconds = Math.Min(30, 1 << Math.Min(busyIngestionAttempts - 1, 4));
+                nextIngestionRetryAtUtc = utcNow().AddSeconds(delaySeconds);
+                return ForResultEntry(
+                    completedEntry,
+                    "STAGE2_COORDINATOR_BUSY",
+                    pendingCount: 0,
+                    invalidCount: 0,
+                    legacyIgnoredCount: 0);
+            }
+            catch (RunnerGateException exception) when (exception.ReasonCode == "STAGE2_MANUAL_REVIEW_REQUIRED")
+            {
+                manualReviewActionId = completedEntry.ActionId;
+                manualReviewReason = "STAGE2_MANUAL_REVIEW_REQUIRED";
+                return ForResultEntry(
+                    completedEntry,
+                    manualReviewReason,
+                    pendingCount: 0,
+                    invalidCount: 0,
+                    legacyIgnoredCount: 0);
+            }
+            catch (RunnerGateException exception)
+            {
+                blockedIngestionActionId = completedEntry.ActionId;
+                blockedIngestionReason = SafeReason(exception.ReasonCode);
+                return Invalid(
+                    blockedIngestionReason,
+                    pendingCount: 0,
+                    invalidCount: 1,
+                    legacyIgnoredCount: 0);
+            }
+            catch
+            {
+                blockedIngestionActionId = completedEntry.ActionId;
+                blockedIngestionReason = "HOST_COORDINATOR_FAILED";
+                return Invalid(
+                    blockedIngestionReason,
+                    pendingCount: 0,
+                    invalidCount: 1,
+                    legacyIgnoredCount: 0);
+            }
+        }
+
         RunnerActionInboxSnapshot catalog;
         try
         {
@@ -138,22 +237,81 @@ internal sealed class HostActionConsumer
         if (resultEntries.Length == 1)
         {
             var entry = resultEntries[0];
-            return new HostActionStatus
+            if (catalog.Issues.Count > 0)
             {
-                State = HostActionStates.ResultReady,
-                ReasonCode = "HOST_ACTION_RESULT_READY",
-                OperationId = entry.OperationId,
-                ActionId = entry.ActionId,
-                ActionKind = entry.ActionKind,
-                ActionSha256 = entry.ActionSha256,
-                RunId = entry.RunId,
-                ResultState = entry.ResultState,
-                ResultPath = entry.ResultPath,
-                EvidencePath = entry.EvidencePath,
-                PendingCount = catalog.Entries.Count(entry => entry.State != RunnerInboxEntryState.ResultReady),
-                InvalidCount = catalog.Issues.Count,
-                LegacyIgnoredCount = catalog.LegacyIgnoredCount
-            };
+                return Invalid(
+                    catalog.Issues[0].ReasonCode,
+                    catalog.Entries.Count(item => item.State != RunnerInboxEntryState.ResultReady),
+                    catalog.Issues.Count,
+                    catalog.LegacyIgnoredCount);
+            }
+            if (blockedIngestionActionId == entry.ActionId &&
+                blockedIngestionReason is not null)
+            {
+                return Invalid(
+                    blockedIngestionReason,
+                    catalog.Entries.Count(item => item.State != RunnerInboxEntryState.ResultReady),
+                    catalog.Issues.Count + 1,
+                    catalog.LegacyIgnoredCount);
+            }
+
+            if (manualReviewActionId == entry.ActionId &&
+                manualReviewReason is not null)
+            {
+                return ForResultEntry(
+                    entry,
+                    manualReviewReason,
+                    catalog.Entries.Count(item => item.State != RunnerInboxEntryState.ResultReady),
+                    catalog.Issues.Count,
+                    catalog.LegacyIgnoredCount);
+            }
+
+            if (busyIngestionActionId == entry.ActionId &&
+                utcNow() < nextIngestionRetryAtUtc)
+            {
+                return ForResultEntry(
+                    entry,
+                    "STAGE2_COORDINATOR_BUSY_BACKOFF",
+                    catalog.Entries.Count(item => item.State != RunnerInboxEntryState.ResultReady),
+                    catalog.Issues.Count,
+                    catalog.LegacyIgnoredCount);
+            }
+
+            try
+            {
+                activeIngestionEntry = entry;
+                activeIngestionTask = evidenceIngestor.IngestAsync(entry, cancellationToken)
+                    ?? throw new RunnerGateException(
+                        "HOST_COORDINATOR_FAILED",
+                        "Stage 2 evidence ingestor returned no task.");
+            }
+            catch (RunnerGateException exception)
+            {
+                blockedIngestionActionId = entry.ActionId;
+                blockedIngestionReason = SafeReason(exception.ReasonCode);
+                return Invalid(
+                    blockedIngestionReason,
+                    catalog.Entries.Count(item => item.State != RunnerInboxEntryState.ResultReady),
+                    catalog.Issues.Count + 1,
+                    catalog.LegacyIgnoredCount);
+            }
+            catch
+            {
+                blockedIngestionActionId = entry.ActionId;
+                blockedIngestionReason = "HOST_COORDINATOR_FAILED";
+                return Invalid(
+                    blockedIngestionReason,
+                    catalog.Entries.Count(item => item.State != RunnerInboxEntryState.ResultReady),
+                    catalog.Issues.Count + 1,
+                    catalog.LegacyIgnoredCount);
+            }
+
+            return ForResultEntry(
+                entry,
+                "HOST_COORDINATOR_STARTED",
+                catalog.Entries.Count(item => item.State != RunnerInboxEntryState.ResultReady),
+                catalog.Issues.Count,
+                catalog.LegacyIgnoredCount);
         }
 
         // A malformed non-legacy ledger blocks all new execution. A valid
@@ -261,7 +419,7 @@ internal sealed class HostActionConsumer
 
     public async Task<bool> DrainAsync(TimeSpan timeout)
     {
-        var task = activeTask;
+        Task? task = activeTask ?? activeIngestionTask;
         if (task is null)
         {
             return true;
@@ -301,6 +459,28 @@ internal sealed class HostActionConsumer
         ResultState = result.State,
         ResultPath = result.ResultPath,
         EvidencePath = result.EvidencePath,
+        PendingCount = pendingCount,
+        InvalidCount = invalidCount,
+        LegacyIgnoredCount = legacyIgnoredCount
+    };
+
+    private static HostActionStatus ForResultEntry(
+        RunnerInboxEntry entry,
+        string reasonCode,
+        int pendingCount,
+        int invalidCount,
+        int legacyIgnoredCount) => new()
+    {
+        State = HostActionStates.ResultReady,
+        ReasonCode = reasonCode,
+        OperationId = entry.OperationId,
+        ActionId = entry.ActionId,
+        ActionKind = entry.ActionKind,
+        ActionSha256 = entry.ActionSha256,
+        RunId = entry.RunId,
+        ResultState = entry.ResultState,
+        ResultPath = entry.ResultPath,
+        EvidencePath = entry.EvidencePath,
         PendingCount = pendingCount,
         InvalidCount = invalidCount,
         LegacyIgnoredCount = legacyIgnoredCount

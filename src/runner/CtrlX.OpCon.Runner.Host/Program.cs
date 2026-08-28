@@ -171,8 +171,9 @@ internal static class HostCli
               The Host never starts Broker, MCP, Node, PLE or an online PLC operation.
               It consumes only immutable currentAction entries created after its
               activation and uses the existing same-session Broker when available.
-              Missing Agent is WAITING_FOR_AGENT; completed evidence remains
-              WAITING_FOR_COORDINATOR until the Stage 2 ledger is advanced.
+              Missing Agent is WAITING_FOR_AGENT. A terminal result is fully
+              revalidated, then its sealed evidence is handed to the pinned
+              offline Stage 2 coordinator; missing or invalid evidence blocks.
             """);
     }
 }

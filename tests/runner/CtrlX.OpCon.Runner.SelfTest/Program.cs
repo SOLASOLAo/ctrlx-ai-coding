@@ -1673,7 +1673,7 @@ internal static class RunnerSelfTest
         }
 
         var processStartCount = Regex.Matches(combined, "new\\s+ProcessStartInfo", RegexOptions.CultureInvariant).Count;
-        Check(processStartCount == 1, "Runner must have exactly one allowlisted child-process boundary.");
+        Check(processStartCount == 2, "Runner must have exactly two allowlisted PowerShell 7 child-process boundaries.");
         var sealerSource = sources.Single(item => Path.GetFileName(item.Key) == "PowerShellEvidenceSealer.cs").Value;
         Check(
             sealerSource.Contains("Environment.SpecialFolder.ProgramFiles", StringComparison.Ordinal) &&
@@ -1682,6 +1682,26 @@ internal static class RunnerSelfTest
             sealerSource.Contains("\"pwsh.exe\"", StringComparison.Ordinal) &&
             sealerSource.Contains("FileName = powerShell7", StringComparison.Ordinal),
             "Runner child-process target is not the absolute PowerShell 7 evidence producer host.");
+        var ingestorSource = sources.Single(item =>
+            Path.GetFileName(item.Key) == "PowerShellStage2EvidenceIngestor.cs").Value;
+        Check(
+            ingestorSource.Contains("Environment.SpecialFolder.ProgramFiles", StringComparison.Ordinal) &&
+            ingestorSource.Contains("\"PowerShell\"", StringComparison.Ordinal) &&
+            ingestorSource.Contains("\"7\"", StringComparison.Ordinal) &&
+            ingestorSource.Contains("\"pwsh.exe\"", StringComparison.Ordinal) &&
+            ingestorSource.Contains("FileName = powerShell7Path", StringComparison.Ordinal) &&
+            ingestorSource.Contains("Invoke-PostExportEngineering.ps1", StringComparison.Ordinal) &&
+            ingestorSource.Contains("TrustedCoordinatorNormalizedSha256", StringComparison.Ordinal) &&
+            ingestorSource.Contains("RunnerRunStore.ForAction", StringComparison.Ordinal) &&
+            ingestorSource.Contains("TryReadResult", StringComparison.Ordinal) &&
+            ingestorSource.Contains("verifiedResult.EvidenceSha256", StringComparison.Ordinal) &&
+            ingestorSource.Contains("OpenVerifiedEvidence", StringComparison.Ordinal) &&
+            ingestorSource.Contains("OpenTrustedCoordinator", StringComparison.Ordinal) &&
+            ingestorSource.Contains("FileShare.Read", StringComparison.Ordinal) &&
+            ingestorSource.Contains("MaximumEvidenceBytes", StringComparison.Ordinal) &&
+            ingestorSource.Contains("CreateNoWindow = true", StringComparison.Ordinal) &&
+            ingestorSource.Contains("UseShellExecute = false", StringComparison.Ordinal),
+            "Stage 2 ingestion is not constrained to the verified offline PowerShell 7 coordinator boundary.");
 
         var pipeSourcePath = Path.Combine(
             sourceRoot,

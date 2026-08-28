@@ -31,9 +31,13 @@ internal static class Program
             ("run, status, exact stop identity, and graceful stop are deterministic", LifecycleIsDeterministicAsync),
             ("pending action waits for Agent without execution", PendingActionWaitsForAgentAsync),
             ("Broker diagnostic pending is displayed as WAITING_FOR_AGENT", BrokerDiagnosticPendingIsDisplayedAsync),
-            ("one current action executes once and exposes its terminal marker", UniqueActionExecutesExactlyOnceAsync),
+            ("one current action executes once and advances through Stage 2 once", UniqueActionExecutesExactlyOnceAsync),
             ("multiple current actions fail closed as ambiguous", MultipleActionsAreAmbiguousAsync),
-            ("existing terminal result is exposed without execution", ExistingResultDoesNotExecuteAsync),
+            ("existing terminal evidence starts coordination without action execution", ExistingResultDoesNotExecuteAsync),
+            ("terminal result without evidence waits for manual review", MissingEvidenceWaitsForManualReviewAsync),
+            ("coordinator busy uses bounded retry backoff", CoordinatorBusyUsesBackoffAsync),
+            ("fresh malformed ledger blocks result ingestion", MalformedLedgerBlocksResultIngestionAsync),
+            ("permanent coordinator failure is latched without a retry loop", CoordinatorFailureIsLatchedAsync),
             ("long action remains single-dispatch and has a bounded shutdown drain", LongActionRemainsExecutingAsync)
         };
 
@@ -713,16 +717,26 @@ internal static class Program
             Require(entry.ActionId == action.ActionId &&
                 entry.ActionSha256 == action.ActionSha256,
                 "Host dispatched an action identity other than the unique current action.");
-            return Task.FromResult(fixture.WriteTerminalResult(action, RunnerStates.Done));
+            return Task.FromResult(fixture.WriteTerminalResult(action, RunnerStates.Done, includeEvidence: true));
+        });
+        var ingestor = new RecordingStage2EvidenceIngestor((entry, _) =>
+        {
+            Require(entry.ActionId == action.ActionId && entry.EvidencePath is not null,
+                "Stage 2 ingestor received the wrong action or no evidence.");
+            fixture.MarkOperationDone(action);
+            return Task.CompletedTask;
         });
         var consumer = new HostActionConsumer(
             fixture.EngineeringRoot,
             fixture.ActivatedAtUtc,
-            executor: executor);
+            executor: executor,
+            evidenceIngestor: ingestor);
 
         var started = consumer.Tick(agentAvailable: true, CancellationToken.None);
         var completed = consumer.Tick(agentAvailable: true, CancellationToken.None);
-        var rediscovered = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var coordinationStarted = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var coordinated = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var stable = consumer.Tick(agentAvailable: true, CancellationToken.None);
 
         Require(started.State == HostActionStates.Executing &&
             started.ReasonCode == "HOST_ACTION_EXECUTION_STARTED",
@@ -733,8 +747,13 @@ internal static class Program
             completed.ResultPath == action.ResultPath &&
             File.Exists(action.ResultPath),
             "The unique action did not expose its terminal result marker.");
-        Require(rediscovered.State == HostActionStates.ResultReady && executor.Calls == 1,
-            "A terminal result marker caused the unique action to execute more than once.");
+        Require(coordinationStarted.State == HostActionStates.ResultReady &&
+            coordinationStarted.ReasonCode == "HOST_COORDINATOR_STARTED" &&
+            coordinated.State == HostActionStates.None &&
+            stable.State == HostActionStates.None &&
+            executor.Calls == 1 &&
+            ingestor.Calls == 1,
+            "The terminal result did not advance exactly once through Stage 2.");
         return Task.CompletedTask;
     }
 
@@ -767,25 +786,154 @@ internal static class Program
     {
         using var fixture = new HostConsumerFixture();
         var action = fixture.CreatePendingAction("cpstudio-stage2-existing-result");
-        _ = fixture.WriteTerminalResult(action, RunnerStates.Blocked);
+        _ = fixture.WriteTerminalResult(action, RunnerStates.Blocked, includeEvidence: true);
         var executor = new RecordingHostActionExecutor((_, _) =>
             throw new InvalidOperationException("An existing terminal result reached execution."));
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ingestor = new RecordingStage2EvidenceIngestor((entry, _) =>
+        {
+            Require(entry.ActionId == action.ActionId,
+                "The existing terminal result sent the wrong action to Stage 2.");
+            return pending.Task;
+        });
         var consumer = new HostActionConsumer(
             fixture.EngineeringRoot,
             fixture.ActivatedAtUtc,
-            executor: executor);
+            executor: executor,
+            evidenceIngestor: ingestor);
 
         var status = consumer.Tick(agentAvailable: true, CancellationToken.None);
 
         Require(status.State == HostActionStates.ResultReady &&
-            status.ReasonCode == "HOST_ACTION_RESULT_READY" &&
+            status.ReasonCode == "HOST_COORDINATOR_STARTED" &&
             status.OperationId == action.OperationId &&
             status.ActionId == action.ActionId &&
             status.ResultState == RunnerStates.Blocked &&
             status.ResultPath == action.ResultPath,
-            "An existing terminal result was not exposed without dispatch.");
-        Require(executor.Calls == 0,
+            "An existing terminal result was not handed to Stage 2.");
+        Require(executor.Calls == 0 && ingestor.Calls == 1,
             "An existing terminal result replayed its action through the executor.");
+        return Task.CompletedTask;
+    }
+
+    private static Task MissingEvidenceWaitsForManualReviewAsync()
+    {
+        using var fixture = new HostConsumerFixture();
+        var action = fixture.CreatePendingAction("cpstudio-stage2-missing-evidence");
+        _ = fixture.WriteTerminalResult(action, RunnerStates.Unknown);
+        var executor = new RecordingHostActionExecutor((_, _) =>
+            throw new InvalidOperationException("An evidence-less terminal result reached execution."));
+        var ingestor = new RecordingStage2EvidenceIngestor((_, _) =>
+            Task.FromException(new RunnerGateException(
+                "STAGE2_MANUAL_REVIEW_REQUIRED",
+                "Injected fully validated evidence-less terminal result.")));
+        var consumer = new HostActionConsumer(
+            fixture.EngineeringRoot,
+            fixture.ActivatedAtUtc,
+            executor: executor,
+            evidenceIngestor: ingestor);
+
+        var first = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var second = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var third = consumer.Tick(agentAvailable: true, CancellationToken.None);
+
+        Require(first.State == HostActionStates.ResultReady &&
+            first.ReasonCode == "HOST_COORDINATOR_STARTED" &&
+            second.State == HostActionStates.ResultReady &&
+            second.ReasonCode == "STAGE2_MANUAL_REVIEW_REQUIRED" &&
+            third.State == HostActionStates.ResultReady &&
+            third.ReasonCode == second.ReasonCode &&
+            executor.Calls == 0 &&
+            ingestor.Calls == 1,
+            "An evidence-less terminal result did not remain in stable manual review.");
+        return Task.CompletedTask;
+    }
+
+    private static Task CoordinatorBusyUsesBackoffAsync()
+    {
+        using var fixture = new HostConsumerFixture();
+        var action = fixture.CreatePendingAction("cpstudio-stage2-coordinator-busy");
+        _ = fixture.WriteTerminalResult(action, RunnerStates.Blocked, includeEvidence: true);
+        var now = DateTimeOffset.UtcNow;
+        var ingestor = new RecordingStage2EvidenceIngestor((_, _) =>
+            Task.FromException(new RunnerGateException(
+                "STAGE2_COORDINATOR_BUSY",
+                "Injected Stage 2 lock contention.",
+                RunnerExitCodes.Busy)));
+        var consumer = new HostActionConsumer(
+            fixture.EngineeringRoot,
+            fixture.ActivatedAtUtc,
+            executor: new RecordingHostActionExecutor((_, _) =>
+                throw new InvalidOperationException("A terminal result reached execution.")),
+            evidenceIngestor: ingestor,
+            utcNow: () => now);
+
+        var started = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var busy = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var backingOff = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        now = now.AddSeconds(2);
+        var retried = consumer.Tick(agentAvailable: true, CancellationToken.None);
+
+        Require(started.ReasonCode == "HOST_COORDINATOR_STARTED" &&
+            busy.ReasonCode == "STAGE2_COORDINATOR_BUSY" &&
+            backingOff.ReasonCode == "STAGE2_COORDINATOR_BUSY_BACKOFF" &&
+            retried.ReasonCode == "HOST_COORDINATOR_STARTED" &&
+            ingestor.Calls == 2,
+            "A busy Stage 2 coordinator was retried without its bounded backoff.");
+        return Task.CompletedTask;
+    }
+
+    private static Task MalformedLedgerBlocksResultIngestionAsync()
+    {
+        using var fixture = new HostConsumerFixture();
+        var action = fixture.CreatePendingAction("cpstudio-stage2-valid-result");
+        _ = fixture.WriteTerminalResult(action, RunnerStates.Blocked, includeEvidence: true);
+        fixture.CreateMalformedOperation("cpstudio-stage2-malformed");
+        var ingestor = new RecordingStage2EvidenceIngestor((_, _) =>
+            throw new InvalidOperationException("A result advanced while another fresh ledger was malformed."));
+        var consumer = new HostActionConsumer(
+            fixture.EngineeringRoot,
+            fixture.ActivatedAtUtc,
+            executor: new RecordingHostActionExecutor((_, _) =>
+                throw new InvalidOperationException("A terminal result reached execution.")),
+            evidenceIngestor: ingestor);
+
+        var status = consumer.Tick(agentAvailable: true, CancellationToken.None);
+
+        Require(status.State == HostActionStates.Invalid &&
+            status.InvalidCount >= 1 &&
+            ingestor.Calls == 0,
+            "A valid result was ingested despite another malformed fresh operation ledger.");
+        return Task.CompletedTask;
+    }
+
+    private static Task CoordinatorFailureIsLatchedAsync()
+    {
+        using var fixture = new HostConsumerFixture();
+        var action = fixture.CreatePendingAction("cpstudio-stage2-coordinator-failure");
+        _ = fixture.WriteTerminalResult(action, RunnerStates.Blocked, includeEvidence: true);
+        var ingestor = new RecordingStage2EvidenceIngestor((_, _) =>
+            Task.FromException(new RunnerGateException(
+                "STAGE2_COORDINATOR_INTEGRITY_MISMATCH",
+                "Injected permanent coordinator failure.")));
+        var consumer = new HostActionConsumer(
+            fixture.EngineeringRoot,
+            fixture.ActivatedAtUtc,
+            executor: new RecordingHostActionExecutor((_, _) =>
+                throw new InvalidOperationException("A terminal result reached execution.")),
+            evidenceIngestor: ingestor);
+
+        var started = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var failed = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var latched = consumer.Tick(agentAvailable: true, CancellationToken.None);
+
+        Require(started.State == HostActionStates.ResultReady &&
+            failed.State == HostActionStates.Invalid &&
+            failed.ReasonCode == "STAGE2_COORDINATOR_INTEGRITY_MISMATCH" &&
+            latched.State == HostActionStates.Invalid &&
+            latched.ReasonCode == failed.ReasonCode &&
+            ingestor.Calls == 1,
+            "A permanent Stage 2 failure was retried or lost its stable reason.");
         return Task.CompletedTask;
     }
 
@@ -1003,10 +1151,29 @@ internal sealed class HostConsumerFixture : IDisposable
 
     public RunnerExecutionResult WriteTerminalResult(
         HostConsumerActionFixture action,
-        string state)
+        string state,
+        bool includeEvidence = false)
     {
         RequireTerminal(state);
         Directory.CreateDirectory(action.RunRoot);
+        string? evidencePath = null;
+        string? evidenceSha256 = null;
+        if (includeEvidence)
+        {
+            evidencePath = Path.Combine(
+                EngineeringRoot,
+                "data",
+                "runner-evidence",
+                $"{action.ActionId}-{action.ActionSha256[..12].ToLowerInvariant()}.json");
+            WriteJson(evidencePath, new JsonObject
+            {
+                ["schemaVersion"] = 1,
+                ["operationId"] = action.OperationId,
+                ["actionId"] = action.ActionId,
+                ["actionRequestSha256"] = action.ActionSha256
+            });
+            evidenceSha256 = RunnerHash.Sha256File(evidencePath);
+        }
         var reasonCode = state switch
         {
             RunnerStates.Done => "RUNNER_SUCCEEDED",
@@ -1034,7 +1201,18 @@ internal sealed class HostConsumerFixture : IDisposable
             ["actionPath"] = action.ActionPath,
             ["actionSha256"] = action.ActionSha256,
             ["observationPath"] = null,
-            ["evidencePath"] = null,
+            ["observationSha256"] = null,
+            ["evidencePath"] = evidencePath,
+            ["evidenceSha256"] = evidenceSha256,
+            ["producerStatus"] = includeEvidence ? "WRITTEN" : null,
+            ["guardrails"] = new JsonObject
+            {
+                ["onlineOperationsUsed"] = false,
+                ["pleOrMcpStartedByAction"] = false,
+                ["secondPleStarted"] = false,
+                ["directWatcherIpcUsed"] = false,
+                ["deploymentAllowed"] = false
+            },
             ["completedAtUtc"] = DateTimeOffset.UtcNow.ToString("O")
         });
         return new RunnerExecutionResult(
@@ -1044,8 +1222,44 @@ internal sealed class HostConsumerFixture : IDisposable
             exitCode,
             action.ResultPath,
             ObservationPath: null,
-            EvidencePath: null,
+            ObservationSha256: null,
+            EvidencePath: evidencePath,
+            EvidenceSha256: evidenceSha256,
             Replayed: false);
+    }
+
+    public void CreateMalformedOperation(string operationId)
+    {
+        var operationRoot = Path.Combine(
+            EngineeringRoot,
+            "data",
+            "operations",
+            "cpstudio-stage2",
+            operationId);
+        Directory.CreateDirectory(operationRoot);
+        var operationPath = Path.Combine(operationRoot, "operation.json");
+        WriteJson(operationPath, new JsonObject
+        {
+            ["schemaVersion"] = 999,
+            ["kind"] = "malformed-selftest-operation"
+        });
+        File.SetLastWriteTimeUtc(operationPath, DateTime.UtcNow);
+    }
+
+    public void MarkOperationDone(HostConsumerActionFixture action)
+    {
+        var operationPath = Path.Combine(
+            EngineeringRoot,
+            "data",
+            "operations",
+            "cpstudio-stage2",
+            action.OperationId,
+            "operation.json");
+        var operation = JsonNode.Parse(File.ReadAllText(operationPath))?.AsObject()
+            ?? throw new InvalidOperationException("Fixture operation ledger is unreadable.");
+        operation["status"] = "DONE";
+        operation["currentAction"] = null;
+        WriteJson(operationPath, operation);
     }
 
     public void Dispose()
@@ -1092,6 +1306,25 @@ internal sealed class RecordingHostActionExecutor : IHostActionExecutor
     {
         Calls++;
         return execute(entry, cancellationToken);
+    }
+}
+
+internal sealed class RecordingStage2EvidenceIngestor : IStage2EvidenceIngestor
+{
+    private readonly Func<RunnerInboxEntry, CancellationToken, Task> ingest;
+
+    public RecordingStage2EvidenceIngestor(
+        Func<RunnerInboxEntry, CancellationToken, Task> ingest)
+    {
+        this.ingest = ingest;
+    }
+
+    public int Calls { get; private set; }
+
+    public Task IngestAsync(RunnerInboxEntry entry, CancellationToken cancellationToken)
+    {
+        Calls++;
+        return ingest(entry, cancellationToken);
     }
 }
 

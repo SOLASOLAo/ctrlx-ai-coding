@@ -510,11 +510,23 @@ public sealed class RunnerRunStore
         var reasonCode = RunnerValidation.RequiredString(json, "reasonCode", "Runner result");
         var exitCode = RunnerValidation.RequiredInt32(json, "exitCode", "Runner result");
         var observation = json["observationPath"]?.GetValue<string>();
+        var observationSha256 = json["observationSha256"]?.GetValue<string>();
         var evidence = json["evidencePath"]?.GetValue<string>();
-        return new RunnerExecutionResult(runId, state, reasonCode, exitCode, resultPath, observation, evidence, replayed);
+        var evidenceSha256 = json["evidenceSha256"]?.GetValue<string>();
+        return new RunnerExecutionResult(
+            runId,
+            state,
+            reasonCode,
+            exitCode,
+            resultPath,
+            observation,
+            observationSha256,
+            evidence,
+            evidenceSha256,
+            replayed);
     }
 
-    private static bool VerifyOptionalArtifact(
+    private bool VerifyOptionalArtifact(
         JsonObject result,
         string pathProperty,
         string hashProperty,
@@ -530,8 +542,7 @@ public sealed class RunnerRunStore
             !pathValue.TryGetValue<string>(out var path) ||
             result[hashProperty] is not JsonValue hashValue ||
             !hashValue.TryGetValue<string>(out var expected) ||
-            !RunnerValidation.IsSha256(expected) ||
-            !File.Exists(path))
+            !RunnerValidation.IsSha256(expected))
         {
             return false;
         }
@@ -550,6 +561,24 @@ public sealed class RunnerRunStore
 
         if (expectedPath is not null &&
             !resolvedPath.Equals(RunnerValidation.FullPath(expectedPath), StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        try
+        {
+            RunnerValidation.AssertExistingPathChainNotReparse(
+                Action.EngineeringRoot,
+                resolvedPath,
+                "RUN_RESULT_ARTIFACT_REPARSE_POINT",
+                "Runner result artifact");
+        }
+        catch (RunnerGateException)
+        {
+            return false;
+        }
+
+        if (!File.Exists(resolvedPath))
         {
             return false;
         }
