@@ -43,29 +43,19 @@ CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型�
 | 分工 | 用户做骨架(CpStudio),AI 做 PLC 代码细节 |
 | 项目模板 | ✅ 新项目初始化器 + Stage 1 离线审计队列 + Stage 2 PlanOnly operation ledger |
 | Codex Skill | ✅ `ctrlx-opcon-engineering`，源码可版本化、安装可校验 |
-| Controlled Runner | ✅ P1.1、P1.2a、P1.2b Broker、真实 PLE 技术通道及无身份确认正式 baseline；⏳ 新 Export/action 复验 |
+| Controlled Runner | ✅ P1.1/P1.2 全部离线验收；🚧 P1.3a current-user Host 生命周期已实现，自动消费待下一切片 |
 | 产品化计划 | `docs/mcp_productization_roadmap.md` |
 
-Stage 2 已实现为哈希绑定、可恢复的 PlanOnly 协调器，只生成 action 并校验
-runner evidence；它不会自行启动 PLE、MCP 或 REST。P1.2a 已提供 .NET 8 immutable-action
-client 和证据封口；P1.2b 已提供显式启动的 interactive Broker 离线基础，包括
-current-user validated registration、Named Pipe v2、durable submit/query、单 profile/project owner
-和 typed action allowlist。2026-08-28 已在真实 Station010 PLE 离线 action 中验证受控
-adapter、普通 Build、typed warnings 与 semantic snapshot：0 errors / 101 条可见 warnings，456 条
-mapping facts，工程哈希前后不变且无在线动作。当前 warning candidate 含
-`PLE_WARNING_OUTPUT_TRUNCATED`，所以 101 条只是可见记录，并不证明完整告警全集。
-隔离副本已通过官方 REST 完成 `maxCompilerWarnings: 100 → <no limit> → 100` 的读写回滚；
-REST PUT 回滚后内存工程仍 dirty，必须关闭不保存并重开。另已新增并安装显式
-`clean_compile_project`（一次 `application.clean()` + 一次 `application.build()`，不保存）。
-隔离副本的连续 Clean Build、真实 Export candidates 和用户确认均已完成；正式
-warning/semantic baselines 已由受控工具原子建立，不采集个人身份。当前只剩一次新的
-正常 CpStudio Export 和全新 immutable action 复验。完成前不得把技术通道跑通冒充
-最终工程验收成功。
+Stage 2 是哈希绑定、可恢复的 PlanOnly 协调器；P1.2 interactive Broker 使用
+current-user registration、Named Pipe v2、durable submit/query 和 typed allowlist，且只由
+工程师在交互会话中显式启动。2026-08-28 的最终 Station010 immutable action 已通过：
+显式 Clean Build 0 errors / 4 条完整 warning，456 mapping、Symbol、正式 baseline、
+本机 checkpoint 与工程/结构哈希全部匹配，无在线动作。P1.2 已关闭。
 
-提交前失败关闭审查也已收口：用户确认记录、scope/baseline 均采用同字节有界
-校验与 SHA 绑定；candidate/AI triage 不能冒充确认；baseline 不采集姓名/工号；semantic adapter 在全部 REST
-读取后执行最终 dirty probe，并限制 30 s/8 MiB；畸形请求与证据生成不会持久化或
-回显凭据。该加固只提高证据可信度；下一步仍须用新的正常 Export/action 验证已建立的正式 baseline。
+P1.3a 新增 `vcrunner-host`：当前用户后台单实例、heartbeat/status、同会话精确停止、
+有界 JSONL 日志与崩溃状态恢复。Host 不引用 Broker 实现，也不启动 Broker/Node/MCP/PLE；
+没有有效 Agent 时显示 `WAITING_FOR_AGENT`。本切片暂不自动消费 action，避免把后台常驻
+误变成自动弹出 PLE。未来 Session 0 Service 只能管理队列/策略/状态，不能启动可见工程工具。
 
 ## 创建新工站 AI 旁车
 

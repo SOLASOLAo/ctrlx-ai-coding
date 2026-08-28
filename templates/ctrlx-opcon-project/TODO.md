@@ -19,6 +19,8 @@
 - [ ] 用真实 Stage 1 报告建立一次 Stage 2 ledger，由显式启动的唯一 interactive Broker 执行 action，并提交封口 evidence；
 - [ ] 运行 `tests/runner/Test-CtrlXOpconRunner.ps1`，验证 P1.1 单 owner、项目预检、幂等消费和 run manifest；
 - [ ] 运行 `scripts/runner/Invoke-CtrlXOpconRunner.ps1 -Command Doctor`，验证 P1.2a .NET action client、工程定位和 Broker 状态；
+- [ ] 构建并验证 P1.3a Host：单实例、`Start/Stop/Status/Logs`、崩溃恢复和有界日志；
+- [ ] Broker 未启动时确认 Host 为 `WAITING_FOR_AGENT` 且不新增 Broker/MCP/PLE 进程；只有交互用户显式启动 Broker 后才显示 Agent available；
 - [ ] 安装并 `-Check` 本工位受控 adapter，配置 semantic scope，用显式 Clean Build 取得完整且未截断的 warning 集合，由项目负责人一次确认 candidates（不采集姓名/工号），再用新的 immutable action 完成真实 PLE 离线 acceptance；缺 baseline 时必须以对应 bootstrap `BLOCKED` 失败关闭；
 - [ ] 记录导出批次、回读结果、编译证据和 baseline 审阅证据。
 

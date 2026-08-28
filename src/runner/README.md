@@ -1,7 +1,7 @@
 # Controlled Runner
 
-This directory contains the .NET 8 control plane, action client and explicit
-interactive Broker for Runner P1.2.
+This directory contains the .NET 8 control plane, action client, explicit
+interactive Broker and current-user background Host for Runner P1.2/P1.3a.
 
 ## Implemented P1.2b boundary
 
@@ -53,25 +53,50 @@ It is a same-user local recovery artifact, not a Git commit or cross-machine bac
 As of 2026-08-28 the globally installed adapter matches the controlled patch.
 A disposable same-byte copy survived save/reopen with an unlimited warning
 limit and then produced the same complete 0-error/4-warning result in two
-explicit Clean Builds. The Broker/evidence path now consumes that strict Clean
-Build contract. A new formal Station010 action/candidate and independent human
-warning/semantic baseline review are still required, so production acceptance
-remains bootstrap `BLOCKED`.
+explicit Clean Builds. Formal warning/semantic baselines and a new immutable
+Station010 action subsequently passed the full offline contract: 0 errors,
+4 complete warnings, 456 mappings, stable Symbol semantics, a read-back local
+checkpoint and unchanged project/structure hashes. P1.2 is closed; this does
+not claim simulation, download or physical-PLC acceptance.
+
+## Implemented P1.3a Host boundary
+
+- `vcrunner-host` is a current-user, interactive-session background process
+  with `run`, `status`, `stop` and `logs` commands. It owns one project-scoped
+  lease, publishes a heartbeat/status document through atomic replacement and
+  keeps bounded structured JSONL logs.
+- It never starts or owns Broker, Node, MCP or PLE and contains no online PLC
+  surface. Without a fresh same-session Broker registration it reports
+  `WAITING_FOR_AGENT`; that is an expected waiting state, not an engineering
+  failure.
+- Stop uses a current-user-only, same-session, host-instance-bound Named Pipe.
+  A stale but structurally valid status after a Host crash is reported as
+  `HOST_CRASH_RECOVERY_PENDING` and may be replaced only after the unique owner
+  lease is acquired. Corrupt state fails closed.
+- The current slice deliberately leaves automatic action execution disabled.
+  The interactive Broker remains a separately and explicitly started owner of
+  MCP/PLE. A future Session 0 Windows Service may manage queue/policy/status,
+  but it must not launch visible Broker/MCP/PLE processes.
+- The project wrapper starts the Host through an exact current-user Scheduled
+  Task by default. Raw process start is an explicit development-only escape
+  hatch and is never used by the normal lifecycle.
 
 ## Build and offline tests
 
 ```powershell
 dotnet build .\src\runner\CtrlX.OpCon.Runner.Cli\CtrlX.OpCon.Runner.Cli.csproj -c Release
 dotnet build .\src\runner\CtrlX.OpCon.Runner.Broker\CtrlX.OpCon.Runner.Broker.csproj -c Release
+dotnet build .\src\runner\CtrlX.OpCon.Runner.Host\CtrlX.OpCon.Runner.Host.csproj -c Release
 dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.SelfTest\CtrlX.OpCon.Runner.SelfTest.csproj -c Release
 dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Broker.EngineeringSelfTest\CtrlX.OpCon.Runner.Broker.EngineeringSelfTest.csproj -c Release
 dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Broker.SelfTest\CtrlX.OpCon.Runner.Broker.SelfTest.csproj -c Release
+dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Host.SelfTest\CtrlX.OpCon.Runner.Host.SelfTest.csproj -c Release
 ```
 
 The SelfTests use local fixtures, fake engineering sessions and local named
 pipes. They do not start PLE, MCP or any other engineering tool. Verified run
-on 2026-08-28: Runner 24 cases / 200 assertions, Engineering 40/40 and Broker
-13/13; Broker Release build was 0 warnings / 0 errors. The Runner stress cases use a deterministic submit/query
+on 2026-08-28: Runner 207 assertions, Host 9/9, and all Engineering/Broker
+fixtures pass; Release builds are 0 warnings / 0 errors. The Runner stress cases use a deterministic submit/query
 handshake rather than a 250 ms scheduling assumption. Atomic Broker JSON
 renames retry only the bounded Windows access/sharing/lock violations and still
 fail closed after about 230 ms; immutable create races retain the stable
@@ -131,9 +156,8 @@ dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
 
 ## Acceptance status
 
-The code, protocol, persistence, ACL/identity gates and fixed Build sequence
-have passed offline tests. A real ctrlX PLE/persistent-MCP action has verified
-the read-only technical channel, project stability, fresh Build and semantic
-capture. It stopped at `SEMANTIC_BASELINE_BOOTSTRAP_REQUIRED`; truncated warning
-output also prevents formal warning-baseline approval. No simulation, download,
-runtime control, variable write, FORCE or physical-PLC acceptance is claimed.
+The P1.2 code, protocol, persistence, identity gates and fixed Build sequence
+have passed offline tests and the final real-PLE offline action. P1.3a adds the
+background Host lifecycle without changing that engineering boundary. No
+simulation, download, runtime control, variable write, FORCE or physical-PLC
+acceptance is claimed.

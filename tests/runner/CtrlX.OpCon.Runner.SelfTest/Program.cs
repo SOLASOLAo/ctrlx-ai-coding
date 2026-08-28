@@ -1315,6 +1315,24 @@ internal static class RunnerSelfTest
                 "\"broker-action-timeout-ms\", 1_800_000, minimum: 1_000, maximum: 3_600_000",
                 StringComparison.Ordinal),
             "Runner CLI must expose the controlled 30-minute default and 60-minute maximum action timeout.");
+        var hostSourceRoot = Path.Combine(sourceRoot, "CtrlX.OpCon.Runner.Host");
+        var hostSources = Directory.EnumerateFiles(hostSourceRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !HasSegment(path, "bin") && !HasSegment(path, "obj"))
+            .Select(File.ReadAllText)
+            .ToArray();
+        Check(hostSources.Length >= 5, "Runner Host source scan was unexpectedly empty.");
+        var hostCombined = string.Join("\n", hostSources);
+        Check(!hostCombined.Contains("ProcessStartInfo", StringComparison.Ordinal), "Runner Host gained child-process start capability.");
+        Check(!hostCombined.Contains("Process.Start", StringComparison.Ordinal), "Runner Host gained child-process start capability.");
+        Check(!hostCombined.Contains("CtrlX.OpCon.Runner.Broker", StringComparison.Ordinal), "Runner Host references Broker implementation instead of Core only.");
+        var hostProject = File.ReadAllText(Path.Combine(hostSourceRoot, "CtrlX.OpCon.Runner.Host.csproj"));
+        Check(hostProject.Contains("CtrlX.OpCon.Runner.Core.csproj", StringComparison.Ordinal), "Runner Host does not reference the shared Core.");
+        Check(!hostProject.Contains("CtrlX.OpCon.Runner.Broker.csproj", StringComparison.Ordinal), "Runner Host project references Broker implementation.");
+        Check(
+            hostCombined.Contains("WAITING_FOR_AGENT", StringComparison.Ordinal) &&
+            hostCombined.Contains("StartsPleOrMcp = false", StringComparison.Ordinal) &&
+            hostCombined.Contains("AutomaticActionExecutionEnabled = false", StringComparison.Ordinal),
+            "Runner Host does not preserve its P1.3a waiting/safety contract.");
         var wrapperSource = File.ReadAllText(Path.Combine(
             repositoryRoot,
             "templates",

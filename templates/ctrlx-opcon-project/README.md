@@ -35,6 +35,7 @@
    ```powershell
    .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Status
    .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Doctor
+   .\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Status
    ```
 
 CpStudio Export #1 的离线报告可交给
@@ -51,6 +52,12 @@ warning/semantic baseline，并以新的 Export/immutable action 完成本工位
 `BLOCKED` 结束，不会伪造成功证据。`apply_change_set_and_build` 仍不支持。只有 Symbol/后处理
 证据明确要求时才安排
 Export #2。
+
+P1.3a Host 是独立的当前用户后台进程，只维护单实例、heartbeat/status、日志和
+崩溃恢复；它不会启动 Broker/MCP/PLE，也不会执行在线 PLC 操作。Broker 未显式启动时
+Host 显示 `WAITING_FOR_AGENT`。构建后可用
+`scripts/runner/Invoke-CtrlXOpconRunnerHost.ps1` 执行 `Start/Stop/Status/Logs`；
+`Install/Uninstall` 只管理该项目派生的当前用户登录任务，修改前可先加 `-WhatIf`。
 
 `RUNNER_ACCEPTANCE_CONTRACT: clean-compile + complete-warning-set + explicit-user-confirmation; missing-baseline => bootstrap-blocked`
 

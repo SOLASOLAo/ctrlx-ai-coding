@@ -9,11 +9,11 @@
 3. HMI 产品化；
 4. 商业交付。
 
-本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client、P1.2b Broker、受控 adapter、typed warning 与 semantic snapshot 的真实 PLE 技术通道已跑通。正式 warning/semantic baseline 已建立；新的真实 Export/action 也已取得 0 errors / 4 warnings并验证 456 mapping 与 Symbol baseline。当前唯一 blocker 是旧 recoverable-baseline 实现要求 `.project` 等于 Git HEAD，而项目政策禁止把 `.project` 二进制继续入库；下一步只收敛这一合同冲突，不扩张其他阶段。
+本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面和 P1.2 工程 action 执行器已经完成；Station010 的正式 warning/semantic baseline、Build 前本机内容寻址 checkpoint 与全新 immutable action 均已复验，结果为 0 errors / 4 warnings、456 mapping，Symbol 和工程/结构哈希稳定。当前进入 P1.3：P1.3a current-user interactive Host 已实现，自动 action 消费和产品级发行仍未完成。
 
 `codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2b 由交互用户会话中的唯一 Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次 action 都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
 
-### P1.2 当前切片（2026-08-28）
+### P1.2 已完成切片（2026-08-28）
 
 - **P1.2a 已实现**：.NET 8 Runner Core/CLI、immutable action 与权威 operation
   ledger 绑定、hash/fingerprint 门禁、client/action-run 租约、不可变 claim/result、
@@ -40,11 +40,11 @@
   回读 → 单次 `clean_compile_project` 的同次结构化
   summary（含 correlation token、时间与 preflight）→ session/project 再核验 → 后指纹
   稳定性检查 → terminal observation。缓存型 `get_compile_messages` 不参与 fresh 成功
-  判定。缺少经用户明确确认的 warning/semantic baseline 时返回对应 bootstrap `BLOCKED`；
+  判定。缺少经用户一次明确确认的 warning/semantic baseline 时返回对应 bootstrap `BLOCKED`；
   检测到 PLE 告警输出截断时以 `PLE_WARNING_OUTPUT_TRUNCATED` 失败关闭。
   无 generic MCP surface，也无在线命令。
-- 提交前确认链加固已完成：确认证据只能来自 `docs/reviews/` 下的独立文档，AI
-  candidate/triage 及改名副本不得作为 confirmation；review/scope/baseline 均用同一有界
+- 提交前确认链加固已完成：一次明确用户确认即可，不采集姓名、工号或增加重复审批；AI
+  candidate/triage 及改名副本不得自动作为 confirmation；confirmation/scope/baseline 均用同一有界
   bytes 完成校验、SHA 与解析；semantic adapter 在最多 4 次 Symbol 有界收敛后执行三组
   Mapping/Symbol 交叉权威读取，mapping 只比较最终封存的语义投影，并在全部 REST 读取后
   执行最终 Mapping/dirty guard；REST body 使用 30 s 全程 timeout + 8 MiB streaming cap。
@@ -60,6 +60,16 @@
   deadline 决定 pending，不再依赖 250 ms 调度窗口。Broker atomic JSON 仅对 Windows
   access/sharing/lock violation 做 6 次、总计约 230 ms 的有界短重试；耗尽后仍抛出，
   immutable 创建竞态继续映射为 `BROKER_IMMUTABLE_STATE_EXISTS`，临时文件照常清理。
+
+### P1.3a current-user Runner Host（2026-08-28）
+
+- 已实现 current-user interactive Host：单项目 owner、心跳/状态、受控停止、限定目录的
+  JSONL 日志保留，以及可选的当前用户 AtLogOn Scheduled Task。
+- Host 只观察同一 Windows 会话中已存在且通过身份校验的 Agent/Broker；它永不启动
+  Broker、MCP、PLE、Node，也没有连接、下载、启停、变量写入或 FORCE 等在线能力。
+- 同会话 Agent 不存在时状态为 `WAITING_FOR_AGENT`，不会自动启动工程工具或执行 action。
+- P1.3a 只完成后台 Host 的最小生命周期。自动 action 消费、完整崩溃恢复、稳定安装目录、
+  升级/回滚和团队发行仍属于 P1.3/P1.4 后续，因此整个 P1.3 仍未完成。
 
 显式启动与只读状态/客户端命令：
 

@@ -145,6 +145,7 @@ try {
             'scripts\cpstudio\offline_mcp_build.cjs',
             'scripts\cpstudio\Run-OfflinePostExportCheck.cmd',
             'scripts\runner\Invoke-CtrlXOpconRunner.ps1',
+            'scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1',
             'scripts\runner\README.md',
             'tools\runner\CtrlX.OpCon.Runner.Core\CtrlX.OpCon.Runner.Core.csproj',
             'tools\runner\CtrlX.OpCon.Runner.Core\RunnerExecutor.cs',
@@ -154,6 +155,9 @@ try {
             'tools\runner\CtrlX.OpCon.Runner.Broker\CtrlX.OpCon.Runner.Broker.csproj',
             'tools\runner\CtrlX.OpCon.Runner.Broker\Program.cs',
             'tools\runner\CtrlX.OpCon.Runner.Broker\BrokerHost.cs',
+            'tools\runner\CtrlX.OpCon.Runner.Host\CtrlX.OpCon.Runner.Host.csproj',
+            'tools\runner\CtrlX.OpCon.Runner.Host\Program.cs',
+            'tools\runner\CtrlX.OpCon.Runner.Host\HostRuntime.cs',
             'tools\runner\README.md',
             'scripts\git\Get-ReadOnlyGitAudit.ps1',
             'tests\cpstudio\Test-PostExportQueue.ps1',
@@ -189,6 +193,35 @@ try {
     $generatedRunnerWrapper = [System.IO.File]::ReadAllText((Join-Path $outputPath 'scripts\runner\Invoke-CtrlXOpconRunner.ps1'))
     Assert-True -Condition (-not [regex]::IsMatch($generatedRunnerWrapper, '(?im)^\s*&\s*dotnet\s+run\b')) -Message 'Generated action wrapper invokes dotnet run/MSBuild while consuming an action.'
     Assert-True -Condition $generatedRunnerWrapper.Contains('Get-RunnerCliAssembly') -Message 'Generated action wrapper is not bound to a prebuilt Runner assembly.'
+    $generatedHostWrapper = [System.IO.File]::ReadAllText((Join-Path $outputPath 'scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1'))
+    Assert-True -Condition $generatedHostWrapper.Contains('Get-HostLaunch') -Message 'Generated project is missing the controlled Runner Host launcher.'
+    Assert-True -Condition $generatedHostWrapper.Contains('-LogonType Interactive') -Message 'Generated Host task is not restricted to an interactive user token.'
+
+    $productRunnerRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\src\runner'))
+    $productRunnerFiles = @(Get-ChildItem -LiteralPath $productRunnerRoot -Recurse -File |
+        Where-Object {
+            $relative = $_.FullName.Substring($productRunnerRoot.Length).TrimStart('\', '/')
+            $segments = $relative -split '[\\/]'
+            ($segments -notcontains 'bin') -and
+            ($segments -notcontains 'obj') -and
+            ($_.Extension.ToLowerInvariant() -in @('.cs', '.csproj', '.md'))
+        })
+    $generatedRunnerRoot = Join-Path $outputPath 'tools\runner'
+    $generatedProductFiles = @(Get-ChildItem -LiteralPath $generatedRunnerRoot -Recurse -File |
+        Where-Object {
+            $relative = $_.FullName.Substring($generatedRunnerRoot.Length).TrimStart('\', '/')
+            $segments = $relative -split '[\\/]'
+            ($segments -notcontains 'bin') -and
+            ($segments -notcontains 'obj') -and
+            ($_.Extension.ToLowerInvariant() -in @('.cs', '.csproj', '.md'))
+        })
+    Assert-True -Condition ($generatedProductFiles.Count -eq $productRunnerFiles.Count) -Message 'Initializer did not copy the complete Runner product source set.'
+    foreach ($sourceFile in $productRunnerFiles) {
+        $relative = $sourceFile.FullName.Substring($productRunnerRoot.Length).TrimStart('\', '/')
+        $generatedFile = Join-Path $generatedRunnerRoot $relative
+        Assert-True -Condition ([System.IO.File]::Exists($generatedFile)) -Message "Generated Runner source is missing: $relative"
+        Assert-True -Condition ((Get-FileHash -LiteralPath $sourceFile.FullName -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $generatedFile -Algorithm SHA256).Hash) -Message "Generated Runner source drifted: $relative"
+    }
 
     $generatedControlDocs = @(
         [System.IO.File]::ReadAllText((Join-Path $outputPath 'README.md')),
@@ -297,6 +330,21 @@ try {
     $generatedBrokerBuild = & dotnet build $generatedBrokerProject --configuration Release /p:RestoreIgnoreFailedSources=true 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated .NET Broker build failed: " + ($generatedBrokerBuild -join ' '))
     Assert-True -Condition (($generatedBrokerBuild -join ' ') -match '0 Error\(s\)') -Message 'Generated .NET Broker build did not report zero errors.'
+    Write-Host '[initializer] generated .NET Host build and read-only status'
+    $generatedHostProject = Join-Path $outputPath 'tools\runner\CtrlX.OpCon.Runner.Host\CtrlX.OpCon.Runner.Host.csproj'
+    $generatedHostBuild = & dotnet build $generatedHostProject --configuration Release /p:RestoreIgnoreFailedSources=true 2>&1
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated .NET Host build failed: " + ($generatedHostBuild -join ' '))
+    Assert-True -Condition (($generatedHostBuild -join ' ') -match '0 Error\(s\)') -Message 'Generated .NET Host build did not report zero errors.'
+    $engineeringProcessesBefore = @(Get-Process -ErrorAction SilentlyContinue | Where-Object ProcessName -Match '^(ctrlX-PLC-Engineering|node|vcrunner-broker)$' | Select-Object -ExpandProperty Id | Sort-Object)
+    $generatedHostAssembly = Join-Path $outputPath 'tools\runner\CtrlX.OpCon.Runner.Host\bin\Release\net8.0\vcrunner-host.dll'
+    $generatedHostStatusText = @(& dotnet $generatedHostAssembly status --engineering-root $outputPath --json 2>&1)
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated Host status failed: " + ($generatedHostStatusText -join ' '))
+    $generatedHostStatus = (($generatedHostStatusText -join [Environment]::NewLine) | ConvertFrom-Json -Depth 16)
+    Assert-True -Condition ([string]$generatedHostStatus.state -eq 'STOPPED') -Message 'Fresh generated Host status must be STOPPED.'
+    Assert-True -Condition (-not [bool]$generatedHostStatus.safety.startsBroker) -Message 'Generated Host status claims it can start Broker.'
+    Assert-True -Condition (-not [bool]$generatedHostStatus.safety.startsPleOrMcp) -Message 'Generated Host status claims it can start PLE/MCP.'
+    $engineeringProcessesAfter = @(Get-Process -ErrorAction SilentlyContinue | Where-Object ProcessName -Match '^(ctrlX-PLC-Engineering|node|vcrunner-broker)$' | Select-Object -ExpandProperty Id | Sort-Object)
+    Assert-True -Condition (($engineeringProcessesBefore -join ',') -eq ($engineeringProcessesAfter -join ',')) -Message 'Host status started or stopped an engineering process.'
     Write-Host '[initializer] generated Runner doctor (PowerShell 7)'
     $generatedRunnerDoctor = & $powerShell7 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $outputPath 'scripts\runner\Invoke-CtrlXOpconRunner.ps1') -Command Doctor 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated .NET Runner doctor failed: " + ($generatedRunnerDoctor -join ' '))

@@ -73,7 +73,9 @@ AI 可以创建标准化的 AI 旁车目录，但不伪造 CpStudio 供应商模
 - [x] Controlled Runner P1.2b 离线基础：interactive Broker、current-user registration、Named Pipe v2、durable submit/query、单 owner 和 typed action allowlist
 - [x] Controlled Runner P1.2 真实 PLE 技术通道：受控 ownership/fresh/Clean Build、typed-warning 与 semantic-snapshot adapter 已应用；Station010 新 action 连续取得完整 0 errors / 4 条 `OPC.UA.DA` warnings，工程/结构 SHA 前后不变
 - [x] Controlled Runner P1.2 失败关闭加固：用户确认记录、同字节有界 hash/parse、warning 截断阻断、畸形请求/证据脱敏、三组 Mapping/Symbol 交叉权威读取、最终 Mapping/dirty guard、REST timeout/stream cap 与 patch rollback 回归完成
-- [ ] Controlled Runner P1.2 基线验收：Station010 的正式 warning/semantic baselines 已通过一次用户确认建立，不采集姓名/工号；尚需新的正常 CpStudio Export 和全新 action 完成最终复验，候选禁止自动晋升
+- [x] Controlled Runner P1.2 正式基线验收：Station010 的 warning/semantic baselines 已由一次明确用户确认建立，不采集姓名/工号；全新 immutable action 已完成 0 errors / 4 warnings、456 mapping、Symbol、checkpoint 与工程/结构哈希复验
+- [x] Controlled Runner P1.3a：current-user interactive Host、单实例、状态/心跳、受控停止、日志保留与可选 AtLogOn Scheduled Task 已实现；Host 不启动 Broker/MCP/PLE/Node 或在线操作，无同会话 Agent 时保持 `WAITING_FOR_AGENT`
+- [ ] Controlled Runner P1.3 后续：自动 action 消费、完整崩溃恢复与产品级安装仍未完成；不得把 P1.3a 视为整个 P1.3 已完成
 - [ ] 阶段 A(进行中):用户 CpStudio 骨架 → AI 填充逻辑(阶段 3)→ 仿真 → 真机
 - [ ] 阶段 B:路线② HMI 原型(OPC UA demo → hmi-framework,主画面 Avalonia 原生壳,Web 版远程备选)
 - [ ] 阶段 C:路线③ 标准 CODESYS + MCP 实测(先验证后买授权)

@@ -81,8 +81,38 @@ baseline-bootstrap `BLOCKED` reason and can never turn a clean compile into a
 successful Stage 2 result. `apply_change_set_and_build` remains unsupported and
 returns `BLOCKED_UNSUPPORTED_ACTION`.
 
+## P1.3a current-user background Host
+
+Build the Host once from the checked-in source, then use its thin PowerShell
+entry for lifecycle and read-only status:
+
+```powershell
+dotnet build .\tools\runner\CtrlX.OpCon.Runner.Host\CtrlX.OpCon.Runner.Host.csproj -c Release
+.\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Status
+.\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Install -WhatIf
+.\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Install
+.\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Start
+.\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Logs
+.\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Stop
+```
+
+`Install` registers one current-user `AtLogOn` Scheduled Task; `Uninstall`
+stops only this exact project Host and removes only its derived task. Preview
+either mutation with `-WhatIf` first.
+
+Default `Start` requires that exact validated task. A raw hidden process may be
+used only with explicit `-DevelopmentProcess` during development testing.
+
+The Host owns no engineering process. It never starts Broker, Node, MCP or PLE,
+and does not contain online PLC operations. When the separately and explicitly
+started interactive Broker is unavailable it stays in `WAITING_FOR_AGENT`.
+This P1.3a slice supplies single-instance lifecycle, heartbeat/status, bounded
+logs and crash-state recovery; automatic action consumption is still disabled.
+A future Session 0 Service must remain a queue/policy/status facade and must not
+launch visible engineering tools.
+
 ## Safety boundary
 
-Neither P1.1 nor P1.2a contains connect, download, start/stop, runtime write or
-FORCE capability. The client has no command that launches PLE/MCP/Broker and no
-generic tool-execution surface.
+P1.1, P1.2a and the P1.3a Host contain no connect, download, runtime start/stop,
+variable write or FORCE capability. The action client and Host have no command
+that launches PLE/MCP/Broker and no generic tool-execution surface.

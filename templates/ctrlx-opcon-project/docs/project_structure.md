@@ -32,6 +32,8 @@
 7. 用显式 `clean_compile_project` 完成 Clean Build，回读并记录完整 warning 签名、更新报告并提交。
 
 Stage 2 coordinator 不启动 PLE、MCP 或 REST。P1.2a client 与 P1.2b interactive Broker 离线基础已实现，使用 Named Pipe v2、current-user registration、durable submit/query 和单 owner 租约。受控 adapter、语义证据 producer 及真实 PLE 离线 acceptance 通过前，生产 action 必须失败关闭。
+P1.3a Host 是另一个当前用户后台生命周期：只负责单实例、状态、日志和恢复，不启动
+Broker/MCP/PLE。Agent 不在线时保持 `WAITING_FOR_AGENT`；Broker 始终由交互用户显式启动。
 
 ## 通用与项目专用
 

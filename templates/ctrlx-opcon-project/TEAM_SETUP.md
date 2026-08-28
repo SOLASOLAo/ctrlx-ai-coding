@@ -23,6 +23,7 @@
 | 组件 | 项目基线 |
 |---|---|
 | PowerShell | 7.5+；`%ProgramFiles%\PowerShell\7\pwsh.exe`，必须支持 `ConvertFrom-Json -DateKind` |
+| .NET SDK | 8.x，用于构建和运行受控 Runner/Host |
 | CpStudio | 由项目负责人确认精确版本 |
 | ctrlX PLC Engineering | `config/project.yaml` 中的 profile/version |
 | ctrlX IO Engineering | `config/project.yaml` 中的 version |
@@ -46,6 +47,20 @@
 5. 记录 warning 的代码、对象和位置，不只记录总数；
 6. 回读一个 AI-owned 对象并与 `src/plc/` 比较；
 7. 不连接、不下载、不启停、不写实体 PLC。
+
+## Runner Host（可选登录启动）
+
+先构建受控源码并检查停止状态：
+
+```powershell
+dotnet build .\tools\runner\CtrlX.OpCon.Runner.Host\CtrlX.OpCon.Runner.Host.csproj -c Release
+.\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Status
+.\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Install -WhatIf
+```
+
+确认预览的任务名和工程目录正确后，去掉 `-WhatIf` 安装当前用户登录任务。
+该任务只启动 Host，不启动 Broker/MCP/PLE；工程 Agent 未由用户显式启动时
+`WAITING_FOR_AGENT` 是正常状态。
 
 ## 团队交接
 
