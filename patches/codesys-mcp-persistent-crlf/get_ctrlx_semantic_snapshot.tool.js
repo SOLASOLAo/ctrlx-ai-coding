@@ -230,6 +230,13 @@
                     };
                 }
             };
+            // A Clean Build makes PLE rebuild Symbol Configuration asynchronously.
+            // The first successful REST response can therefore be a transient,
+            // incomplete payload even though the project is clean.  Discard exactly
+            // one bounded warm-up read, then retain the strict authoritative
+            // double-read gate below.  A difference between the two authoritative
+            // reads still fails closed.
+            await readSymbolConfig();
             const mappingBefore = await readMappings();
             const symbolBefore = await readSymbolConfig();
             const mappingAfter = await readMappings();
@@ -303,7 +310,7 @@
                 sources: {
                     mapping: 'PLE ScriptEngine double-read plus final dirty-state guard',
                     symbolConfig: {
-                        source: 'PLE REST api v2 GET',
+                        source: 'PLE REST api v2 warm-up plus authoritative double-read',
                         applicationPath: sanApp,
                         endpointPath: restPath,
                         httpStatus: symbolBefore.httpStatus,

@@ -259,6 +259,21 @@
   告警完整性门禁；本轮新的正式 immutable action/candidate 尚未生成，人工 warning/
   semantic baseline 尚未审阅或建立，bootstrap 状态继续保持 `BLOCKED`。
 
+### 2026-08-28 · First real Export action and Symbol warm-up hardening
+
+- 真实 CpStudio Export request `08bd1cc9-f16d-4903-99ff-7d83a88b0dae` 已经 Stage 1 精确消费，
+  并生成 immutable action `cpstudio-stage2-08bd1cc9-f16d-4903-99ff-7d83a88b0dae-c7a0ea87-0001`。
+  Broker 受控执行得到完整 Clean Build **0 errors / 4 warnings**；四条均为相同的
+  `OPC.UA.DA` attribute warning，工程 SHA 和 structure SHA 执行前后未变。
+- 首次 semantic snapshot 失败关闭。只读复测证明 Clean Build 后 Symbol Configuration 的
+  第一次成功 REST GET 可能仍是异步重建中的短响应，随后才返回稳定完整响应；这不是放宽
+  dirty、mapping 或双读一致性门禁的理由。
+- 语义适配器现在只丢弃一次有界 Symbol warm-up GET，再执行原有两次权威读取；权威双读
+  任一差异仍失败关闭。回归显式使用“首读瞬态、后两读一致”的三段 payload，并继续覆盖
+  权威读取变化和最终 dirty probe。旧 canonical block 只能通过精确 SHA allowlist 升级。
+- 原 action 已以 `BLOCKED` evidence 封口且不可复用。完整 warning evidence 已生成待人审
+  candidate；semantic candidate 必须由下一次真实 Export 产生的新 action 使用修复后的适配器生成。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |

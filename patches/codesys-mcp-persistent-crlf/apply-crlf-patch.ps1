@@ -1037,9 +1037,16 @@ function PatchSemanticSnapshotServer([string]$serverFile, [bool]$isTypeScript) {
   }
   $markerCount = CountLiteral $source $semanticSnapshotMarker
   $previousCanonicalSha256 = if ($isTypeScript) {
-    "323252B84E184AEC7D575B00F6B00D4E3CF7FB2ACD510E5135647E579852190D"
+    @(
+      "323252B84E184AEC7D575B00F6B00D4E3CF7FB2ACD510E5135647E579852190D",
+      "C5FC1BE0854A5DF18AAFD324EC23E1741D1D53EFC3F19B17FBA9FBD9C26629BB"
+    )
   } else {
-    "8B25D694A683530B619A4083C998E0BE8C5C5E08582679BD6806D78955FFEEFB"
+    @(
+      "8B25D694A683530B619A4083C998E0BE8C5C5E08582679BD6806D78955FFEEFB",
+      "245F78590E91F44AE8F7473476E595353ADB783289D5DA798A915A24C3C5ACB8",
+      "638ECEB77E46C9A7F71A389BB26B23609CFA42839FEEA08793787A0F837CE8EF"
+    )
   }
   $currentBlockSha256 = GetTextSha256 $currentBlock
   $knownAuthorityUpgradeBlock = $block.Replace("http://localhost:9002", "http://127.0.0.1:9002")
@@ -1051,7 +1058,7 @@ function PatchSemanticSnapshotServer([string]$serverFile, [bool]$isTypeScript) {
     $toolStart -ge $blockStart -and
     $toolEnd -gt $toolStart -and
     (($currentBlock -eq $knownAuthorityUpgradeBlock) -or
-     ($currentBlockSha256 -eq $previousCanonicalSha256))
+     ($previousCanonicalSha256 -contains $currentBlockSha256))
   $isPatched =
     $currentBlock -eq $block -and
     (CountLiteral $source $semanticSnapshotMarker) -eq 1 -and
@@ -1069,6 +1076,7 @@ function PatchSemanticSnapshotServer([string]$serverFile, [bool]$isTypeScript) {
     $source.Contains("const mappingFinal = await readMappings();") -and
     $source.Contains("const symbolBefore = await readSymbolConfig();") -and
     $source.Contains("const symbolAfter = await readSymbolConfig();") -and
+    $source.Contains("PLE REST api v2 warm-up plus authoritative double-read") -and
     $source.Contains("data.dirtyCheckCount === 2") -and
     $source.Contains("const readBoundedResponseBody =") -and
     $source.Contains("response.body.getReader") -and
