@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using CtrlX.OpCon.Runner.Core;
@@ -84,13 +85,18 @@ internal static class HostFileSystem
                     FileShare.ReadWrite | FileShare.Delete,
                     bufferSize: 4096,
                     FileOptions.SequentialScan);
-                if (stream.Length <= 0 || stream.Length > maximumBytes)
+                var length = stream.Length;
+                if (length <= 0 || length > maximumBytes)
                 {
                     throw new RunnerGateException("HOST_STATE_INVALID", $"{description} has an invalid size.");
                 }
 
-                var bytes = new byte[checked((int)stream.Length)];
+                var bytes = new byte[checked((int)length)];
                 stream.ReadExactly(bytes);
+                if (stream.Position != stream.Length)
+                {
+                    throw new IOException($"{description} changed while it was read.");
+                }
                 return bytes;
             }
             catch (IOException) when (attempt < IoAttempts)
@@ -203,6 +209,108 @@ internal sealed class HostOwnerLease : IDisposable
     public void Dispose() => stream.Dispose();
 }
 
+internal sealed class HostConsumerStateStore
+{
+    private static readonly TimeSpan ClockSkew = TimeSpan.FromMinutes(5);
+    private readonly HostRuntimePaths paths;
+
+    public HostConsumerStateStore(HostRuntimePaths paths)
+    {
+        this.paths = paths;
+    }
+
+    public HostConsumerStateDocument ReadOrCreate(DateTimeOffset now)
+    {
+        if (!File.Exists(paths.ConsumerStatePath))
+        {
+            var created = new HostConsumerStateDocument
+            {
+                EngineeringRoot = paths.EngineeringRoot,
+                RootKey = paths.RootKey,
+                ActivatedAtUtc = now
+            };
+            try
+            {
+                var bytes = HostJson.Serialize(created);
+                var directory = Path.GetDirectoryName(paths.ConsumerStatePath)!;
+                HostFileSystem.EnsurePrivateDirectory(directory);
+                using var stream = new FileStream(
+                    paths.ConsumerStatePath,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None,
+                    4096,
+                    FileOptions.WriteThrough);
+                stream.Write(bytes);
+                stream.Flush(flushToDisk: true);
+                return created;
+            }
+            catch (IOException) when (File.Exists(paths.ConsumerStatePath))
+            {
+                // A concurrent creator cannot be trusted until the exact file is
+                // read and validated below.
+            }
+        }
+
+        var document = HostJson.Deserialize<HostConsumerStateDocument>(
+            HostFileSystem.ReadBounded(paths.ConsumerStatePath, "Runner Host consumer state"),
+            "Runner Host consumer state");
+        if (document.SchemaVersion != 1 ||
+            document.Kind != "ctrlx-opcon-runner-host-consumer-state" ||
+            !document.EngineeringRoot.Equals(paths.EngineeringRoot, StringComparison.OrdinalIgnoreCase) ||
+            document.RootKey != paths.RootKey ||
+            document.ActivatedAtUtc == default ||
+            document.ActivatedAtUtc > DateTimeOffset.UtcNow + ClockSkew)
+        {
+            throw new RunnerGateException(
+                "HOST_CONSUMER_STATE_INVALID",
+                "Runner Host consumer activation state is invalid.");
+        }
+
+        return document;
+    }
+}
+
+internal static class LegacyHostStates
+{
+    public static bool IsKnown(string value) => value is
+        HostStates.Starting or HostStates.WaitingForAgent or HostStates.Idle or
+        HostStates.Stopping or HostStates.Faulted or HostStates.Stopped;
+
+    public static bool IsLive(string value) => value is
+        HostStates.Starting or HostStates.WaitingForAgent or HostStates.Idle or
+        HostStates.Stopping or HostStates.Faulted;
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+internal sealed class LegacyHostStatusDocumentV1
+{
+    public int SchemaVersion { get; set; }
+    public string Kind { get; set; } = string.Empty;
+    public int ProtocolVersion { get; set; }
+    public string HostInstanceId { get; set; } = string.Empty;
+    public string State { get; set; } = string.Empty;
+    public string ReasonCode { get; set; } = string.Empty;
+    public int HostPid { get; set; }
+    public DateTimeOffset ProcessStartTimeUtc { get; set; }
+    public int WindowsSessionId { get; set; }
+    public string UserSid { get; set; } = string.Empty;
+    public string ExecutablePath { get; set; } = string.Empty;
+    public string ExecutableSha256 { get; set; } = string.Empty;
+    public string EngineeringRoot { get; set; } = string.Empty;
+    public string RootKey { get; set; } = string.Empty;
+    public string PipeName { get; set; } = string.Empty;
+    public DateTimeOffset StartedAtUtc { get; set; }
+    public DateTimeOffset HeartbeatAtUtc { get; set; }
+    public DateTimeOffset ExpiresAtUtc { get; set; }
+    [JsonRequired]
+    public HostAgentStatus Agent { get; set; } = new();
+    [JsonRequired]
+    public HostSafetyStatus Safety { get; set; } = new();
+    public string LogDirectory { get; set; } = string.Empty;
+    public string ActiveLogPath { get; set; } = string.Empty;
+}
+
 internal sealed class HostStatusStore
 {
     private static readonly TimeSpan ClockSkew = TimeSpan.FromSeconds(5);
@@ -213,8 +321,11 @@ internal sealed class HostStatusStore
         this.paths = paths;
     }
 
-    public void Publish(HostStatusDocument document) =>
+    public void Publish(HostStatusDocument document)
+    {
+        ValidateStructure(document);
         HostFileSystem.WriteAtomic(paths.StatusPath, HostJson.Serialize(document));
+    }
 
     public HostStatusDocument? ReadStructured()
     {
@@ -226,9 +337,8 @@ internal sealed class HostStatusStore
         HostStatusDocument document;
         try
         {
-            document = HostJson.Deserialize<HostStatusDocument>(
-                HostFileSystem.ReadBounded(paths.StatusPath, "Runner Host status"),
-                "Runner Host status");
+            var bytes = HostFileSystem.ReadBounded(paths.StatusPath, "Runner Host status");
+            document = ReadCurrentOrUpgradeLegacy(bytes);
         }
         catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
         {
@@ -236,6 +346,100 @@ internal sealed class HostStatusStore
         }
         ValidateStructure(document);
         return document;
+    }
+
+    private HostStatusDocument ReadCurrentOrUpgradeLegacy(byte[] bytes)
+    {
+        JsonObject root;
+        try
+        {
+            root = JsonNode.Parse(bytes, nodeOptions: null, documentOptions: new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 32
+            }) as JsonObject
+                ?? throw new JsonException("Root must be an object.");
+        }
+        catch (JsonException exception)
+        {
+            throw new RunnerGateException("HOST_STATE_INVALID", $"Runner Host status is invalid JSON: {exception.Message}");
+        }
+
+        if (root["schemaVersion"] is not JsonValue schemaValue ||
+            !schemaValue.TryGetValue<int>(out var schemaVersion))
+        {
+            throw new RunnerGateException("HOST_STATE_INVALID", "Runner Host status has no valid schema version.");
+        }
+
+        if (schemaVersion == HostConstants.StatusSchemaVersion)
+        {
+            return HostJson.Deserialize<HostStatusDocument>(bytes, "Runner Host status");
+        }
+        if (schemaVersion != 1)
+        {
+            throw new RunnerGateException("HOST_STATE_INVALID", "Runner Host status schema is unsupported.");
+        }
+
+        var legacy = HostJson.Deserialize<LegacyHostStatusDocumentV1>(bytes, "legacy Runner Host status");
+        if (legacy.SchemaVersion != 1 ||
+            legacy.Kind != HostConstants.StatusKind ||
+            legacy.ProtocolVersion != HostConstants.ProtocolVersion ||
+            !LegacyHostStates.IsKnown(legacy.State) ||
+            legacy.Safety is null ||
+            legacy.Safety.StartsBroker ||
+            legacy.Safety.StartsPleOrMcp ||
+            legacy.Safety.OnlineOperationsAllowed ||
+            legacy.Safety.AutomaticActionExecutionEnabled)
+        {
+            throw new RunnerGateException(
+                "HOST_LEGACY_STATE_INVALID",
+                "Legacy Runner Host status does not match the P1.3a safety contract.");
+        }
+
+        var legacyMayBeLive = LegacyHostStates.IsLive(legacy.State);
+        return new HostStatusDocument
+        {
+            SchemaVersion = HostConstants.StatusSchemaVersion,
+            Kind = legacy.Kind,
+            ProtocolVersion = legacy.ProtocolVersion,
+            HostInstanceId = legacy.HostInstanceId,
+            State = legacyMayBeLive ? HostStates.Blocked : HostStates.Stopped,
+            ReasonCode = legacyMayBeLive ? "HOST_LEGACY_VERSION_ACTIVE" : legacy.ReasonCode,
+            HostPid = legacy.HostPid,
+            ProcessStartTimeUtc = legacy.ProcessStartTimeUtc,
+            WindowsSessionId = legacy.WindowsSessionId,
+            UserSid = legacy.UserSid,
+            ExecutablePath = legacy.ExecutablePath,
+            ExecutableSha256 = legacy.ExecutableSha256,
+            EngineeringRoot = legacy.EngineeringRoot,
+            RootKey = legacy.RootKey,
+            PipeName = legacy.PipeName,
+            StartedAtUtc = legacy.StartedAtUtc,
+            HeartbeatAtUtc = legacy.HeartbeatAtUtc,
+            ExpiresAtUtc = legacy.ExpiresAtUtc,
+            Agent = legacy.Agent,
+            Action = legacyMayBeLive
+                ? new HostActionStatus
+                {
+                    State = HostActionStates.Invalid,
+                    ReasonCode = "HOST_LEGACY_VERSION_ACTIVE"
+                }
+                : new HostActionStatus
+                {
+                    State = HostActionStates.None,
+                    ReasonCode = "HOST_NO_PENDING_ACTION"
+                },
+            Safety = new HostSafetyStatus
+            {
+                StartsBroker = false,
+                StartsPleOrMcp = false,
+                OnlineOperationsAllowed = false,
+                AutomaticActionExecutionEnabled = true
+            },
+            LogDirectory = legacy.LogDirectory,
+            ActiveLogPath = legacy.ActiveLogPath
+        };
     }
 
     public HostStatusDocument? ReadLive()
@@ -306,7 +510,7 @@ internal sealed class HostStatusStore
 
     private void ValidateStructure(HostStatusDocument document)
     {
-        if (document.SchemaVersion != HostConstants.SchemaVersion ||
+        if (document.SchemaVersion != HostConstants.StatusSchemaVersion ||
             document.ProtocolVersion != HostConstants.ProtocolVersion ||
             document.Kind != HostConstants.StatusKind ||
             !HostStates.IsKnown(document.State) ||
@@ -326,6 +530,10 @@ internal sealed class HostStatusStore
             document.UserSid != BrokerWireProtocol.CurrentUserSid() ||
             document.Agent is null ||
             !IsValidAgent(document.Agent, document.WindowsSessionId) ||
+            (document.State == HostStates.WaitingForAgent && document.Agent.Available) ||
+            document.Action is null ||
+            !IsValidAction(document.Action) ||
+            !IsConsistentState(document.State, document.ReasonCode, document.Action) ||
             document.Safety is null ||
             !Path.GetFullPath(document.LogDirectory).Equals(paths.LogDirectory, StringComparison.OrdinalIgnoreCase) ||
             !IsSafeLogPath(document.ActiveLogPath) ||
@@ -334,17 +542,21 @@ internal sealed class HostStatusStore
             document.Safety.StartsBroker ||
             document.Safety.StartsPleOrMcp ||
             document.Safety.OnlineOperationsAllowed ||
-            document.Safety.AutomaticActionExecutionEnabled)
+            !document.Safety.AutomaticActionExecutionEnabled)
         {
             throw new RunnerGateException("HOST_STATE_INVALID", "Runner Host status identity, schema, or safety contract is invalid.");
         }
     }
 
-    private static bool IsSafeIdentifier(string value) =>
-        value.Length is > 0 and <= 128 && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-');
+    private static bool IsSafeIdentifier(string? value, int maximumLength = 128) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        value.Length <= maximumLength &&
+        value.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-');
 
-    private static bool IsSha256(string value) =>
-        value.Length == 64 && value.All(Uri.IsHexDigit);
+    private static bool IsSha256(string? value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        value.Length == 64 &&
+        value.All(Uri.IsHexDigit);
 
     private static bool IsValidAgent(HostAgentStatus agent, int hostSessionId)
     {
@@ -368,6 +580,117 @@ internal sealed class HostStatusStore
             !string.IsNullOrWhiteSpace(agent.Profile) &&
             !string.IsNullOrWhiteSpace(agent.PlcProject) &&
             Path.IsPathFullyQualified(agent.PlcProject);
+    }
+
+    private bool IsValidAction(HostActionStatus action)
+    {
+        if (!HostActionStates.IsKnown(action.State) ||
+            !IsSafeIdentifier(action.ReasonCode) ||
+            action.PendingCount < 0 || action.PendingCount > 2048 ||
+            action.InvalidCount < 0 || action.InvalidCount > 2048 ||
+            action.LegacyIgnoredCount < 0 || action.LegacyIgnoredCount > 2048)
+        {
+            return false;
+        }
+
+        var identityRequired = action.State is
+            HostActionStates.WaitingForAgent or
+            HostActionStates.Executing or
+            HostActionStates.RecoveryPending or
+            HostActionStates.ResultReady;
+        if (!identityRequired)
+        {
+            return action.OperationId is null &&
+                action.ActionId is null &&
+                action.ActionKind is null &&
+                action.ActionSha256 is null &&
+                action.RunId is null &&
+                action.ResultState is null &&
+                action.ResultPath is null &&
+                action.EvidencePath is null;
+        }
+
+        if (action.OperationId is null || !IsSafeIdentifier(action.OperationId) ||
+            action.ActionId is null || !IsSafeIdentifier(action.ActionId) ||
+            action.ActionKind is null || !IsSafeIdentifier(action.ActionKind) ||
+            action.ActionSha256 is null || !IsSha256(action.ActionSha256) ||
+            action.RunId is null || !IsSafeIdentifier(action.RunId, 256) ||
+            action.RunId != RunnerRunStore.GetRunId(action.ActionId, action.ActionSha256))
+        {
+            return false;
+        }
+
+        if (action.ResultPath is not null && !IsPathInside(
+                Path.Combine(paths.EngineeringRoot, "data", "runs", "runner-p12"),
+                action.ResultPath))
+        {
+            return false;
+        }
+        if (action.EvidencePath is not null && !IsPathInside(
+                Path.Combine(paths.EngineeringRoot, "data", "runner-evidence"),
+                action.EvidencePath))
+        {
+            return false;
+        }
+
+        if (action.State == HostActionStates.ResultReady)
+        {
+            var expectedResultPath = Path.Combine(
+                RunnerRunStore.GetRunRoot(paths.EngineeringRoot, action.ActionId, action.ActionSha256),
+                "result.json");
+            return action.ResultState is not null &&
+                RunnerStates.IsTerminal(action.ResultState) &&
+                action.ResultPath is not null &&
+                HostRuntimePaths.NormalizePath(action.ResultPath)
+                    .Equals(HostRuntimePaths.NormalizePath(expectedResultPath), StringComparison.OrdinalIgnoreCase);
+        }
+
+        return action.ResultState is null &&
+            action.ResultPath is null &&
+            action.EvidencePath is null;
+    }
+
+    private static bool IsConsistentState(
+        string state,
+        string reasonCode,
+        HostActionStatus action)
+    {
+        var actionMatches = state switch
+        {
+            HostStates.Starting or HostStates.WaitingForAction or HostStates.Idle or HostStates.Stopped =>
+                action.State == HostActionStates.None,
+            HostStates.WaitingForAgent => action.State == HostActionStates.WaitingForAgent,
+            HostStates.Executing => action.State is HostActionStates.Executing or HostActionStates.RecoveryPending,
+            HostStates.WaitingForCoordinator => action.State == HostActionStates.ResultReady,
+            HostStates.Blocked => action.State is HostActionStates.Invalid or HostActionStates.Ambiguous,
+            HostStates.Stopping or HostStates.Faulted => true,
+            _ => false
+        };
+        if (!actionMatches)
+        {
+            return false;
+        }
+
+        return state is HostStates.WaitingForAction or HostStates.WaitingForAgent or
+            HostStates.Executing or HostStates.WaitingForCoordinator or HostStates.Blocked
+                ? reasonCode == action.ReasonCode
+                : true;
+    }
+
+    private static bool IsPathInside(string root, string candidate)
+    {
+        try
+        {
+            var normalizedRoot = HostRuntimePaths.NormalizePath(root);
+            var normalizedCandidate = HostRuntimePaths.NormalizePath(candidate);
+            return normalizedCandidate.StartsWith(
+                normalizedRoot + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
     }
 
     private bool IsSafeLogPath(string value)
@@ -457,7 +780,7 @@ internal sealed class HostLogStore
     {
         var record = new
         {
-            schemaVersion = HostConstants.SchemaVersion,
+            schemaVersion = HostConstants.StatusSchemaVersion,
             kind = HostConstants.LogKind,
             atUtc = DateTimeOffset.UtcNow,
             eventName,
@@ -465,7 +788,13 @@ internal sealed class HostLogStore
             reasonCode,
             hostInstanceId,
             engineeringRootKey = paths.RootKey,
-            safety = new { startsBroker = false, startsPleOrMcp = false, onlineOperationsAllowed = false }
+            safety = new
+            {
+                startsBroker = false,
+                startsPleOrMcp = false,
+                onlineOperationsAllowed = false,
+                automaticActionExecutionEnabled = true
+            }
         };
         var bytes = HostJson.Serialize(record, indented: false);
         if (bytes.Length > MaximumFileBytes)

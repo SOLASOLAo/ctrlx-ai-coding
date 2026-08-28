@@ -49,8 +49,11 @@ Configuration 和 SFC 图形属性。Post-export hook 只发布 Stage 1 请求�
 哈希绑定的 action 并校验 evidence，不启动 PLE、MCP 或 REST。P1.2a client 与 P1.2b
 interactive Broker 离线基础已随骨架提供；Broker 使用 Named Pipe v2、current-user
 validated registration、durable submit/query 和单 owner 租约，并必须由交互用户显式启动。
-P1.3a current-user Host 可在后台提供单实例、状态、日志和崩溃恢复，但绝不启动
-Broker/MCP/PLE；缺少有效同会话 Agent 时 `WAITING_FOR_AGENT` 是正常等待状态。
+P1.3a/P1.3b current-user Host 可在后台提供单实例、状态、日志和崩溃恢复，并自动发现、
+消费本次 activation 后的 immutable `currentAction`。历史已终态工作隔离，旧 open claim
+可恢复；缺少有效同会话 Agent 时 `WAITING_FOR_AGENT` 是正常等待状态。action 终态后保持
+`WAITING_FOR_COORDINATOR`，不得绕过尚未实现的 coordinator/evidence ingestion 直接修改
+ledger。Host 绝不启动 Broker、Node、MCP、PLE，也不执行在线 PLC 操作。
 在受控 adapter、语义证据 producer 及真实 PLE 离线 acceptance 通过前，生产 action 必须失败关闭。
 
 ## 6. PLC ST 风格
@@ -76,3 +79,4 @@ THEN
 - [ ] 用显式 `clean_compile_project` 建立首次离线编译与完整 warning 签名基线；
 - [ ] 配置并验证 CpStudio Post-export Stage 1 请求与 Stage 2 PlanOnly ledger。
 - [ ] 验证本工位受控 adapter、语义证据 producer 和真实 PLE 离线 acceptance；完成前不得将生产 action 标记成功。
+- [ ] 验证 P1.3b Host 的 activation 后 action 消费、历史隔离、旧 claim 恢复和 `WAITING_FOR_COORDINATOR`；P1.3c 仍待 coordinator ingestion 与稳定安装/升级/回滚。

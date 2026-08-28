@@ -52,7 +52,7 @@ internal static class HostCli
         {
             WriteJson(new JsonObject
             {
-                ["schemaVersion"] = HostConstants.SchemaVersion,
+                ["schemaVersion"] = HostConstants.StatusSchemaVersion,
                 ["kind"] = "ctrlx-opcon-runner-host-error",
                 ["reasonCode"] = exception.ReasonCode,
                 ["message"] = exception.Message,
@@ -65,7 +65,7 @@ internal static class HostCli
         {
             WriteJson(new JsonObject
             {
-                ["schemaVersion"] = HostConstants.SchemaVersion,
+                ["schemaVersion"] = HostConstants.StatusSchemaVersion,
                 ["kind"] = "ctrlx-opcon-runner-host-error",
                 ["reasonCode"] = "HOST_COMMAND_CANCELLED",
                 ["exitCode"] = RunnerExitCodes.GateFailure,
@@ -77,7 +77,7 @@ internal static class HostCli
         {
             WriteJson(new JsonObject
             {
-                ["schemaVersion"] = HostConstants.SchemaVersion,
+                ["schemaVersion"] = HostConstants.StatusSchemaVersion,
                 ["kind"] = "ctrlx-opcon-runner-host-error",
                 ["reasonCode"] = "HOST_INTERNAL_ERROR",
                 ["message"] = exception.GetType().Name,
@@ -99,8 +99,8 @@ internal static class HostCli
 
         WriteJson(new JsonObject
         {
-            ["schemaVersion"] = HostConstants.SchemaVersion,
-            ["kind"] = HostConstants.StatusKind,
+            ["schemaVersion"] = HostConstants.StatusSchemaVersion,
+            ["kind"] = HostConstants.StatusObservationKind,
             ["state"] = HostStates.Stopped,
             ["reasonCode"] = observation.ReasonCode,
             ["engineeringRoot"] = paths.EngineeringRoot,
@@ -134,7 +134,7 @@ internal static class HostCli
             .ToArray());
         WriteJson(new JsonObject
         {
-            ["schemaVersion"] = HostConstants.SchemaVersion,
+            ["schemaVersion"] = HostConstants.StatusSchemaVersion,
             ["kind"] = "ctrlx-opcon-runner-host-logs",
             ["engineeringRoot"] = paths.EngineeringRoot,
             ["logDirectory"] = paths.LogDirectory,
@@ -149,7 +149,7 @@ internal static class HostCli
         ["startsBroker"] = false,
         ["startsPleOrMcp"] = false,
         ["onlineOperationsAllowed"] = false,
-        ["automaticActionExecutionEnabled"] = false
+        ["automaticActionExecutionEnabled"] = true
     };
 
     private static void WriteJson(JsonNode node) =>
@@ -169,9 +169,10 @@ internal static class HostCli
 
             Boundary:
               The Host never starts Broker, MCP, Node, PLE or an online PLC operation.
-              Missing validated interactive Agent registration is WAITING_FOR_AGENT.
-              This P1.3a slice provides lifecycle, status and bounded logs; automatic
-              action consumption remains disabled until a later reviewed slice.
+              It consumes only immutable currentAction entries created after its
+              activation and uses the existing same-session Broker when available.
+              Missing Agent is WAITING_FOR_AGENT; completed evidence remains
+              WAITING_FOR_COORDINATOR until the Stage 2 ledger is advanced.
             """);
     }
 }

@@ -25,6 +25,11 @@ public sealed class RunnerActionValidator
 
         var allowedActionRoot = Path.Combine(root, "data", "operations");
         var resolvedActionPath = RunnerValidation.EnsureInside(allowedActionRoot, actionPath, "Runner action");
+        RunnerValidation.AssertExistingPathChainNotReparse(
+            root,
+            resolvedActionPath,
+            "ACTION_PATH_REPARSE_POINT",
+            "Runner action");
         if (!File.Exists(resolvedActionPath))
         {
             throw new RunnerGateException("ACTION_NOT_FOUND", $"Runner action does not exist: {resolvedActionPath}");
@@ -270,6 +275,11 @@ public sealed class RunnerActionValidator
         var operationPath = RunnerValidation.EnsureInside(
             Path.Combine(engineeringRoot, "data", "operations"),
             Path.Combine(operationDirectory, "operation.json"),
+            "Runner operation ledger");
+        RunnerValidation.AssertExistingPathChainNotReparse(
+            engineeringRoot,
+            operationPath,
+            "OPERATION_LEDGER_REPARSE_POINT",
             "Runner operation ledger");
         var operation = RunnerJson.ReadObject(operationPath, "Runner operation ledger");
         RunnerValidation.AssertNoSensitiveFields(operation);

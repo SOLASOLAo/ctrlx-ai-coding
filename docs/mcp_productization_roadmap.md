@@ -9,7 +9,7 @@
 3. HMI 产品化；
 4. 商业交付。
 
-本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面和 P1.2 工程 action 执行器已经完成；Station010 的正式 warning/semantic baseline、Build 前本机内容寻址 checkpoint 与全新 immutable action 均已复验，结果为 0 errors / 4 warnings、456 mapping，Symbol 和工程/结构哈希稳定。当前进入 P1.3：P1.3a current-user interactive Host 已实现，自动 action 消费和产品级发行仍未完成。
+本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面和 P1.2 工程 action 执行器已经完成；Station010 的正式 warning/semantic baseline、Build 前本机内容寻址 checkpoint 与全新 immutable action 均已复验，结果为 0 errors / 4 warnings、456 mapping，Symbol 和工程/结构哈希稳定。P1.3a Host 生命周期和 P1.3b 自动 action consumer 已实现；P1.3b 只有纯离线 fixture 验证，不新增真机/真实 PLE 验收声明。P1.3c 尚未完成。
 
 `codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2b 由交互用户会话中的唯一 Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次 action 都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
 
@@ -61,15 +61,19 @@
   access/sharing/lock violation 做 6 次、总计约 230 ms 的有界短重试；耗尽后仍抛出，
   immutable 创建竞态继续映射为 `BROKER_IMMUTABLE_STATE_EXISTS`，临时文件照常清理。
 
-### P1.3a current-user Runner Host（2026-08-28）
+### P1.3a/P1.3b current-user Runner Host（2026-08-28）
 
 - 已实现 current-user interactive Host：单项目 owner、心跳/状态、受控停止、限定目录的
   JSONL 日志保留，以及可选的当前用户 AtLogOn Scheduled Task。
 - Host 只观察同一 Windows 会话中已存在且通过身份校验的 Agent/Broker；它永不启动
   Broker、MCP、PLE、Node，也没有连接、下载、启停、变量写入或 FORCE 等在线能力。
-- 同会话 Agent 不存在时状态为 `WAITING_FOR_AGENT`，不会自动启动工程工具或执行 action。
-- P1.3a 只完成后台 Host 的最小生命周期。自动 action 消费、完整崩溃恢复、稳定安装目录、
-  升级/回滚和团队发行仍属于 P1.3/P1.4 后续，因此整个 P1.3 仍未完成。
+- P1.3b 自动发现并消费本次 Host activation 后由权威 `operation.json.currentAction`
+  发布的 immutable action。activation 前的历史已终态工作被隔离；旧 open claim 仍可恢复，
+  且 activation 后完成的恢复结果持续可见，不会在下一轮扫描消失或重复执行。
+- 有待处理 action 且同会话 Agent 不存在时状态为 `WAITING_FOR_AGENT`，action 保持 pending，不会伪造终态；没有 action 时为 `WAITING_FOR_ACTION`，
+  也不会自动启动工程工具。action 终态落盘后 Host 保持 `WAITING_FOR_COORDINATOR`。
+- P1.3b 已完成自动 action 消费的离线实现，没有新增真机或真实 PLE 验收声明。P1.3c
+  尚未完成：下一步是 coordinator/evidence ingestion，以及稳定安装目录、升级/回滚和团队发行。
 
 显式启动与只读状态/客户端命令：
 

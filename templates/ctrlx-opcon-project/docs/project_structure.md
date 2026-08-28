@@ -27,13 +27,15 @@
 2. Post-export hook 原子发布请求；
 3. Stage 1 消费者只读生成 Git/指纹/ownership 审计报告；
 4. Stage 2 PlanOnly coordinator 建立 operation ledger 和不可变、哈希绑定的 runner action；
-5. 交互用户显式启动的唯一 P1.2b Broker 持有 persistent MCP/PLE 会话，按 ownership/hooks/graphical 审计或恢复 AI 增量，检查 I/O Mapping、BinIo、Symbol Configuration 和 SFC metadata，并回传 evidence；
-6. 仅在 evidence 明确要求时由用户执行 Export #2，再绑定新的 Stage 1 报告并完成最终 Build；
-7. 用显式 `clean_compile_project` 完成 Clean Build，回读并记录完整 warning 签名、更新报告并提交。
+5. P1.3b Host 自动发现 activation 后的 immutable `currentAction`；交互用户显式启动的唯一 P1.2b Broker 持有 persistent MCP/PLE 会话，按 ownership/hooks/graphical 审计或恢复 AI 增量，检查 I/O Mapping、BinIo、Symbol Configuration 和 SFC metadata，并回传 evidence；
+6. action 终态落盘后 Host 保持 `WAITING_FOR_COORDINATOR`；由后续 coordinator/evidence ingestion 校验 evidence 并推进 ledger，仅在 evidence 明确要求时由用户执行 Export #2；
+7. 绑定新的 Stage 1 报告，用显式 `clean_compile_project` 完成最终 Build，回读并记录完整 warning 签名、更新报告并提交。
 
 Stage 2 coordinator 不启动 PLE、MCP 或 REST。P1.2a client 与 P1.2b interactive Broker 离线基础已实现，使用 Named Pipe v2、current-user registration、durable submit/query 和单 owner 租约。受控 adapter、语义证据 producer 及真实 PLE 离线 acceptance 通过前，生产 action 必须失败关闭。
-P1.3a Host 是另一个当前用户后台生命周期：只负责单实例、状态、日志和恢复，不启动
-Broker/MCP/PLE。Agent 不在线时保持 `WAITING_FOR_AGENT`；Broker 始终由交互用户显式启动。
+P1.3a/P1.3b Host 是另一个当前用户后台生命周期：它自动消费 activation 后由权威 ledger
+发布的 action，隔离历史已终态工作，并恢复旧 open claim。Agent 不在线时保持
+`WAITING_FOR_AGENT`；Broker 始终由交互用户显式启动。Host 不启动 Broker、Node、MCP、PLE，
+也不执行在线操作。P1.3b 已实现；P1.3c 仍待 coordinator/evidence ingestion 和稳定安装、升级/回滚。
 
 ## 通用与项目专用
 

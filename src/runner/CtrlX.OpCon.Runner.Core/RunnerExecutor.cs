@@ -85,10 +85,16 @@ public sealed class RunnerExecutor
                 store.AppendEvent(RunnerStates.SessionProbed, reply.Available ? "SESSION_AVAILABLE" : reply.ReasonCode);
                 if (!reply.Available)
                 {
-                    if (recoveringExistingClaim)
+                    if (recoveringExistingClaim ||
+                        request.SessionUnavailableBehavior == RunnerSessionUnavailableBehavior.KeepPending)
                     {
-                        store.AppendEvent(RunnerStates.Executing, "BROKER_RECOVERY_PENDING");
-                        throw Pending("BROKER_RECOVERY_PENDING");
+                        var pendingReason = recoveringExistingClaim
+                            ? "BROKER_RECOVERY_PENDING"
+                            : "BROKER_SESSION_PENDING";
+                        store.AppendEvent(RunnerStates.Executing, pendingReason);
+                        throw Pending(
+                            pendingReason,
+                            SafeBrokerReason(reply.ReasonCode, "BLOCKED_SESSION_UNAVAILABLE"));
                     }
 
                     terminal = new ExecutionTerminal(
@@ -242,13 +248,17 @@ public sealed class RunnerExecutor
             : fallback;
     }
 
-    private static RunnerGateException Pending(string reasonCode) => new(
+    private static RunnerGateException Pending(string reasonCode, string? diagnosticReasonCode = null) => new(
         reasonCode,
         "The Broker operation is accepted or recoverable but has not reached a terminal state.",
-        RunnerExitCodes.Busy);
+        RunnerExitCodes.Busy,
+        diagnosticReasonCode);
 
     private static bool IsPending(RunnerGateException exception) =>
-        exception.ReasonCode is "BROKER_OPERATION_PENDING" or "BROKER_RECOVERY_PENDING";
+        exception.ReasonCode is
+            "BROKER_OPERATION_PENDING" or
+            "BROKER_RECOVERY_PENDING" or
+            "BROKER_SESSION_PENDING";
 
     private static bool SessionMatches(ValidatedRunnerAction action, BrokerSessionIdentity? session)
     {

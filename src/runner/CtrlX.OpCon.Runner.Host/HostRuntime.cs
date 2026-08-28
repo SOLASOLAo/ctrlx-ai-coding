@@ -21,6 +21,8 @@ internal sealed class HostRuntime
         var statusStore = new HostStatusStore(paths);
         statusStore.AssertRecoverableBeforeStart();
         var log = new HostLogStore(paths);
+        var consumerState = new HostConsumerStateStore(paths).ReadOrCreate(DateTimeOffset.UtcNow);
+        var consumer = new HostActionConsumer(paths.EngineeringRoot, consumerState.ActivatedAtUtc);
         var hostInstanceId = Guid.NewGuid().ToString("N");
         var startedAt = DateTimeOffset.UtcNow;
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -28,19 +30,28 @@ internal sealed class HostRuntime
         var serverTask = server.RunAsync(stop.Token);
         var previousState = string.Empty;
         var previousReason = string.Empty;
+        var action = new HostActionStatus();
         var faulted = false;
 
         try
         {
-            Publish(HostStates.Starting, "HOST_STARTING", ProbeAgent(identity), DateTimeOffset.UtcNow);
+            Publish(HostStates.Starting, "HOST_STARTING", ProbeAgent(identity), action, DateTimeOffset.UtcNow);
             log.Write("HOST_STARTED", HostStates.Starting, "HOST_STARTED", hostInstanceId);
             while (!stop.IsCancellationRequested)
             {
                 var now = DateTimeOffset.UtcNow;
                 var agent = ProbeAgent(identity);
-                var state = agent.Available ? HostStates.Idle : HostStates.WaitingForAgent;
-                var reason = agent.Available ? "HOST_AGENT_AVAILABLE" : agent.ReasonCode;
-                Publish(state, reason, agent, now);
+                action = consumer.Tick(agent.Available, stop.Token);
+                if (agent.Available && action.State == HostActionStates.WaitingForAgent)
+                {
+                    // A registration can remain structurally valid while its
+                    // Pipe/session is temporarily unavailable. Publish the
+                    // action's transport diagnosis instead of the contradictory
+                    // Available=true state.
+                    agent = Unavailable(action.ReasonCode);
+                }
+                var (state, reason) = MapState(action);
+                Publish(state, reason, agent, action, now);
                 if (state != previousState || reason != previousReason)
                 {
                     log.Write("HOST_STATE_CHANGED", state, reason, hostInstanceId);
@@ -71,7 +82,7 @@ internal sealed class HostRuntime
         {
             faulted = true;
             var now = DateTimeOffset.UtcNow;
-            Publish(HostStates.Faulted, "HOST_RUNTIME_FAULTED", ProbeAgent(identity), now);
+            Publish(HostStates.Faulted, "HOST_RUNTIME_FAULTED", ProbeAgent(identity), action, now);
             log.Write("HOST_FAULTED", HostStates.Faulted, "HOST_RUNTIME_FAULTED", hostInstanceId);
             throw;
         }
@@ -81,8 +92,17 @@ internal sealed class HostRuntime
             if (!faulted)
             {
                 var now = DateTimeOffset.UtcNow;
-                Publish(HostStates.Stopping, "HOST_STOPPING", ProbeAgent(identity), now);
+                Publish(HostStates.Stopping, "HOST_STOPPING", ProbeAgent(identity), action, now);
                 log.Write("HOST_STOPPING", HostStates.Stopping, "HOST_STOPPING", hostInstanceId);
+            }
+            var drained = await consumer.DrainAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+            if (!drained)
+            {
+                log.Write(
+                    "HOST_ACTION_RECOVERY_PRESERVED",
+                    HostStates.Stopping,
+                    "HOST_ACTION_DRAIN_TIMEOUT",
+                    hostInstanceId);
             }
             try
             {
@@ -110,7 +130,12 @@ internal sealed class HostRuntime
 
         return RunnerExitCodes.Done;
 
-        void Publish(string state, string reasonCode, HostAgentStatus agent, DateTimeOffset now)
+        void Publish(
+            string state,
+            string reasonCode,
+            HostAgentStatus agent,
+            HostActionStatus actionStatus,
+            DateTimeOffset now)
         {
             statusStore.Publish(new HostStatusDocument
             {
@@ -130,18 +155,30 @@ internal sealed class HostRuntime
                 HeartbeatAtUtc = now,
                 ExpiresAtUtc = now + HeartbeatTtl,
                 Agent = agent,
+                Action = actionStatus,
                 Safety = new HostSafetyStatus
                 {
                     StartsBroker = false,
                     StartsPleOrMcp = false,
                     OnlineOperationsAllowed = false,
-                    AutomaticActionExecutionEnabled = false
+                    AutomaticActionExecutionEnabled = true
                 },
                 LogDirectory = paths.LogDirectory,
                 ActiveLogPath = log.ActiveLogPath
             });
         }
     }
+
+    private static (string State, string ReasonCode) MapState(HostActionStatus action) => action.State switch
+    {
+        HostActionStates.None => (HostStates.WaitingForAction, action.ReasonCode),
+        HostActionStates.WaitingForAgent => (HostStates.WaitingForAgent, action.ReasonCode),
+        HostActionStates.Executing or HostActionStates.RecoveryPending =>
+            (HostStates.Executing, action.ReasonCode),
+        HostActionStates.ResultReady => (HostStates.WaitingForCoordinator, action.ReasonCode),
+        HostActionStates.Invalid or HostActionStates.Ambiguous => (HostStates.Blocked, action.ReasonCode),
+        _ => (HostStates.Blocked, "HOST_ACTION_STATE_INVALID")
+    };
 
     private HostAgentStatus ProbeAgent(HostProcessIdentity identity)
     {

@@ -137,7 +137,7 @@ internal sealed class HostControlServer
         }
 
         var request = await HostPipeCodec.ReadAsync<HostStopRequest>(server, cancellationToken).ConfigureAwait(false);
-        var accepted = request.SchemaVersion == HostConstants.SchemaVersion &&
+        var accepted = request.SchemaVersion == HostConstants.ControlSchemaVersion &&
             request.Kind == HostConstants.StopRequestKind &&
             request.ProtocolVersion == HostConstants.ProtocolVersion &&
             request.HostInstanceId == hostInstanceId &&
@@ -193,7 +193,7 @@ internal sealed class HostControlClient
         }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        timeout.CancelAfter(TimeSpan.FromSeconds(15));
         await using var client = new NamedPipeClientStream(
             ".",
             status.PipeName,
@@ -212,7 +212,7 @@ internal sealed class HostControlClient
         };
         await HostPipeCodec.WriteAsync(client, request, timeout.Token).ConfigureAwait(false);
         var reply = await HostPipeCodec.ReadAsync<HostStopReply>(client, timeout.Token).ConfigureAwait(false);
-        if (reply.SchemaVersion != HostConstants.SchemaVersion ||
+        if (reply.SchemaVersion != HostConstants.ControlSchemaVersion ||
             reply.Kind != HostConstants.StopReplyKind ||
             reply.ProtocolVersion != HostConstants.ProtocolVersion ||
             reply.HostInstanceId != status.HostInstanceId ||

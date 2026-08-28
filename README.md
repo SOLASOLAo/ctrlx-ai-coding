@@ -43,7 +43,7 @@ CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型�
 | 分工 | 用户做骨架(CpStudio),AI 做 PLC 代码细节 |
 | 项目模板 | ✅ 新项目初始化器 + Stage 1 离线审计队列 + Stage 2 PlanOnly operation ledger |
 | Codex Skill | ✅ `ctrlx-opcon-engineering`，源码可版本化、安装可校验 |
-| Controlled Runner | ✅ P1.1/P1.2 全部离线验收；🚧 P1.3a current-user Host 生命周期已实现，自动消费待下一切片 |
+| Controlled Runner | ✅ P1.1/P1.2 与 P1.3a/P1.3b 已实现；🚧 P1.3c 尚未完成 |
 | 产品化计划 | `docs/mcp_productization_roadmap.md` |
 
 Stage 2 是哈希绑定、可恢复的 PlanOnly 协调器；P1.2 interactive Broker 使用
@@ -52,10 +52,14 @@ current-user registration、Named Pipe v2、durable submit/query 和 typed allow
 显式 Clean Build 0 errors / 4 条完整 warning，456 mapping、Symbol、正式 baseline、
 本机 checkpoint 与工程/结构哈希全部匹配，无在线动作。P1.2 已关闭。
 
-P1.3a 新增 `vcrunner-host`：当前用户后台单实例、heartbeat/status、同会话精确停止、
-有界 JSONL 日志与崩溃状态恢复。Host 不引用 Broker 实现，也不启动 Broker/Node/MCP/PLE；
-没有有效 Agent 时显示 `WAITING_FOR_AGENT`。本切片暂不自动消费 action，避免把后台常驻
-误变成自动弹出 PLE。未来 Session 0 Service 只能管理队列/策略/状态，不能启动可见工程工具。
+P1.3a/P1.3b 新增 `vcrunner-host`：当前用户后台单实例、heartbeat/status、同会话精确停止、
+有界 JSONL 日志与崩溃恢复，并自动发现、消费 Host activation 后由权威 ledger 发布的
+immutable `currentAction`。activation 前的历史已终态工作不会被当成新任务；旧 open claim
+仍可恢复且恢复后的结果持续可见。有待处理 action 且没有有效 Agent 时保持 `WAITING_FOR_AGENT`，
+没有 action 时保持 `WAITING_FOR_ACTION`；action 终态
+落盘后保持 `WAITING_FOR_COORDINATOR`，等待后续 coordinator/evidence ingestion 推进 ledger。
+Host 不启动 Broker、Node、MCP、PLE，也不执行任何在线 PLC 操作。P1.3b 已完成；
+P1.3c 尚未完成，下一步是 coordinator/evidence ingestion，以及稳定安装、升级和回滚。
 
 ## 创建新工站 AI 旁车
 
@@ -138,7 +142,8 @@ Station、`Std`、`.project` 或闭源资料，目标目录已存在时会拒绝
 - [ ] 阶段 4:仿真 → 真机下载调试
 - [x] 产品化基础:可复用项目初始化器、Post-export Stage 1 审计队列、Stage 2 PlanOnly ledger 和 Codex Skill
 - [x] 产品化 MCP 技术通道:Controlled Runner P1.1、P1.2a client、P1.2b interactive Broker、受控 adapter、fresh Build、typed warning 与真实 PLE semantic snapshot
-- [ ] 产品化 MCP 基线验收:完整 0 errors / 4 warnings、warning/semantic candidates 和无身份单次确认正式 baseline 已完成；下一次真实 Export 生成全新 immutable action 并复验，之后再推进 project_health/change set 与正式 SFC/Symbol/I/O 工具
+- [x] 产品化 Host P1.3b：activation 后 immutable `currentAction` 自动发现/消费、历史隔离、旧 claim 恢复、无 Agent 等待和 `WAITING_FOR_COORDINATOR`
+- [ ] 产品化 P1.3c：coordinator/evidence ingestion、稳定安装、升级/回滚；随后再推进 project_health/change set 与正式 SFC/Symbol/I/O 工具
 
 ## 版权说明
 

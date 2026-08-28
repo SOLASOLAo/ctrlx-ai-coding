@@ -36,16 +36,28 @@ public static class RunnerStates
 
 public sealed class RunnerGateException : Exception
 {
-    public RunnerGateException(string reasonCode, string message, int exitCode = RunnerExitCodes.GateFailure)
+    public RunnerGateException(
+        string reasonCode,
+        string message,
+        int exitCode = RunnerExitCodes.GateFailure,
+        string? diagnosticReasonCode = null)
         : base(message)
     {
         ReasonCode = reasonCode;
         ExitCode = exitCode;
+        DiagnosticReasonCode = diagnosticReasonCode;
     }
 
     public string ReasonCode { get; }
 
     public int ExitCode { get; }
+
+    /// <summary>
+    /// Optional safe reason from the lower transport/session layer. The primary
+    /// ReasonCode still controls pending-versus-terminal behavior; this value is
+    /// only surfaced so a Host does not hide why a session is unavailable.
+    /// </summary>
+    public string? DiagnosticReasonCode { get; }
 }
 
 public sealed record ValidatedRunnerAction(
@@ -69,7 +81,14 @@ public sealed record RunnerExecutionRequest(
     string EngineeringRoot,
     string ActionPath,
     string ExpectedActionSha256,
-    TimeSpan LeaseTimeout);
+    TimeSpan LeaseTimeout,
+    RunnerSessionUnavailableBehavior SessionUnavailableBehavior = RunnerSessionUnavailableBehavior.Block);
+
+public enum RunnerSessionUnavailableBehavior
+{
+    Block = 0,
+    KeepPending = 1
+}
 
 public sealed record RunnerExecutionResult(
     string RunId,
@@ -209,6 +228,47 @@ internal static partial class RunnerValidation
         }
 
         return resolvedCandidate;
+    }
+
+    public static string AssertExistingPathChainNotReparse(
+        string trustedRoot,
+        string candidate,
+        string reasonCode,
+        string description)
+    {
+        var root = FullPath(trustedRoot);
+        var resolved = EnsureInside(root, candidate, description);
+        var current = root;
+        AssertExistingNodeNotReparse(current, reasonCode, description);
+        var relative = Path.GetRelativePath(root, resolved);
+        if (relative == ".")
+        {
+            return resolved;
+        }
+
+        foreach (var segment in relative.Split(
+                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, segment);
+            AssertExistingNodeNotReparse(current, reasonCode, description);
+        }
+
+        return resolved;
+    }
+
+    private static void AssertExistingNodeNotReparse(
+        string path,
+        string reasonCode,
+        string description)
+    {
+        if ((File.Exists(path) || Directory.Exists(path)) &&
+            (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new RunnerGateException(
+                reasonCode,
+                $"{description} must not contain a junction or symbolic link: {path}");
+        }
     }
 
     public static void AssertNoSensitiveFields(JsonNode? value, string path = "$")

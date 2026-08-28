@@ -53,9 +53,14 @@ warning/semantic baseline，并以新的 Export/immutable action 完成本工位
 证据明确要求时才安排
 Export #2。
 
-P1.3a Host 是独立的当前用户后台进程，只维护单实例、heartbeat/status、日志和
-崩溃恢复；它不会启动 Broker/MCP/PLE，也不会执行在线 PLC 操作。Broker 未显式启动时
-Host 显示 `WAITING_FOR_AGENT`。构建后可用
+P1.3a/P1.3b Host 是独立的当前用户后台进程：除单实例、heartbeat/status、日志和
+崩溃恢复外，还会自动发现并消费本次 activation 后由权威 ledger 发布的 immutable
+`currentAction`。历史已终态工作被隔离，旧 open claim 可恢复；有待处理 action 且 Broker
+未显式启动时保持 `WAITING_FOR_AGENT`，没有 action 时保持 `WAITING_FOR_ACTION`。action
+终态落盘后保持 `WAITING_FOR_COORDINATOR`，等待尚未实现的
+coordinator/evidence ingestion 推进 ledger。Host 不启动 Broker、Node、MCP、PLE，也不执行
+在线 PLC 操作。P1.3b 已实现；P1.3c 尚待 coordinator/evidence ingestion、稳定安装、
+升级和回滚。构建后可用
 `scripts/runner/Invoke-CtrlXOpconRunnerHost.ps1` 执行 `Start/Stop/Status/Logs`；
 `Install/Uninstall` 只管理该项目派生的当前用户登录任务，修改前可先加 `-WhatIf`。
 

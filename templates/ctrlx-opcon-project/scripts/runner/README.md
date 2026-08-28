@@ -81,7 +81,7 @@ baseline-bootstrap `BLOCKED` reason and can never turn a clean compile into a
 successful Stage 2 result. `apply_change_set_and_build` remains unsupported and
 returns `BLOCKED_UNSUPPORTED_ACTION`.
 
-## P1.3a current-user background Host
+## P1.3a/P1.3b current-user background Host
 
 Build the Host once from the checked-in source, then use its thin PowerShell
 entry for lifecycle and read-only status:
@@ -104,15 +104,18 @@ Default `Start` requires that exact validated task. A raw hidden process may be
 used only with explicit `-DevelopmentProcess` during development testing.
 
 The Host owns no engineering process. It never starts Broker, Node, MCP or PLE,
-and does not contain online PLC operations. When the separately and explicitly
-started interactive Broker is unavailable it stays in `WAITING_FOR_AGENT`.
-This P1.3a slice supplies single-instance lifecycle, heartbeat/status, bounded
-logs and crash-state recovery; automatic action consumption is still disabled.
-A future Session 0 Service must remain a queue/policy/status facade and must not
-launch visible engineering tools.
+and does not contain online PLC operations. When an action is pending and the
+separately and explicitly started interactive Broker is unavailable, it stays
+in `WAITING_FOR_AGENT`; with no action it stays in `WAITING_FOR_ACTION`.
+P1.3b also discovers and consumes immutable `currentAction` entries published
+after Host activation. Historical terminal work is quarantined; an older open
+claim remains recoverable, and a recovery result completed after activation
+stays visible. A terminal result leaves the Host in `WAITING_FOR_COORDINATOR`
+until coordinator/evidence ingestion advances the ledger. P1.3b is complete;
+P1.3c remains open for that ingestion path and stable install/upgrade/rollback.
 
 ## Safety boundary
 
-P1.1, P1.2a and the P1.3a Host contain no connect, download, runtime start/stop,
+P1.1, P1.2a and the P1.3a/P1.3b Host contain no connect, download, runtime start/stop,
 variable write or FORCE capability. The action client and Host have no command
 that launches PLE/MCP/Broker and no generic tool-execution surface.

@@ -31,6 +31,11 @@ public sealed class PowerShellEvidenceSealer : IEvidenceSealer
             action.EngineeringRoot,
             Path.Combine(action.EngineeringRoot, "scripts", "cpstudio", "New-PostExportRunnerEvidence.ps1"),
             "Runner evidence producer");
+        RunnerValidation.AssertExistingPathChainNotReparse(
+            action.EngineeringRoot,
+            scriptPath,
+            "EVIDENCE_PATH_REPARSE_POINT",
+            "Runner evidence producer");
         if (!File.Exists(scriptPath))
         {
             throw new RunnerGateException(
@@ -52,6 +57,11 @@ public sealed class PowerShellEvidenceSealer : IEvidenceSealer
             Path.Combine(action.EngineeringRoot, "data", "runs", "runner-p12"),
             observationPath,
             "Runner observation");
+        RunnerValidation.AssertExistingPathChainNotReparse(
+            action.EngineeringRoot,
+            resolvedObservation,
+            "EVIDENCE_PATH_REPARSE_POINT",
+            "Runner observation");
         if (!File.Exists(resolvedObservation))
         {
             throw new RunnerGateException("OBSERVATION_NOT_FOUND", $"Runner observation does not exist: {resolvedObservation}");
@@ -62,6 +72,11 @@ public sealed class PowerShellEvidenceSealer : IEvidenceSealer
             evidenceRoot,
             Path.Combine(evidenceRoot, $"{action.ActionId}-{action.ActionSha256[..12].ToLowerInvariant()}.json"),
             "Runner evidence");
+        RunnerValidation.AssertExistingPathChainNotReparse(
+            action.EngineeringRoot,
+            outputPath,
+            "EVIDENCE_PATH_REPARSE_POINT",
+            "Runner evidence output");
         var existedBefore = File.Exists(outputPath);
 
         var powerShell7 = Path.Combine(

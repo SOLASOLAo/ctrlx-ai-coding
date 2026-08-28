@@ -492,14 +492,21 @@ function Wait-HostStarted {
             }
         }
         $candidate = Get-HostStatusResult -Launch $Launch -Root $Root
-        if (($candidate.exitCode -eq 0) -and (@('WAITING_FOR_AGENT', 'IDLE') -contains [string]$candidate.payload.state)) {
+        $acceptedStates = @(
+            'WAITING_FOR_ACTION',
+            'WAITING_FOR_AGENT',
+            'EXECUTING',
+            'WAITING_FOR_COORDINATOR',
+            'BLOCKED'
+        )
+        if (($candidate.exitCode -eq 0) -and ($acceptedStates -contains [string]$candidate.payload.state)) {
             return $candidate
         }
         if (($candidate.exitCode -eq 0) -and ([string]$candidate.payload.state -eq 'FAULTED')) {
             throw 'Runner Host entered FAULTED while starting.'
         }
     }
-    throw 'Runner Host did not publish WAITING_FOR_AGENT or IDLE within 10 seconds.'
+    throw 'Runner Host did not publish a valid P1.3b operating state within 10 seconds.'
 }
 
 function Wait-HostStopped {

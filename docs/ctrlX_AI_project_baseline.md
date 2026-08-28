@@ -349,7 +349,7 @@ ctrlX-PLC-Engineering.exe --profile="ctrlX PLC 2.6.8" --noUI --runscript="脚本
 - Stage 2 的纯离线 runner evidence 封装器不执行 PLE/MCP/REST；它复核 action/Stage 1/ownership/关键 Station 指纹、Build 新鲜度、当前 PLC SHA 和 semantic proofs，并以固定算法生成 warning 签名多重集。live engineering action 由显式启动的 interactive Broker 执行，该 Broker 是唯一 persistent MCP/PLE owner。
 - P1.1 已提供 OS 排他运行租约；P1.2 client/action 与 Broker session/action serialization 分别提供跨进程和执行期门禁。条件 Export #2 仍只在记录到 Symbol/后处理需求时进入人工同步点。
 - current-user Pipe/registration、PID/session/executable/project identity 校验用于防止误连和跨会话混用，但不防御同一 Windows 用户下的恶意进程；商业发行仍需受控安装和签名/release-bound Broker identity。evidence 是哈希绑定的审计证据，不是加密签名。
-- 后续产品化重点是完整 warning population、无身份用户确认 baseline 与新 immutable action 复验；通过后再推进 P1.3 Host、`project_health`、`compile_project_v2`、受控 change set、FORCE 生命周期及正式 Symbol/I/O/SFC 接口。
+- 完整 warning population、去身份用户确认 baseline 与新 immutable action 已于 2026-08-28 完成复验；P1.3a/b Host 已落地。当前后续是 P1.3c 的 result/evidence 自动接收、Stage 2 ledger 推进与稳定安装/升级回滚，再推进 `project_health`、`compile_project_v2`、受控 change set、FORCE 生命周期及正式 Symbol/I/O/SFC 接口。
 
 ## 10.2 Runner baseline 审阅边界（2026-08-28）
 
@@ -360,7 +360,7 @@ ctrlX-PLC-Engineering.exe --profile="ctrlX PLC 2.6.8" --noUI --runscript="脚本
 - 确认证据必须是 `docs/reviews/` 下单独、简短且脱敏的决定记录；candidate、AI triage、reviews index、目录外文件及其改名/逐字副本均不能作为 evidence。Stage 1/2 对确认文件只做一次有界读取，严格 UTF-8、内容检查和 action-bound SHA 均来自同一 byte snapshot。
 - warning baseline、semantic scope 和 semantic baseline 同样按各自上限单次读取，并用同一 bytes 完成 SHA 与 JSON 解析。畸形 Post-export 请求的失败记录不得保存 raw/original payload，只保留 1 MiB 上限内的字节数、SHA-256 和固定安全诊断元数据。
 - 正式 baseline 的 project/profile、scope、candidate hashes、review evidence path/SHA 任一变化都使旧 action 失效；必须回到 Stage 1 创建新的 operation/action。
-- P1.2 只有在用户明确确认且新 immutable action 复验通过后才能标为完成；此前不启动 P1.3 Windows Runner Host 产品化。
+- 本条门禁已于 2026-08-28 满足，P1.2 已正式完成；P1.3a/b 因而可以推进。该规则继续适用于未来 baseline 变更：没有新的用户确认与 immutable action 复验，不得把变化后的基线视为正式可用。
 
 ---
 

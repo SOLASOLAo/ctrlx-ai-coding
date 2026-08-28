@@ -31,17 +31,43 @@ public sealed class RunnerRunStore
 
     public static RunnerRunStore ForAction(ValidatedRunnerAction action)
     {
-        var runId = $"{action.ActionId}-{action.ActionSha256[..12].ToLowerInvariant()}-a001";
-        var root = RunnerValidation.EnsureInside(
-            Path.Combine(action.EngineeringRoot, "data", "runs", "runner-p12"),
-            Path.Combine(action.EngineeringRoot, "data", "runs", "runner-p12", runId),
-            "Runner run directory");
+        var runId = GetRunId(action.ActionId, action.ActionSha256);
+        var root = GetRunRoot(action.EngineeringRoot, action.ActionId, action.ActionSha256);
         return new RunnerRunStore(action, root, runId);
+    }
+
+    public static string GetRunId(string actionId, string actionSha256)
+    {
+        if (!RunnerValidation.IsSafeIdentifier(actionId) ||
+            !RunnerValidation.IsSha256(actionSha256))
+        {
+            throw new RunnerGateException(
+                "RUN_IDENTITY_INVALID",
+                "Runner action identity or SHA-256 is malformed.");
+        }
+
+        return $"{actionId}-{actionSha256[..12].ToLowerInvariant()}-a001";
+    }
+
+    public static string GetRunRoot(string engineeringRoot, string actionId, string actionSha256)
+    {
+        var root = RunnerValidation.FullPath(engineeringRoot);
+        var runRoot = Path.Combine(root, "data", "runs", "runner-p12");
+        var candidate = RunnerValidation.EnsureInside(
+            runRoot,
+            Path.Combine(runRoot, GetRunId(actionId, actionSha256)),
+            "Runner run directory");
+        return RunnerValidation.AssertExistingPathChainNotReparse(
+            root,
+            candidate,
+            "RUN_PATH_REPARSE_POINT",
+            "Runner run directory");
     }
 
     public bool TryReadResult(out RunnerExecutionResult? result)
     {
         result = null;
+        AssertSafeRunPath(ResultPath, "Runner result");
         if (!File.Exists(ResultPath))
         {
             return false;
@@ -56,8 +82,11 @@ public sealed class RunnerRunStore
 
     public bool TryCreateClaim(string transportName)
     {
+        AssertSafeRunPath(RunRoot, "Runner run directory");
         Directory.CreateDirectory(RunRoot);
         Directory.CreateDirectory(eventsRoot);
+        AssertSafeRunPath(ClaimPath, "Runner claim");
+        AssertSafeRunPath(eventsRoot, "Runner event directory");
         var claim = new JsonObject
         {
             ["schemaVersion"] = 1,
@@ -89,7 +118,9 @@ public sealed class RunnerRunStore
 
     public void AppendEvent(string state, string reasonCode)
     {
+        AssertSafeRunPath(eventsRoot, "Runner event directory");
         Directory.CreateDirectory(eventsRoot);
+        AssertSafeRunPath(eventsRoot, "Runner event directory");
         var next = Directory.EnumerateFiles(eventsRoot, "*.json", SearchOption.TopDirectoryOnly).Count() + 1;
         var path = Path.Combine(eventsRoot, $"{next:0000}-{state.ToLowerInvariant()}.json");
         RunnerJson.WriteAtomic(path, new JsonObject
@@ -105,6 +136,7 @@ public sealed class RunnerRunStore
 
     public string WriteObservation(JsonObject observation)
     {
+        AssertSafeRunPath(ObservationPath, "Runner observation");
         RunnerJson.WriteAtomic(ObservationPath, observation, overwrite: false);
         return RunnerHash.Sha256File(ObservationPath);
     }
@@ -116,6 +148,7 @@ public sealed class RunnerRunStore
         string? observationSha256,
         EvidenceSealResult? evidence)
     {
+        AssertSafeRunPath(ResultPath, "Runner result");
         var result = new JsonObject
         {
             ["schemaVersion"] = 1,
@@ -151,6 +184,7 @@ public sealed class RunnerRunStore
 
     public JsonObject Verify()
     {
+        AssertSafeRunPath(ResultPath, "Runner result");
         if (!File.Exists(ResultPath))
         {
             throw new RunnerGateException("RUN_NOT_FOUND", $"Runner result does not exist: {ResultPath}");
@@ -203,6 +237,11 @@ public sealed class RunnerRunStore
 
         var root = Path.Combine(RunnerValidation.FullPath(engineeringRoot), "data", "runs", "runner-p12");
         var path = RunnerValidation.EnsureInside(root, Path.Combine(root, runId, "result.json"), "Runner result");
+        RunnerValidation.AssertExistingPathChainNotReparse(
+            engineeringRoot,
+            path,
+            "RUN_PATH_REPARSE_POINT",
+            "Runner result");
         return RunnerJson.ReadObject(path, "Runner result");
     }
 
@@ -217,6 +256,7 @@ public sealed class RunnerRunStore
 
     private void ValidateExistingClaim()
     {
+        AssertSafeRunPath(ClaimPath, "Runner claim");
         var claim = RunnerJson.ReadObject(ClaimPath, "Runner claim");
         if (RunnerValidation.RequiredString(claim, "actionId", "Runner claim") != Action.ActionId ||
             !RunnerValidation.RequiredString(claim, "actionSha256", "Runner claim").Equals(Action.ActionSha256, StringComparison.OrdinalIgnoreCase) ||
@@ -225,6 +265,13 @@ public sealed class RunnerRunStore
             throw new RunnerGateException("IDEMPOTENCY_CONFLICT", "Existing Runner claim does not match action identity/hash/idempotency key.");
         }
     }
+
+    private void AssertSafeRunPath(string path, string description) =>
+        RunnerValidation.AssertExistingPathChainNotReparse(
+            Action.EngineeringRoot,
+            path,
+            "RUN_PATH_REPARSE_POINT",
+            description);
 
     private void ValidateResultIdentity(JsonObject result)
     {

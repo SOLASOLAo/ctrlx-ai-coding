@@ -1,7 +1,7 @@
 # Controlled Runner
 
 This directory contains the .NET 8 control plane, action client, explicit
-interactive Broker and current-user background Host for Runner P1.2/P1.3a.
+interactive Broker and current-user background Host through Runner P1.3b.
 
 ## Implemented P1.2b boundary
 
@@ -59,7 +59,7 @@ Station010 action subsequently passed the full offline contract: 0 errors,
 checkpoint and unchanged project/structure hashes. P1.2 is closed; this does
 not claim simulation, download or physical-PLC acceptance.
 
-## Implemented P1.3a Host boundary
+## Implemented P1.3a/P1.3b Host boundary
 
 - `vcrunner-host` is a current-user, interactive-session background process
   with `run`, `status`, `stop` and `logs` commands. It owns one project-scoped
@@ -73,13 +73,22 @@ not claim simulation, download or physical-PLC acceptance.
   A stale but structurally valid status after a Host crash is reported as
   `HOST_CRASH_RECOVERY_PENDING` and may be replaced only after the unique owner
   lease is acquired. Corrupt state fails closed.
-- The current slice deliberately leaves automatic action execution disabled.
-  The interactive Broker remains a separately and explicitly started owner of
-  MCP/PLE. A future Session 0 Windows Service may manage queue/policy/status,
-  but it must not launch visible Broker/MCP/PLE processes.
+- P1.3b automatically discovers only immutable `currentAction` entries published
+  after this Host activation. Historical terminal work is quarantined; an older
+  open claim remains recoverable, and a result completed after activation stays
+  visible instead of being rediscovered or rerun.
+- With a pending action and no validated same-session Agent, the Host remains `WAITING_FOR_AGENT` and
+  leaves the action pending. After a terminal result is sealed, it remains
+  `WAITING_FOR_COORDINATOR` until Stage 2 ingests the evidence and advances the
+  operation ledger.
+- The interactive Broker remains a separately and explicitly started owner of
+  MCP/PLE. The Host does not start Broker, Node, MCP or PLE and has no connect,
+  download, runtime-control, variable-write or FORCE surface.
 - The project wrapper starts the Host through an exact current-user Scheduled
   Task by default. Raw process start is an explicit development-only escape
   hatch and is never used by the normal lifecycle.
+- P1.3b is complete. P1.3c remains open for coordinator/evidence ingestion and
+  stable product installation, upgrade and rollback.
 
 ## Build and offline tests
 
@@ -94,9 +103,10 @@ dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Host.SelfTest\CtrlX.OpCon
 ```
 
 The SelfTests use local fixtures, fake engineering sessions and local named
-pipes. They do not start PLE, MCP or any other engineering tool. Verified run
-on 2026-08-28: Runner 207 assertions, Host 9/9, and all Engineering/Broker
-fixtures pass; Release builds are 0 warnings / 0 errors. The Runner stress cases use a deterministic submit/query
+pipes. They do not start PLE, MCP or any other engineering tool. P1.3b offline
+fixtures cover activation filtering, legacy recovery, terminal-result
+visibility, no-rerun behavior and reparse-point rejection; they do not claim
+real-PLE or physical-PLC acceptance. The Runner stress cases use a deterministic submit/query
 handshake rather than a 250 ms scheduling assumption. Atomic Broker JSON
 renames retry only the bounded Windows access/sharing/lock violations and still
 fail closed after about 230 ms; immutable create races retain the stable
@@ -157,7 +167,9 @@ dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
 ## Acceptance status
 
 The P1.2 code, protocol, persistence, identity gates and fixed Build sequence
-have passed offline tests and the final real-PLE offline action. P1.3a adds the
-background Host lifecycle without changing that engineering boundary. No
-simulation, download, runtime control, variable write, FORCE or physical-PLC
-acceptance is claimed.
+have passed offline tests and the final real-PLE offline action. P1.3a/P1.3b add
+the background Host lifecycle and automatic immutable-action consumer without
+changing that engineering boundary. P1.3b itself has only offline fixture
+coverage; no simulation, download, runtime control, variable write, FORCE or
+physical-PLC acceptance is claimed. P1.3c remains open for
+coordinator/evidence ingestion and stable install/upgrade/rollback.

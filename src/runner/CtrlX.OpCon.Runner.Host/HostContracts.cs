@@ -5,10 +5,12 @@ namespace CtrlX.OpCon.Runner.Host;
 
 internal static class HostConstants
 {
-    public const int SchemaVersion = 1;
+    public const int StatusSchemaVersion = 2;
+    public const int ControlSchemaVersion = 1;
     public const int ProtocolVersion = 1;
     public const int MaximumPipeMessageBytes = 32 * 1024;
     public const string StatusKind = "ctrlx-opcon-runner-host-status";
+    public const string StatusObservationKind = "ctrlx-opcon-runner-host-observation";
     public const string StopRequestKind = "ctrlx-opcon-runner-host-stop-request";
     public const string StopReplyKind = "ctrlx-opcon-runner-host-stop-reply";
     public const string LogKind = "ctrlx-opcon-runner-host-log";
@@ -17,17 +19,38 @@ internal static class HostConstants
 internal static class HostStates
 {
     public const string Starting = "STARTING";
+    public const string WaitingForAction = "WAITING_FOR_ACTION";
     public const string WaitingForAgent = "WAITING_FOR_AGENT";
+    public const string Executing = "EXECUTING";
+    public const string WaitingForCoordinator = "WAITING_FOR_COORDINATOR";
+    public const string Blocked = "BLOCKED";
     public const string Idle = "IDLE";
     public const string Stopping = "STOPPING";
     public const string Faulted = "FAULTED";
     public const string Stopped = "STOPPED";
 
     public static bool IsKnown(string value) => value is
-        Starting or WaitingForAgent or Idle or Stopping or Faulted or Stopped;
+        Starting or WaitingForAction or WaitingForAgent or Executing or
+        WaitingForCoordinator or Blocked or Idle or Stopping or Faulted or Stopped;
 
     public static bool IsLive(string value) => value is
-        Starting or WaitingForAgent or Idle or Stopping or Faulted;
+        Starting or WaitingForAction or WaitingForAgent or Executing or
+        WaitingForCoordinator or Blocked or Idle or Stopping or Faulted;
+}
+
+internal static class HostActionStates
+{
+    public const string None = "NONE";
+    public const string WaitingForAgent = "WAITING_FOR_AGENT";
+    public const string Executing = "EXECUTING";
+    public const string RecoveryPending = "RECOVERY_PENDING";
+    public const string ResultReady = "RESULT_READY";
+    public const string Invalid = "INVALID";
+    public const string Ambiguous = "AMBIGUOUS";
+
+    public static bool IsKnown(string value) => value is
+        None or WaitingForAgent or Executing or RecoveryPending or
+        ResultReady or Invalid or Ambiguous;
 }
 
 internal sealed record HostRuntimePaths(
@@ -36,6 +59,7 @@ internal sealed record HostRuntimePaths(
     string RuntimeRoot,
     string OwnerLockPath,
     string StatusPath,
+    string ConsumerStatePath,
     string LogDirectory,
     string PipeName)
 {
@@ -80,6 +104,7 @@ internal sealed record HostRuntimePaths(
             runtimeRoot,
             Path.Combine(runtimeRoot, "owner.lock"),
             Path.Combine(runtimeRoot, "status.json"),
+            Path.Combine(runtimeRoot, "consumer.json"),
             Path.Combine(runtimeRoot, "logs"),
             $"ctrlx-opcon-runner-host-{rootKey}");
     }
@@ -130,7 +155,7 @@ internal sealed record HostProcessIdentity(
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 internal sealed class HostStatusDocument
 {
-    public int SchemaVersion { get; set; } = HostConstants.SchemaVersion;
+    public int SchemaVersion { get; set; } = HostConstants.StatusSchemaVersion;
     public string Kind { get; set; } = HostConstants.StatusKind;
     public int ProtocolVersion { get; set; } = HostConstants.ProtocolVersion;
     public string HostInstanceId { get; set; } = string.Empty;
@@ -151,9 +176,29 @@ internal sealed class HostStatusDocument
     [JsonRequired]
     public HostAgentStatus Agent { get; set; } = new();
     [JsonRequired]
+    public HostActionStatus Action { get; set; } = new();
+    [JsonRequired]
     public HostSafetyStatus Safety { get; set; } = new();
     public string LogDirectory { get; set; } = string.Empty;
     public string ActiveLogPath { get; set; } = string.Empty;
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+internal sealed class HostActionStatus
+{
+    public string State { get; set; } = HostActionStates.None;
+    public string ReasonCode { get; set; } = "HOST_NO_PENDING_ACTION";
+    public string? OperationId { get; set; }
+    public string? ActionId { get; set; }
+    public string? ActionKind { get; set; }
+    public string? ActionSha256 { get; set; }
+    public string? RunId { get; set; }
+    public string? ResultState { get; set; }
+    public string? ResultPath { get; set; }
+    public string? EvidencePath { get; set; }
+    public int PendingCount { get; set; }
+    public int InvalidCount { get; set; }
+    public int LegacyIgnoredCount { get; set; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
@@ -186,7 +231,7 @@ internal sealed class HostSafetyStatus
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 internal sealed class HostStopRequest
 {
-    public int SchemaVersion { get; set; } = HostConstants.SchemaVersion;
+    public int SchemaVersion { get; set; } = HostConstants.ControlSchemaVersion;
     public string Kind { get; set; } = HostConstants.StopRequestKind;
     public int ProtocolVersion { get; set; } = HostConstants.ProtocolVersion;
     public string HostInstanceId { get; set; } = string.Empty;
@@ -199,13 +244,23 @@ internal sealed class HostStopRequest
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 internal sealed class HostStopReply
 {
-    public int SchemaVersion { get; set; } = HostConstants.SchemaVersion;
+    public int SchemaVersion { get; set; } = HostConstants.ControlSchemaVersion;
     public string Kind { get; set; } = HostConstants.StopReplyKind;
     public int ProtocolVersion { get; set; } = HostConstants.ProtocolVersion;
     public string HostInstanceId { get; set; } = string.Empty;
     public string ClientNonce { get; set; } = string.Empty;
     public bool Accepted { get; set; }
     public string ReasonCode { get; set; } = string.Empty;
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+internal sealed class HostConsumerStateDocument
+{
+    public int SchemaVersion { get; set; } = 1;
+    public string Kind { get; set; } = "ctrlx-opcon-runner-host-consumer-state";
+    public string EngineeringRoot { get; set; } = string.Empty;
+    public string RootKey { get; set; } = string.Empty;
+    public DateTimeOffset ActivatedAtUtc { get; set; }
 }
 
 internal sealed record HostLogFileInfo(string Path, long Bytes, DateTimeOffset LastWriteTimeUtc);

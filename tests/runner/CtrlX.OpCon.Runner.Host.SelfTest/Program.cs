@@ -20,12 +20,21 @@ internal static class Program
             ("Host source has no Broker, MCP, PLE, or Node launch path", StaticSafetyBoundaryAsync),
             ("single owner lease rejects a second Host and can be reacquired", SingleOwnerLeaseAsync),
             ("corrupt status fails run, status, and stop closed", CorruptStatusFailsClosedAsync),
+            ("WAITING_FOR_AGENT status rejects an available Agent", WaitingForAgentRejectsAvailableAgentAsync),
+            ("stale schema-v1 status is safely superseded by a schema-v2 Host", StaleLegacyStatusAllowsUpgradeAsync),
+            ("live schema-v1 status maps to blocked and prevents a second Host", LiveLegacyStatusFailsClosedAsync),
             ("logs roll over and retain only bounded in-root files", BoundedLogsStayInsideRuntimeRootAsync),
             ("forged alphabetic log segment is ignored during startup and listing", ForgedLogNameIsIgnoredAsync),
             ("half-open same-user Pipe is dropped without blocking status or stop", HalfOpenPipeDoesNotBlockControlAsync),
             ("concurrent heartbeat status reads never observe a sharing fault", ConcurrentHeartbeatReadsAreSafeAsync),
             ("unexpected Host termination preserves crash-recovery status", UnexpectedTerminationPreservesCrashRecoveryAsync),
-            ("run, status, exact stop identity, and graceful stop are deterministic", LifecycleIsDeterministicAsync)
+            ("run, status, exact stop identity, and graceful stop are deterministic", LifecycleIsDeterministicAsync),
+            ("pending action waits for Agent without execution", PendingActionWaitsForAgentAsync),
+            ("Broker diagnostic pending is displayed as WAITING_FOR_AGENT", BrokerDiagnosticPendingIsDisplayedAsync),
+            ("one current action executes once and exposes its terminal marker", UniqueActionExecutesExactlyOnceAsync),
+            ("multiple current actions fail closed as ambiguous", MultipleActionsAreAmbiguousAsync),
+            ("existing terminal result is exposed without execution", ExistingResultDoesNotExecuteAsync),
+            ("long action remains single-dispatch and has a bounded shutdown drain", LongActionRemainsExecutingAsync)
         };
 
         var failures = new List<string>();
@@ -87,8 +96,8 @@ internal static class Program
         Require(source.Contains("StartsBroker = false", StringComparison.Ordinal) &&
             source.Contains("StartsPleOrMcp = false", StringComparison.Ordinal) &&
             source.Contains("OnlineOperationsAllowed = false", StringComparison.Ordinal) &&
-            source.Contains("AutomaticActionExecutionEnabled = false", StringComparison.Ordinal),
-            "Runner Host status does not explicitly publish the fail-closed safety boundary.");
+            source.Contains("AutomaticActionExecutionEnabled = true", StringComparison.Ordinal),
+            "Runner Host status does not explicitly publish its automatic offline-consumption safety boundary.");
         return Task.CompletedTask;
     }
 
@@ -137,6 +146,197 @@ internal static class Program
             Require(File.Exists(fixture.Paths.StatusPath),
                 $"{command} must not silently delete corrupt status evidence.");
         }
+    }
+
+    private static Task WaitingForAgentRejectsAvailableAgentAsync()
+    {
+        using var fixture = new HostFixture();
+        var identity = HostProcessIdentity.CaptureCurrentInteractive();
+        var log = new HostLogStore(fixture.Paths);
+        var now = DateTimeOffset.UtcNow;
+        const string actionId = "waiting-agent-status-action";
+        const string diagnosticReason = "BLOCKED_BROKER_PIPE_UNAVAILABLE";
+        var actionSha256 = new string('A', 64);
+        var document = new HostStatusDocument
+        {
+            HostInstanceId = "waiting-agent-invariant",
+            State = HostStates.WaitingForAgent,
+            ReasonCode = diagnosticReason,
+            HostPid = identity.ProcessId,
+            ProcessStartTimeUtc = identity.ProcessStartTimeUtc,
+            WindowsSessionId = identity.WindowsSessionId,
+            UserSid = identity.UserSid,
+            ExecutablePath = identity.ExecutablePath,
+            ExecutableSha256 = identity.ExecutableSha256,
+            EngineeringRoot = fixture.Paths.EngineeringRoot,
+            RootKey = fixture.Paths.RootKey,
+            PipeName = fixture.Paths.PipeName,
+            StartedAtUtc = now.AddMinutes(-1),
+            HeartbeatAtUtc = now,
+            ExpiresAtUtc = now.AddSeconds(10),
+            Agent = new HostAgentStatus
+            {
+                Available = true,
+                ReasonCode = "BROKER_REGISTRATION_VALIDATED",
+                State = "ready",
+                BrokerPid = identity.ProcessId,
+                WindowsSessionId = identity.WindowsSessionId,
+                Profile = "ctrlX PLC 2.6.8",
+                PlcProject = Path.Combine(fixture.EngineeringRoot, "fixture.project")
+            },
+            Action = new HostActionStatus
+            {
+                State = HostActionStates.WaitingForAgent,
+                ReasonCode = diagnosticReason,
+                OperationId = "waiting-agent-operation",
+                ActionId = actionId,
+                ActionKind = "inspect_and_build",
+                ActionSha256 = actionSha256,
+                RunId = RunnerRunStore.GetRunId(actionId, actionSha256),
+                PendingCount = 1
+            },
+            Safety = new HostSafetyStatus
+            {
+                StartsBroker = false,
+                StartsPleOrMcp = false,
+                OnlineOperationsAllowed = false,
+                AutomaticActionExecutionEnabled = true
+            },
+            LogDirectory = fixture.Paths.LogDirectory,
+            ActiveLogPath = log.ActiveLogPath
+        };
+
+        RunnerGateException? rejection = null;
+        try
+        {
+            new HostStatusStore(fixture.Paths).Publish(document);
+        }
+        catch (RunnerGateException exception)
+        {
+            rejection = exception;
+        }
+        Require(rejection?.ReasonCode == "HOST_STATE_INVALID" &&
+            !File.Exists(fixture.Paths.StatusPath),
+            "WAITING_FOR_AGENT accepted a contradictory Agent.Available=true status.");
+
+        document.Agent = new HostAgentStatus
+        {
+            Available = false,
+            ReasonCode = diagnosticReason
+        };
+        var store = new HostStatusStore(fixture.Paths);
+        store.Publish(document);
+        var accepted = store.ReadStructured();
+        Require(accepted?.State == HostStates.WaitingForAgent &&
+            accepted.Agent.Available == false &&
+            accepted.ReasonCode == diagnosticReason,
+            "WAITING_FOR_AGENT rejected its consistent unavailable-Agent counterpart.");
+        return Task.CompletedTask;
+    }
+
+    private static async Task StaleLegacyStatusAllowsUpgradeAsync()
+    {
+        await using var fixture = new RunningHostFixture();
+        using var current = Process.GetCurrentProcess();
+        WriteLegacyStatusV1(fixture.Paths, hostPid: int.MaxValue, current);
+        var legacyBytes = File.ReadAllBytes(fixture.Paths.StatusPath);
+        Require(JsonNode.Parse(legacyBytes)?["schemaVersion"]?.GetValue<int>() == 1,
+            "Stale-status fixture did not start from a schema-v1 document.");
+
+        _ = await fixture.StartAsync().ConfigureAwait(false);
+        var upgraded = await fixture.WaitForStateAsync(
+            HostStates.WaitingForAction,
+            CommandTimeout).ConfigureAwait(false);
+        Require(upgraded.SchemaVersion == HostConstants.StatusSchemaVersion &&
+            upgraded.Action.State == HostActionStates.None &&
+            upgraded.Safety.AutomaticActionExecutionEnabled,
+            "A dead schema-v1 status was not safely superseded by the current Host contract.");
+
+        var persisted = JsonNode.Parse(File.ReadAllBytes(fixture.Paths.StatusPath));
+        Require(persisted?["schemaVersion"]?.GetValue<int>() == HostConstants.StatusSchemaVersion &&
+            persisted["action"]?["state"]?.GetValue<string>() == HostActionStates.None,
+            "The replacement Host did not publish a complete schema-v2 status document.");
+        await StopGracefullyAsync(fixture).ConfigureAwait(false);
+    }
+
+    private static async Task LiveLegacyStatusFailsClosedAsync()
+    {
+        using var fixture = new HostFixture();
+        using var current = Process.GetCurrentProcess();
+        WriteLegacyStatusV1(fixture.Paths, current.Id, current);
+        var legacyBytes = File.ReadAllBytes(fixture.Paths.StatusPath);
+
+        var observation = new HostStatusStore(fixture.Paths).Observe();
+        Require(observation.Live &&
+            observation.Document?.SchemaVersion == HostConstants.StatusSchemaVersion &&
+            observation.Document.State == HostStates.Blocked &&
+            observation.Document.ReasonCode == "HOST_LEGACY_VERSION_ACTIVE" &&
+            observation.Document.Action.State == HostActionStates.Invalid &&
+            observation.Document.Action.ReasonCode == "HOST_LEGACY_VERSION_ACTIVE",
+            "A live schema-v1 status was not exposed as the explicit schema-v2 blocked state.");
+
+        var run = await HostCommand.RunAsync(
+            "run",
+            fixture.EngineeringRoot,
+            fixture.Paths.RuntimeRoot,
+            CommandTimeout).ConfigureAwait(false);
+        Require(run.ExitCode == RunnerExitCodes.Busy &&
+            run.Json?["reasonCode"]?.GetValue<string>() == "HOST_ALREADY_RUNNING",
+            "A live schema-v1 Host identity did not fail closed against a second Host start.");
+        Require(File.ReadAllBytes(fixture.Paths.StatusPath).SequenceEqual(legacyBytes),
+            "Reading or rejecting a live schema-v1 status rewrote its original evidence.");
+    }
+
+    private static void WriteLegacyStatusV1(
+        HostRuntimePaths paths,
+        int hostPid,
+        Process identityProcess)
+    {
+        var executablePath = identityProcess.MainModule?.FileName;
+        Require(!string.IsNullOrWhiteSpace(executablePath) && File.Exists(executablePath),
+            "SelfTest process executable identity is unavailable.");
+        var now = DateTimeOffset.UtcNow;
+        var activeLogPath = new HostLogStore(paths).ActiveLogPath;
+        var document = new JsonObject
+        {
+            ["schemaVersion"] = 1,
+            ["kind"] = HostConstants.StatusKind,
+            ["protocolVersion"] = HostConstants.ProtocolVersion,
+            ["hostInstanceId"] = "legacy-host-selftest",
+            ["state"] = "WAITING_FOR_AGENT",
+            ["reasonCode"] = "BLOCKED_BROKER_REGISTRATION_MISSING",
+            ["hostPid"] = hostPid,
+            ["processStartTimeUtc"] = identityProcess.StartTime.ToUniversalTime(),
+            ["windowsSessionId"] = identityProcess.SessionId,
+            ["userSid"] = BrokerWireProtocol.CurrentUserSid(),
+            ["executablePath"] = HostRuntimePaths.NormalizePath(executablePath!),
+            ["executableSha256"] = RunnerHash.Sha256File(executablePath!),
+            ["engineeringRoot"] = paths.EngineeringRoot,
+            ["rootKey"] = paths.RootKey,
+            ["pipeName"] = paths.PipeName,
+            ["startedAtUtc"] = now.AddMinutes(-1),
+            ["heartbeatAtUtc"] = now,
+            ["expiresAtUtc"] = now.AddSeconds(10),
+            ["agent"] = new JsonObject
+            {
+                ["available"] = false,
+                ["reasonCode"] = "BLOCKED_BROKER_REGISTRATION_MISSING"
+            },
+            ["safety"] = new JsonObject
+            {
+                ["startsBroker"] = false,
+                ["startsPleOrMcp"] = false,
+                ["onlineOperationsAllowed"] = false,
+                ["automaticActionExecutionEnabled"] = false
+            },
+            ["logDirectory"] = paths.LogDirectory,
+            ["activeLogPath"] = activeLogPath
+        };
+        Directory.CreateDirectory(paths.RuntimeRoot);
+        File.WriteAllText(
+            paths.StatusPath,
+            document.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
 
     private static Task BoundedLogsStayInsideRuntimeRootAsync()
@@ -343,16 +543,21 @@ internal static class Program
     {
         await using var fixture = new RunningHostFixture();
         var forbiddenBefore = EngineeringProcessSnapshot.Capture();
-        var firstStatus = await fixture.StartAsync().ConfigureAwait(false);
+        _ = await fixture.StartAsync().ConfigureAwait(false);
+        var firstStatus = await fixture.WaitForStateAsync(
+            HostStates.WaitingForAction,
+            CommandTimeout).ConfigureAwait(false);
 
-        Require(firstStatus.State is HostStates.Starting or HostStates.WaitingForAgent,
-            $"An isolated Host should start fail-closed, state={firstStatus.State}.");
+        Require(firstStatus.State == HostStates.WaitingForAction &&
+            firstStatus.ReasonCode == "HOST_NO_PENDING_ACTION" &&
+            firstStatus.Action.State == HostActionStates.None,
+            $"An isolated Host should wait for a current action, state={firstStatus.State}, reason={firstStatus.ReasonCode}.");
         Require(!firstStatus.Agent.Available,
             "An isolated Host must not invent an available interactive Broker Agent.");
         Require(!firstStatus.Safety.StartsBroker &&
             !firstStatus.Safety.StartsPleOrMcp &&
             !firstStatus.Safety.OnlineOperationsAllowed &&
-            !firstStatus.Safety.AutomaticActionExecutionEnabled,
+            firstStatus.Safety.AutomaticActionExecutionEnabled,
             "Live Host status violated its offline safety contract.");
 
         var statusOne = await HostCommand.RunAsync(
@@ -436,6 +641,201 @@ internal static class Program
             "Graceful stop log does not contain both STOPPING and STOPPED evidence.");
     }
 
+    private static Task PendingActionWaitsForAgentAsync()
+    {
+        using var fixture = new HostConsumerFixture();
+        var action = fixture.CreatePendingAction("cpstudio-stage2-no-agent");
+        var executor = new RecordingHostActionExecutor((_, _) =>
+            throw new InvalidOperationException("An action was executed without an Agent."));
+        var consumer = new HostActionConsumer(
+            fixture.EngineeringRoot,
+            fixture.ActivatedAtUtc,
+            executor: executor);
+
+        var first = consumer.Tick(agentAvailable: false, CancellationToken.None);
+        var second = consumer.Tick(agentAvailable: false, CancellationToken.None);
+
+        Require(first.State == HostActionStates.WaitingForAgent &&
+            first.ReasonCode == "HOST_WAITING_FOR_AGENT" &&
+            first.OperationId == action.OperationId &&
+            first.ActionId == action.ActionId &&
+            first.ActionSha256 == action.ActionSha256 &&
+            first.PendingCount == 1,
+            "A current action without an Agent was not exposed as WAITING_FOR_AGENT.");
+        Require(second.State == HostActionStates.WaitingForAgent && executor.Calls == 0,
+            "Repeated no-Agent ticks executed or lost the pending action.");
+        Require(!File.Exists(action.ResultPath) && !File.Exists(action.ClaimPath),
+            "Waiting for an Agent fabricated a claim or terminal result.");
+        return Task.CompletedTask;
+    }
+
+    private static Task BrokerDiagnosticPendingIsDisplayedAsync()
+    {
+        using var fixture = new HostConsumerFixture();
+        var action = fixture.CreatePendingAction("cpstudio-stage2-broker-diagnostic");
+        var pending = new RunnerGateException(
+            "BROKER_SESSION_PENDING",
+            "The Broker session remains unavailable.",
+            RunnerExitCodes.Busy,
+            "BLOCKED_BROKER_PROFILE_MISMATCH");
+        var executor = new RecordingHostActionExecutor((_, _) =>
+            Task.FromException<RunnerExecutionResult>(pending));
+        var consumer = new HostActionConsumer(
+            fixture.EngineeringRoot,
+            fixture.ActivatedAtUtc,
+            executor: executor);
+
+        var dispatch = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var displayed = consumer.Tick(agentAvailable: true, CancellationToken.None);
+
+        Require(pending.ReasonCode == "BROKER_SESSION_PENDING" &&
+            pending.DiagnosticReasonCode == "BLOCKED_BROKER_PROFILE_MISMATCH",
+            "The pending exception did not preserve separate control and diagnostic reasons.");
+        Require(dispatch.State == HostActionStates.Executing &&
+            displayed.State == HostActionStates.WaitingForAgent &&
+            displayed.ReasonCode == "BLOCKED_BROKER_PROFILE_MISMATCH" &&
+            displayed.OperationId == action.OperationId &&
+            displayed.ActionId == action.ActionId &&
+            displayed.PendingCount == 1 &&
+            executor.Calls == 1,
+            "HostActionConsumer did not display the Broker diagnostic as WAITING_FOR_AGENT.");
+        Require(!File.Exists(action.ResultPath),
+            "Diagnostic pending fabricated a terminal result marker.");
+        return Task.CompletedTask;
+    }
+
+    private static Task UniqueActionExecutesExactlyOnceAsync()
+    {
+        using var fixture = new HostConsumerFixture();
+        var action = fixture.CreatePendingAction("cpstudio-stage2-one-action");
+        var executor = new RecordingHostActionExecutor((entry, _) =>
+        {
+            Require(entry.ActionId == action.ActionId &&
+                entry.ActionSha256 == action.ActionSha256,
+                "Host dispatched an action identity other than the unique current action.");
+            return Task.FromResult(fixture.WriteTerminalResult(action, RunnerStates.Done));
+        });
+        var consumer = new HostActionConsumer(
+            fixture.EngineeringRoot,
+            fixture.ActivatedAtUtc,
+            executor: executor);
+
+        var started = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var completed = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var rediscovered = consumer.Tick(agentAvailable: true, CancellationToken.None);
+
+        Require(started.State == HostActionStates.Executing &&
+            started.ReasonCode == "HOST_ACTION_EXECUTION_STARTED",
+            "The unique current action did not enter EXECUTING.");
+        Require(completed.State == HostActionStates.ResultReady &&
+            completed.ReasonCode == "HOST_ACTION_RESULT_READY" &&
+            completed.ResultState == RunnerStates.Done &&
+            completed.ResultPath == action.ResultPath &&
+            File.Exists(action.ResultPath),
+            "The unique action did not expose its terminal result marker.");
+        Require(rediscovered.State == HostActionStates.ResultReady && executor.Calls == 1,
+            "A terminal result marker caused the unique action to execute more than once.");
+        return Task.CompletedTask;
+    }
+
+    private static Task MultipleActionsAreAmbiguousAsync()
+    {
+        using var fixture = new HostConsumerFixture();
+        _ = fixture.CreatePendingAction("cpstudio-stage2-ambiguous-a", createdAtUtc: DateTimeOffset.UtcNow.AddSeconds(-2));
+        _ = fixture.CreatePendingAction("cpstudio-stage2-ambiguous-b", createdAtUtc: DateTimeOffset.UtcNow.AddSeconds(-1));
+        var executor = new RecordingHostActionExecutor((_, _) =>
+            throw new InvalidOperationException("An ambiguous queue reached execution."));
+        var consumer = new HostActionConsumer(
+            fixture.EngineeringRoot,
+            fixture.ActivatedAtUtc,
+            executor: executor);
+
+        var status = consumer.Tick(agentAvailable: true, CancellationToken.None);
+
+        Require(status.State == HostActionStates.Ambiguous &&
+            status.ReasonCode == "ACTION_QUEUE_AMBIGUOUS" &&
+            status.PendingCount == 2 &&
+            status.OperationId is null &&
+            status.ActionId is null,
+            "Multiple current actions were not rejected as an identity-free ambiguous queue.");
+        Require(executor.Calls == 0,
+            "An ambiguous queue dispatched an action.");
+        return Task.CompletedTask;
+    }
+
+    private static Task ExistingResultDoesNotExecuteAsync()
+    {
+        using var fixture = new HostConsumerFixture();
+        var action = fixture.CreatePendingAction("cpstudio-stage2-existing-result");
+        _ = fixture.WriteTerminalResult(action, RunnerStates.Blocked);
+        var executor = new RecordingHostActionExecutor((_, _) =>
+            throw new InvalidOperationException("An existing terminal result reached execution."));
+        var consumer = new HostActionConsumer(
+            fixture.EngineeringRoot,
+            fixture.ActivatedAtUtc,
+            executor: executor);
+
+        var status = consumer.Tick(agentAvailable: true, CancellationToken.None);
+
+        Require(status.State == HostActionStates.ResultReady &&
+            status.ReasonCode == "HOST_ACTION_RESULT_READY" &&
+            status.OperationId == action.OperationId &&
+            status.ActionId == action.ActionId &&
+            status.ResultState == RunnerStates.Blocked &&
+            status.ResultPath == action.ResultPath,
+            "An existing terminal result was not exposed without dispatch.");
+        Require(executor.Calls == 0,
+            "An existing terminal result replayed its action through the executor.");
+        return Task.CompletedTask;
+    }
+
+    private static async Task LongActionRemainsExecutingAsync()
+    {
+        using var fixture = new HostConsumerFixture();
+        var action = fixture.CreatePendingAction("cpstudio-stage2-long-action");
+        var completion = new TaskCompletionSource<RunnerExecutionResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var executor = new RecordingHostActionExecutor((entry, _) =>
+        {
+            Require(entry.ActionId == action.ActionId,
+                "Long-action executor received the wrong action identity.");
+            return completion.Task;
+        });
+        var consumer = new HostActionConsumer(
+            fixture.EngineeringRoot,
+            fixture.ActivatedAtUtc,
+            executor: executor);
+
+        var started = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var stillRunningOne = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        var stillRunningTwo = consumer.Tick(agentAvailable: false, CancellationToken.None);
+
+        Require(started.State == HostActionStates.Executing &&
+            stillRunningOne.State == HostActionStates.Executing &&
+            stillRunningTwo.State == HostActionStates.Executing &&
+            executor.Calls == 1,
+            "A long-running action did not remain EXECUTING under one dispatch.");
+        Require(!File.Exists(action.ResultPath),
+            "A long-running action fabricated a terminal result before completion.");
+
+        var drainTimer = Stopwatch.StartNew();
+        var drained = await consumer.DrainAsync(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
+        drainTimer.Stop();
+        Require(!drained &&
+            drainTimer.Elapsed < TimeSpan.FromSeconds(2) &&
+            !completion.Task.IsCompleted &&
+            executor.Calls == 1,
+            "Shutdown drain did not return within its bound while preserving the active action for recovery.");
+
+        var result = fixture.WriteTerminalResult(action, RunnerStates.Done);
+        completion.SetResult(result);
+        var completed = consumer.Tick(agentAvailable: true, CancellationToken.None);
+        Require(completed.State == HostActionStates.ResultReady &&
+            completed.ResultState == RunnerStates.Done &&
+            executor.Calls == 1,
+            "A completed long-running action was not surfaced once as RESULT_READY.");
+    }
+
     private static async Task<HostStopReply> SendIdentityMismatchStopAsync(HostStatusDocument status)
     {
         using var timeout = new CancellationTokenSource(CommandTimeout);
@@ -509,6 +909,189 @@ internal static class Program
         {
             throw new InvalidOperationException(message);
         }
+    }
+}
+
+internal sealed record HostConsumerActionFixture(
+    string OperationId,
+    string ActionId,
+    string ActionKind,
+    string ActionPath,
+    string ActionSha256,
+    string RunId,
+    string RunRoot,
+    string ClaimPath,
+    string ResultPath);
+
+internal sealed class HostConsumerFixture : IDisposable
+{
+    public HostConsumerFixture()
+    {
+        Root = Path.Combine(Path.GetTempPath(), $"ctrlx-opcon-host-consumer-selftest-{Guid.NewGuid():N}");
+        EngineeringRoot = Path.Combine(Root, "Engineering");
+        Directory.CreateDirectory(EngineeringRoot);
+        ActivatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-10);
+    }
+
+    public string Root { get; }
+
+    public string EngineeringRoot { get; }
+
+    public DateTimeOffset ActivatedAtUtc { get; }
+
+    public HostConsumerActionFixture CreatePendingAction(
+        string operationId,
+        string actionKind = "inspect_and_build",
+        int sequence = 1,
+        DateTimeOffset? createdAtUtc = null)
+    {
+        var created = (createdAtUtc ?? DateTimeOffset.UtcNow).ToUniversalTime();
+        var actionId = $"{operationId}-{sequence:0000}";
+        var operationRoot = Path.Combine(
+            EngineeringRoot,
+            "data",
+            "operations",
+            "cpstudio-stage2",
+            operationId);
+        var actionsRoot = Path.Combine(operationRoot, "actions");
+        Directory.CreateDirectory(actionsRoot);
+        var actionPath = Path.Combine(actionsRoot, $"{sequence:0000}-{actionKind}.json");
+        WriteJson(actionPath, new JsonObject
+        {
+            ["schemaVersion"] = 1,
+            ["kind"] = "ctrlx-opcon-runner-request",
+            ["operationId"] = operationId,
+            ["actionId"] = actionId,
+            ["actionKind"] = actionKind,
+            ["sequence"] = sequence,
+            ["createdAtUtc"] = created.ToString("O"),
+            ["status"] = "WAITING_FOR_RUNNER"
+        });
+        var actionSha256 = RunnerHash.Sha256File(actionPath);
+        var operationPath = Path.Combine(operationRoot, "operation.json");
+        WriteJson(operationPath, new JsonObject
+        {
+            ["schemaVersion"] = 1,
+            ["kind"] = "ctrlx-opcon-post-export-operation",
+            ["operationId"] = operationId,
+            ["status"] = "WAITING_FOR_RUNNER",
+            ["currentAction"] = new JsonObject
+            {
+                ["actionId"] = actionId,
+                ["kind"] = actionKind,
+                ["sequence"] = sequence,
+                ["createdAtUtc"] = created.ToString("O"),
+                ["path"] = actionPath,
+                ["sha256"] = actionSha256
+            }
+        });
+        File.SetLastWriteTimeUtc(operationPath, DateTime.UtcNow);
+
+        var runId = RunnerRunStore.GetRunId(actionId, actionSha256);
+        var runRoot = RunnerRunStore.GetRunRoot(EngineeringRoot, actionId, actionSha256);
+        return new HostConsumerActionFixture(
+            operationId,
+            actionId,
+            actionKind,
+            actionPath,
+            actionSha256,
+            runId,
+            runRoot,
+            Path.Combine(runRoot, "claim.json"),
+            Path.Combine(runRoot, "result.json"));
+    }
+
+    public RunnerExecutionResult WriteTerminalResult(
+        HostConsumerActionFixture action,
+        string state)
+    {
+        RequireTerminal(state);
+        Directory.CreateDirectory(action.RunRoot);
+        var reasonCode = state switch
+        {
+            RunnerStates.Done => "RUNNER_SUCCEEDED",
+            RunnerStates.Blocked => "BLOCKED_SELFTEST",
+            RunnerStates.Failed => "FAILED_SELFTEST",
+            RunnerStates.Unknown => "UNKNOWN_SELFTEST",
+            _ => throw new InvalidOperationException($"Unsupported terminal fixture state: {state}")
+        };
+        var exitCode = state switch
+        {
+            RunnerStates.Done => RunnerExitCodes.Done,
+            RunnerStates.Blocked => RunnerExitCodes.Blocked,
+            _ => RunnerExitCodes.GateFailure
+        };
+        WriteJson(action.ResultPath, new JsonObject
+        {
+            ["schemaVersion"] = 1,
+            ["kind"] = "ctrlx-opcon-runner-result",
+            ["runId"] = action.RunId,
+            ["state"] = state,
+            ["reasonCode"] = reasonCode,
+            ["exitCode"] = exitCode,
+            ["actionId"] = action.ActionId,
+            ["actionKind"] = action.ActionKind,
+            ["actionPath"] = action.ActionPath,
+            ["actionSha256"] = action.ActionSha256,
+            ["observationPath"] = null,
+            ["evidencePath"] = null,
+            ["completedAtUtc"] = DateTimeOffset.UtcNow.ToString("O")
+        });
+        return new RunnerExecutionResult(
+            action.RunId,
+            state,
+            reasonCode,
+            exitCode,
+            action.ResultPath,
+            ObservationPath: null,
+            EvidencePath: null,
+            Replayed: false);
+    }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(Root))
+        {
+            Directory.Delete(Root, recursive: true);
+        }
+    }
+
+    private static void WriteJson(string path, JsonObject document)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(
+            path,
+            document.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+    }
+
+    private static void RequireTerminal(string state)
+    {
+        if (!RunnerStates.IsTerminal(state))
+        {
+            throw new InvalidOperationException($"Fixture result state is not terminal: {state}");
+        }
+    }
+}
+
+internal sealed class RecordingHostActionExecutor : IHostActionExecutor
+{
+    private readonly Func<RunnerInboxEntry, CancellationToken, Task<RunnerExecutionResult>> execute;
+
+    public RecordingHostActionExecutor(
+        Func<RunnerInboxEntry, CancellationToken, Task<RunnerExecutionResult>> execute)
+    {
+        this.execute = execute;
+    }
+
+    public int Calls { get; private set; }
+
+    public Task<RunnerExecutionResult> ExecuteAsync(
+        RunnerInboxEntry entry,
+        CancellationToken cancellationToken)
+    {
+        Calls++;
+        return execute(entry, cancellationToken);
     }
 }
 
@@ -588,6 +1171,37 @@ internal sealed class RunningHostFixture : IAsyncDisposable
         }
 
         throw new TimeoutException("Runner Host did not publish live status in time.");
+    }
+
+    public async Task<HostStatusDocument> WaitForStateAsync(string expectedState, TimeSpan timeout)
+    {
+        if (process is null)
+        {
+            throw new InvalidOperationException("Runner Host has not started.");
+        }
+
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        var store = new HostStatusStore(Paths);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (process.HasExited)
+            {
+                var stdout = await (stdoutTask ?? Task.FromResult(string.Empty)).ConfigureAwait(false);
+                var stderr = await (stderrTask ?? Task.FromResult(string.Empty)).ConfigureAwait(false);
+                throw new InvalidOperationException(
+                    $"Runner Host exited while waiting for {expectedState}. exit={process.ExitCode}; stdout={stdout}; stderr={stderr}");
+            }
+
+            var status = store.ReadLive();
+            if (status?.State == expectedState)
+            {
+                return status;
+            }
+
+            await Task.Delay(50).ConfigureAwait(false);
+        }
+
+        throw new TimeoutException($"Runner Host did not enter {expectedState} in time.");
     }
 
     public async Task WaitForExitAsync(TimeSpan timeout)

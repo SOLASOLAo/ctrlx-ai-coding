@@ -797,6 +797,394 @@ internal static class RunnerSelfTest
                 return Task.CompletedTask;
             }).ConfigureAwait(false);
 
+            await CaseAsync("22 Fresh inbox action stays pending when no Broker is available", async () =>
+            {
+                using var inboxFixture = new RunnerFixture(
+                    repositoryRoot,
+                    Path.Combine(temporaryRoot, "inbox-keep-pending"));
+                var activatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-5);
+                var action = inboxFixture.CreateAction(
+                    "fixture-inbox-keep-pending",
+                    "inspect_and_build",
+                    cpStudioInbox: true);
+                var inbox = new RunnerActionInbox();
+
+                var initial = inbox.Locate(inboxFixture.EngineeringRoot, activatedAtUtc);
+                Check(initial.Issues.Count == 0, "Fresh inbox action produced a discovery issue.");
+                Check(initial.LegacyIgnoredCount == 0, "Fresh inbox action was quarantined as legacy.");
+                var pendingEntry = initial.Entries.Single();
+                Check(pendingEntry.State == RunnerInboxEntryState.Pending, "Fresh inbox action was not PENDING.");
+                Check(pendingEntry.ActionPath == action.Path, "Inbox changed the authoritative action path.");
+                Check(
+                    pendingEntry.ActionSha256.Equals(action.Sha256, StringComparison.OrdinalIgnoreCase),
+                    "Inbox changed the authoritative action SHA-256.");
+
+                var validated = new RunnerActionValidator().Validate(
+                    inboxFixture.EngineeringRoot,
+                    action.Path,
+                    action.Sha256);
+                var store = RunnerRunStore.ForAction(validated);
+                var broker = new CountingBrokerClient(new NoSessionBrokerClient());
+                var sealer = new RecordingEvidenceSealer();
+                var executor = new RunnerExecutor(broker, sealer);
+                RunnerGateException? pending = null;
+                try
+                {
+                    _ = await executor.ExecuteAsync(
+                        inboxFixture.Request(action) with
+                        {
+                            SessionUnavailableBehavior = RunnerSessionUnavailableBehavior.KeepPending
+                        }).ConfigureAwait(false);
+                }
+                catch (RunnerGateException exception)
+                {
+                    pending = exception;
+                }
+
+                Check(pending is not null, "KeepPending unexpectedly produced a terminal result.");
+                Check(pending!.ReasonCode == "BROKER_SESSION_PENDING", "Fresh KeepPending reason changed.");
+                Check(
+                    pending.DiagnosticReasonCode == "BLOCKED_SESSION_UNAVAILABLE",
+                    "Fresh KeepPending hid the lower-level Broker diagnostic reason.");
+                Check(pending.ExitCode == RunnerExitCodes.Busy, "Fresh KeepPending must return Busy exit code 20.");
+                Check(broker.Calls == 1, "Fresh KeepPending did not probe the Broker exactly once.");
+                Check(sealer.Calls == 0, "Fresh KeepPending reached evidence sealing.");
+                Check(File.Exists(store.ClaimPath), "Fresh KeepPending did not retain its durable claim.");
+                Check(!File.Exists(store.ResultPath), "Fresh KeepPending fabricated a terminal result marker.");
+                Check(!File.Exists(store.ObservationPath), "Fresh KeepPending fabricated an observation.");
+
+                var recovery = inbox.Locate(inboxFixture.EngineeringRoot, activatedAtUtc);
+                Check(recovery.Issues.Count == 0, "Recoverable inbox claim produced a discovery issue.");
+                Check(
+                    recovery.Entries.Single().State == RunnerInboxEntryState.RecoveryPending,
+                    "Durable KeepPending claim was not classified RECOVERY_PENDING.");
+            }).ConfigureAwait(false);
+
+            await CaseAsync("23 Legacy inbox actions are quarantined except durable recovery claims", () =>
+            {
+                using var inboxFixture = new RunnerFixture(
+                    repositoryRoot,
+                    Path.Combine(temporaryRoot, "inbox-legacy-recovery"));
+                var legacy = inboxFixture.CreateAction(
+                    "fixture-inbox-legacy",
+                    "inspect_and_build",
+                    cpStudioInbox: true);
+                var recovery = inboxFixture.CreateAction(
+                    "fixture-inbox-legacy-recovery",
+                    "inspect_and_build",
+                    cpStudioInbox: true);
+                var validated = new RunnerActionValidator().Validate(
+                    inboxFixture.EngineeringRoot,
+                    recovery.Path,
+                    recovery.Sha256);
+                var store = RunnerRunStore.ForAction(validated);
+                Check(store.TryCreateClaim("fixture-recovery"), "Legacy recovery fixture could not create its claim.");
+
+                var snapshot = new RunnerActionInbox().Locate(
+                    inboxFixture.EngineeringRoot,
+                    DateTimeOffset.UtcNow.AddMinutes(5));
+                Check(snapshot.Issues.Count == 0, "Legacy quarantine emitted a live inbox issue.");
+                Check(snapshot.LegacyIgnoredCount == 1, "Legacy quarantine count changed.");
+                var entry = snapshot.Entries.Single();
+                Check(entry.OperationId == recovery.OperationId, "Legacy recovery selected the quarantined action.");
+                Check(entry.State == RunnerInboxEntryState.RecoveryPending, "Legacy durable claim was not recoverable.");
+                Check(!snapshot.Entries.Any(item => item.OperationId == legacy.OperationId), "Legacy unclaimed action escaped quarantine.");
+                return Task.CompletedTask;
+            }).ConfigureAwait(false);
+
+            await CaseAsync("24 Terminal result marker is surfaced and immutable action is not rerun", async () =>
+            {
+                using var inboxFixture = new RunnerFixture(
+                    repositoryRoot,
+                    Path.Combine(temporaryRoot, "inbox-result-ready"));
+                var activatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-5);
+                var action = inboxFixture.CreateAction(
+                    "fixture-inbox-result-ready",
+                    "inspect_and_build",
+                    cpStudioInbox: true);
+                var broker = new CountingBrokerClient(new NoSessionBrokerClient());
+                var sealer = new CountingEvidenceSealer(
+                    new PowerShellEvidenceSealer(TimeSpan.FromSeconds(30)));
+                var executor = new RunnerExecutor(broker, sealer);
+
+                var first = await executor.ExecuteAsync(inboxFixture.Request(action)).ConfigureAwait(false);
+                Check(first.State == RunnerStates.Blocked, "Result-marker fixture did not finish BLOCKED.");
+                Check(broker.Calls == 1 && sealer.Calls == 1, "Result-marker fixture did not execute exactly once.");
+
+                var snapshot = new RunnerActionInbox().Locate(inboxFixture.EngineeringRoot, activatedAtUtc);
+                Check(snapshot.Issues.Count == 0, "Valid terminal result marker produced an inbox issue.");
+                var entry = snapshot.Entries.Single();
+                Check(entry.State == RunnerInboxEntryState.ResultReady, "Terminal result was not classified RESULT_READY.");
+                Check(entry.ResultState == RunnerStates.Blocked, "Inbox terminal result state changed.");
+                Check(entry.ResultPath == first.ResultPath, "Inbox terminal result path changed.");
+                Check(entry.EvidencePath == first.EvidencePath, "Inbox terminal evidence path changed.");
+
+                var replay = await executor.ExecuteAsync(inboxFixture.Request(action)).ConfigureAwait(false);
+                Check(replay.Replayed, "Terminal inbox action was not replayed locally.");
+                Check(replay.RunId == first.RunId, "Terminal inbox replay changed runId.");
+                Check(broker.Calls == 1, "Terminal inbox action reached the Broker twice.");
+                Check(sealer.Calls == 1, "Terminal inbox action was sealed twice.");
+            }).ConfigureAwait(false);
+
+            await CaseAsync("25 Inbox hash drift and malformed result markers fail closed", () =>
+            {
+                using var inboxFixture = new RunnerFixture(
+                    repositoryRoot,
+                    Path.Combine(temporaryRoot, "inbox-invalid-markers"));
+                var activatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-5);
+                var drift = inboxFixture.CreateAction(
+                    "fixture-inbox-hash-drift",
+                    "inspect_and_build",
+                    cpStudioInbox: true);
+                File.AppendAllText(drift.Path, " ", new UTF8Encoding(false));
+
+                var malformed = inboxFixture.CreateAction(
+                    "fixture-inbox-malformed-result",
+                    "inspect_and_build",
+                    cpStudioInbox: true);
+                var validated = new RunnerActionValidator().Validate(
+                    inboxFixture.EngineeringRoot,
+                    malformed.Path,
+                    malformed.Sha256);
+                var store = RunnerRunStore.ForAction(validated);
+                WriteJson(store.ResultPath, new JsonObject
+                {
+                    ["schemaVersion"] = 1,
+                    ["kind"] = "ctrlx-opcon-runner-result",
+                    ["runId"] = store.RunId,
+                    ["actionId"] = malformed.ActionId,
+                    ["actionSha256"] = malformed.Sha256,
+                    ["state"] = RunnerStates.Executing
+                });
+
+                var snapshot = new RunnerActionInbox().Locate(inboxFixture.EngineeringRoot, activatedAtUtc);
+                Check(snapshot.Entries.Count == 0, "Invalid inbox artifact remained executable.");
+                Check(snapshot.LegacyIgnoredCount == 0, "Fresh invalid inbox artifact was hidden as legacy.");
+                Check(
+                    snapshot.Issues.Any(item => item.OperationId == drift.OperationId && item.ReasonCode == "ACTION_HASH_MISMATCH"),
+                    "Inbox action hash drift was not reported.");
+                Check(
+                    snapshot.Issues.Any(item => item.OperationId == malformed.OperationId && item.ReasonCode == "RUN_RESULT_MARKER_INVALID"),
+                    "Malformed terminal result marker was not rejected.");
+                return Task.CompletedTask;
+            }).ConfigureAwait(false);
+
+            await CaseAsync("26 Stray inbox files do not become executable actions", () =>
+            {
+                using var inboxFixture = new RunnerFixture(
+                    repositoryRoot,
+                    Path.Combine(temporaryRoot, "inbox-stray-files"));
+                var activatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-5);
+                var action = inboxFixture.CreateAction(
+                    "fixture-inbox-stray-files",
+                    "inspect_and_build",
+                    cpStudioInbox: true);
+                var inboxRoot = Path.Combine(
+                    inboxFixture.EngineeringRoot,
+                    "data",
+                    "operations",
+                    "cpstudio-stage2");
+                File.WriteAllText(
+                    Path.Combine(inboxRoot, "not-an-operation.json"),
+                    "{}" + Environment.NewLine,
+                    new UTF8Encoding(false));
+                File.WriteAllText(
+                    Path.Combine(Path.GetDirectoryName(action.Path)!, "not-current-action.json"),
+                    "{}" + Environment.NewLine,
+                    new UTF8Encoding(false));
+                File.WriteAllText(
+                    Path.Combine(Path.GetDirectoryName(OperationLedgerPath(action))!, "diagnostic.txt"),
+                    "fixture" + Environment.NewLine,
+                    new UTF8Encoding(false));
+
+                var snapshot = new RunnerActionInbox().Locate(inboxFixture.EngineeringRoot, activatedAtUtc);
+                Check(snapshot.Issues.Count == 0, "Stray inbox files produced a discovery issue.");
+                Check(snapshot.LegacyIgnoredCount == 0, "Stray inbox files changed the legacy count.");
+                var entry = snapshot.Entries.Single();
+                Check(entry.OperationId == action.OperationId, "Stray inbox file replaced the authoritative operation.");
+                Check(entry.ActionPath == action.Path, "Stray action file replaced operation.currentAction.");
+                Check(entry.State == RunnerInboxEntryState.Pending, "Stray inbox files changed pending state.");
+                return Task.CompletedTask;
+            }).ConfigureAwait(false);
+
+            await CaseAsync("27 Legacy recovery result remains visible on every Host tick", async () =>
+            {
+                using var inboxFixture = new RunnerFixture(
+                    repositoryRoot,
+                    Path.Combine(temporaryRoot, "inbox-legacy-result-ready"));
+                var action = inboxFixture.CreateAction(
+                    "fixture-inbox-legacy-result-ready",
+                    "inspect_and_build",
+                    cpStudioInbox: true);
+                var validated = new RunnerActionValidator().Validate(
+                    inboxFixture.EngineeringRoot,
+                    action.Path,
+                    action.Sha256);
+                var store = RunnerRunStore.ForAction(validated);
+                Check(store.TryCreateClaim("fixture-legacy-recovery"), "Legacy result fixture could not create its claim.");
+                File.SetLastWriteTimeUtc(
+                    OperationLedgerPath(action),
+                    DateTime.UtcNow.AddMinutes(-10));
+                var activatedAtUtc = DateTimeOffset.UtcNow.AddSeconds(-1);
+                var inbox = new RunnerActionInbox();
+
+                var before = inbox.Locate(inboxFixture.EngineeringRoot, activatedAtUtc);
+                Check(before.Issues.Count == 0, "Legacy open claim produced an inbox issue before recovery.");
+                Check(before.LegacyIgnoredCount == 0, "Legacy open claim was quarantined before recovery.");
+                Check(
+                    before.Entries.Single().State == RunnerInboxEntryState.RecoveryPending,
+                    "Legacy open claim was not RECOVERY_PENDING before completion.");
+
+                var broker = new CountingBrokerClient(
+                    new FixedBrokerClient(SuccessfulBrokerReply(action)));
+                var sealer = new CountingEvidenceSealer(
+                    new PowerShellEvidenceSealer(TimeSpan.FromSeconds(30)));
+                var executor = new RunnerExecutor(broker, sealer);
+                var completed = await executor.ExecuteAsync(inboxFixture.Request(action)).ConfigureAwait(false);
+                Check(completed.State == RunnerStates.Done, "Legacy recovery did not complete DONE.");
+                Check(broker.Calls == 1 && sealer.Calls == 1, "Legacy recovery did not execute exactly once.");
+
+                var firstTick = inbox.Locate(inboxFixture.EngineeringRoot, activatedAtUtc);
+                var secondTick = inbox.Locate(inboxFixture.EngineeringRoot, activatedAtUtc);
+                foreach (var snapshot in new[] { firstTick, secondTick })
+                {
+                    Check(snapshot.Issues.Count == 0, "Completed legacy recovery produced an inbox issue.");
+                    Check(snapshot.LegacyIgnoredCount == 0, "Completed legacy recovery disappeared into legacy quarantine.");
+                    var entry = snapshot.Entries.Single();
+                    Check(entry.State == RunnerInboxEntryState.ResultReady, "Completed legacy recovery was not RESULT_READY.");
+                    Check(entry.RunId == completed.RunId, "Completed legacy recovery changed run identity between ticks.");
+                    Check(entry.ResultPath == completed.ResultPath, "Completed legacy recovery changed result path between ticks.");
+                }
+
+                var replay = await executor.ExecuteAsync(inboxFixture.Request(action)).ConfigureAwait(false);
+                Check(replay.Replayed, "Completed legacy recovery was not replayed locally.");
+                Check(broker.Calls == 1, "Completed legacy recovery reached the Broker twice.");
+                Check(sealer.Calls == 1, "Completed legacy recovery was sealed twice.");
+            }).ConfigureAwait(false);
+
+            await CaseAsync("28 Reparse ancestors fail closed before inbox execution", () =>
+            {
+                using (var dataFixture = new RunnerFixture(
+                           repositoryRoot,
+                           Path.Combine(temporaryRoot, "inbox-data-junction")))
+                {
+                    _ = dataFixture.CreateAction(
+                        "fixture-inbox-data-junction",
+                        "inspect_and_build",
+                        cpStudioInbox: true);
+                    var source = Path.Combine(dataFixture.EngineeringRoot, "data");
+                    var target = Path.Combine(dataFixture.Root, "junction-data-target");
+                    Directory.Move(source, target);
+                    try
+                    {
+                        CreateDirectoryJunction(source, target);
+                        ExpectInboxGate(
+                            () => new RunnerActionInbox().Locate(
+                                dataFixture.EngineeringRoot,
+                                DateTimeOffset.UtcNow.AddMinutes(-5)),
+                            "ACTION_INBOX_REPARSE_POINT");
+                    }
+                    finally
+                    {
+                        DeleteDirectoryJunction(source);
+                    }
+                }
+
+                using (var operationsFixture = new RunnerFixture(
+                           repositoryRoot,
+                           Path.Combine(temporaryRoot, "inbox-operations-junction")))
+                {
+                    _ = operationsFixture.CreateAction(
+                        "fixture-inbox-operations-junction",
+                        "inspect_and_build",
+                        cpStudioInbox: true);
+                    var source = Path.Combine(operationsFixture.EngineeringRoot, "data", "operations");
+                    var target = Path.Combine(operationsFixture.Root, "junction-operations-target");
+                    Directory.Move(source, target);
+                    try
+                    {
+                        CreateDirectoryJunction(source, target);
+                        ExpectInboxGate(
+                            () => new RunnerActionInbox().Locate(
+                                operationsFixture.EngineeringRoot,
+                                DateTimeOffset.UtcNow.AddMinutes(-5)),
+                            "ACTION_INBOX_REPARSE_POINT");
+                    }
+                    finally
+                    {
+                        DeleteDirectoryJunction(source);
+                    }
+                }
+
+                using (var runsFixture = new RunnerFixture(
+                           repositoryRoot,
+                           Path.Combine(temporaryRoot, "inbox-runs-junction")))
+                {
+                    var action = runsFixture.CreateAction(
+                        "fixture-inbox-runs-junction",
+                        "inspect_and_build",
+                        cpStudioInbox: true);
+                    var source = Path.Combine(runsFixture.EngineeringRoot, "data", "runs");
+                    var target = Path.Combine(runsFixture.Root, "junction-runs-target");
+                    Directory.CreateDirectory(source);
+                    Directory.Move(source, target);
+                    try
+                    {
+                        CreateDirectoryJunction(source, target);
+                        var snapshot = new RunnerActionInbox().Locate(
+                            runsFixture.EngineeringRoot,
+                            DateTimeOffset.UtcNow.AddMinutes(-5));
+                        Check(snapshot.Entries.Count == 0, "Runs junction left an executable inbox action.");
+                        Check(
+                            snapshot.Issues.Any(item =>
+                                item.OperationId == action.OperationId &&
+                                item.ReasonCode == "RUN_PATH_REPARSE_POINT"),
+                            "Runs ancestor junction was not rejected.");
+                    }
+                    finally
+                    {
+                        DeleteDirectoryJunction(source);
+                    }
+                }
+
+                return Task.CompletedTask;
+            }).ConfigureAwait(false);
+
+            await CaseAsync("29 Sibling operation.json reparse fails closed before Broker", async () =>
+            {
+                using var ledgerFixture = new RunnerFixture(
+                    repositoryRoot,
+                    Path.Combine(temporaryRoot, "operation-ledger-reparse"));
+                var action = ledgerFixture.CreateAction(
+                    "fixture-operation-ledger-reparse",
+                    "inspect_and_build");
+                var operationPath = OperationLedgerPath(action);
+                var junctionTarget = Path.Combine(
+                    ledgerFixture.Root,
+                    "operation-ledger-junction-target");
+                Directory.CreateDirectory(junctionTarget);
+                File.Delete(operationPath);
+                var broker = new CountingBrokerClient(new NoSessionBrokerClient());
+                var sealer = new RecordingEvidenceSealer();
+                var executor = new RunnerExecutor(broker, sealer);
+                try
+                {
+                    // A directory junction at the exact sibling ledger path is a
+                    // privilege-free Windows reparse fixture. Validation must
+                    // reject the leaf before attempting to parse it as JSON.
+                    CreateDirectoryJunction(operationPath, junctionTarget);
+                    await ExpectGateAsync(
+                        () => executor.ExecuteAsync(ledgerFixture.Request(action)),
+                        "OPERATION_LEDGER_REPARSE_POINT").ConfigureAwait(false);
+                    Check(broker.Calls == 0, "Reparse operation ledger reached the Broker.");
+                    Check(sealer.Calls == 0, "Reparse operation ledger reached evidence sealing.");
+                }
+                finally
+                {
+                    DeleteDirectoryJunction(operationPath);
+                }
+            }).ConfigureAwait(false);
+
             Console.WriteLine($"PASS ALL: {assertionCount} assertions");
             return 0;
         }
@@ -1330,9 +1718,12 @@ internal static class RunnerSelfTest
         Check(!hostProject.Contains("CtrlX.OpCon.Runner.Broker.csproj", StringComparison.Ordinal), "Runner Host project references Broker implementation.");
         Check(
             hostCombined.Contains("WAITING_FOR_AGENT", StringComparison.Ordinal) &&
+            hostCombined.Contains("WAITING_FOR_COORDINATOR", StringComparison.Ordinal) &&
+            hostCombined.Contains("StartsBroker = false", StringComparison.Ordinal) &&
             hostCombined.Contains("StartsPleOrMcp = false", StringComparison.Ordinal) &&
-            hostCombined.Contains("AutomaticActionExecutionEnabled = false", StringComparison.Ordinal),
-            "Runner Host does not preserve its P1.3a waiting/safety contract.");
+            hostCombined.Contains("OnlineOperationsAllowed = false", StringComparison.Ordinal) &&
+            hostCombined.Contains("AutomaticActionExecutionEnabled = true", StringComparison.Ordinal),
+            "Runner Host does not preserve its P1.3b action-consumer safety contract.");
         var wrapperSource = File.ReadAllText(Path.Combine(
             repositoryRoot,
             "templates",
@@ -1435,6 +1826,68 @@ internal static class RunnerSelfTest
             new UTF8Encoding(false));
     }
 
+    private static string OperationLedgerPath(ActionFixture action) =>
+        Path.Combine(
+            Directory.GetParent(Path.GetDirectoryName(action.Path)!)!.FullName,
+            "operation.json");
+
+    private static void ExpectInboxGate(Action operation, string reasonCode)
+    {
+        try
+        {
+            operation();
+            Check(false, $"Expected inbox gate '{reasonCode}' was not raised.");
+        }
+        catch (RunnerGateException exception)
+        {
+            Check(
+                exception.ReasonCode == reasonCode,
+                $"Expected inbox gate '{reasonCode}', got '{exception.ReasonCode}'.");
+        }
+    }
+
+    private static void CreateDirectoryJunction(string linkPath, string targetPath)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.System),
+                "cmd.exe"),
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        startInfo.ArgumentList.Add("/d");
+        startInfo.ArgumentList.Add("/c");
+        startInfo.ArgumentList.Add("mklink");
+        startInfo.ArgumentList.Add("/J");
+        startInfo.ArgumentList.Add(linkPath);
+        startInfo.ArgumentList.Add(targetPath);
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Could not start the junction fixture command.");
+        var standardOutput = process.StandardOutput.ReadToEnd();
+        var standardError = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0 ||
+            !Directory.Exists(linkPath) ||
+            (File.GetAttributes(linkPath) & FileAttributes.ReparsePoint) == 0)
+        {
+            throw new InvalidOperationException(
+                $"Could not create junction fixture (exit={process.ExitCode}): {standardOutput} {standardError}");
+        }
+    }
+
+    private static void DeleteDirectoryJunction(string path)
+    {
+        if (Directory.Exists(path) &&
+            (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+        {
+            Directory.Delete(path, recursive: false);
+        }
+    }
+
     private static JsonObject Object(JsonObject value, string property) =>
         value[property] as JsonObject
         ?? throw new InvalidOperationException($"Expected object '{property}'.");
@@ -1523,7 +1976,8 @@ internal sealed class RunnerFixture : IDisposable
     public ActionFixture CreateAction(
         string operationId,
         string actionKind,
-        JsonArray? changeSet = null)
+        JsonArray? changeSet = null,
+        bool cpStudioInbox = false)
     {
         const int sequence = 1;
         var actionId = $"{operationId}-{sequence:0000}";
@@ -1591,10 +2045,11 @@ internal sealed class RunnerFixture : IDisposable
                 ["warningComparison"] = "signature-multiset-not-count-only"
             }
         };
+        var operationRoot = cpStudioInbox
+            ? Path.Combine(EngineeringRoot, "data", "operations", "cpstudio-stage2")
+            : Path.Combine(EngineeringRoot, "data", "operations");
         var path = Path.Combine(
-            EngineeringRoot,
-            "data",
-            "operations",
+            operationRoot,
             operationId,
             "actions",
             $"{sequence:0000}-{actionKind}.json");
