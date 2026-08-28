@@ -73,7 +73,10 @@
 - 有待处理 action 且同会话 Agent 不存在时状态为 `WAITING_FOR_AGENT`，action 保持 pending，不会伪造终态；没有 action 时为 `WAITING_FOR_ACTION`，
   也不会自动启动工程工具。action 终态落盘后 Host 保持 `WAITING_FOR_COORDINATOR`。
 - P1.3b 已完成自动 action 消费的离线实现，没有新增真机或真实 PLE 验收声明。P1.3c
-  尚未完成：下一步是 coordinator/evidence ingestion，以及稳定安装目录、升级/回滚和团队发行。
+  尚未完成：下一步是 coordinator/evidence ingestion、完整 payload pin，以及稳定安装目录、
+  升级/回滚和团队发行。
+- Scheduled Task 使用 WinExe GUI-subsystem apphost，后台启动不弹控制台；
+  `Status/Stop/Logs` 经 `dotnet + DLL` 保留命令行输出。本机无黑窗生命周期验收已通过。
 
 显式启动与只读状态/客户端命令：
 

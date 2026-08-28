@@ -55,38 +55,36 @@ function Get-HostLaunch {
     )
     foreach ($projectRoot in $projectRoots) {
         $exe = [System.IO.Path]::GetFullPath((Join-Path $projectRoot 'vcrunner-host.exe'))
-        if ([System.IO.File]::Exists($exe)) {
-            $dll = [System.IO.Path]::GetFullPath((Join-Path $projectRoot 'vcrunner-host.dll'))
-            if (-not [System.IO.File]::Exists($dll)) {
-                throw "Runner Host apphost exists without its managed assembly: $dll"
-            }
-            return [pscustomobject]@{
-                executable = $exe
-                prefixArguments = @()
-                assembly = $dll
-                executableSha256 = Get-Sha256File -Path $exe
-                assemblySha256 = Get-Sha256File -Path $dll
-            }
+        $dll = [System.IO.Path]::GetFullPath((Join-Path $projectRoot 'vcrunner-host.dll'))
+        if ((-not [System.IO.File]::Exists($exe)) -and (-not [System.IO.File]::Exists($dll))) {
+            continue
+        }
+        if (-not [System.IO.File]::Exists($exe)) {
+            if ($AllowMissing) { continue }
+            throw "Runner Host managed assembly exists without its windowless apphost: $exe"
+        }
+        if (-not [System.IO.File]::Exists($dll)) {
+            if ($AllowMissing) { continue }
+            throw "Runner Host apphost exists without its managed assembly: $dll"
         }
 
-        $dll = [System.IO.Path]::GetFullPath((Join-Path $projectRoot 'vcrunner-host.dll'))
-        if ([System.IO.File]::Exists($dll)) {
-            $dotnet = Join-Path $env:ProgramFiles 'dotnet\dotnet.exe'
-            if (-not [System.IO.File]::Exists($dotnet)) {
-                $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
-                if ($null -eq $dotnetCommand) {
-                    throw '.NET 8 runtime is required for the Runner Host.'
-                }
-                $dotnet = $dotnetCommand.Source
+        $dotnet = Join-Path $env:ProgramFiles 'dotnet\dotnet.exe'
+        if (-not [System.IO.File]::Exists($dotnet)) {
+            $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
+            if ($null -eq $dotnetCommand) {
+                throw '.NET 8 runtime is required for the Runner Host.'
             }
-            $dotnet = [System.IO.Path]::GetFullPath($dotnet)
-            return [pscustomobject]@{
-                executable = $dotnet
-                prefixArguments = @($dll)
-                assembly = $dll
-                executableSha256 = Get-Sha256File -Path $dotnet
-                assemblySha256 = Get-Sha256File -Path $dll
-            }
+            $dotnet = $dotnetCommand.Source
+        }
+        $dotnet = [System.IO.Path]::GetFullPath($dotnet)
+        return [pscustomobject]@{
+            cliExecutable = $dotnet
+            cliPrefixArguments = @($dll)
+            taskExecutable = $exe
+            taskPrefixArguments = @()
+            assembly = $dll
+            taskExecutableSha256 = Get-Sha256File -Path $exe
+            assemblySha256 = Get-Sha256File -Path $dll
         }
     }
 
@@ -149,12 +147,12 @@ function Get-ExpectedTaskDefinition {
     $normalizedRoot = Get-NormalizedEngineeringRoot -Root $Root
     $rootIdentity = $normalizedRoot.ToUpperInvariant()
     $rootKey = (Get-Sha256Text -Value $rootIdentity).Substring(0, 16)
-    $arguments = @($Launch.prefixArguments) + @('run', '--engineering-root', $normalizedRoot)
+    $arguments = @($Launch.taskPrefixArguments) + @('run', '--engineering-root', $normalizedRoot)
     return [pscustomobject]@{
-        executable = [System.IO.Path]::GetFullPath($Launch.executable)
+        executable = [System.IO.Path]::GetFullPath($Launch.taskExecutable)
         arguments = (($arguments | ForEach-Object { ConvertTo-WindowsArgument -Value $_ }) -join ' ')
         workingDirectory = $normalizedRoot
-        description = "ctrlX OpCon offline Runner Host; rootKey=$rootKey; executableSha256=$($Launch.executableSha256); assemblySha256=$($Launch.assemblySha256)"
+        description = "ctrlX OpCon offline Runner Host; rootKey=$rootKey; executableSha256=$($Launch.taskExecutableSha256); assemblySha256=$($Launch.assemblySha256)"
     }
 }
 
@@ -182,18 +180,18 @@ function Get-KnownHostLaunchesForUninstall {
         $exe = [System.IO.Path]::GetFullPath((Join-Path $outputRoot 'vcrunner-host.exe'))
         $dll = [System.IO.Path]::GetFullPath((Join-Path $outputRoot 'vcrunner-host.dll'))
         [pscustomobject]@{
-            executable = $exe
-            prefixArguments = @()
+            taskExecutable = $exe
+            taskPrefixArguments = @()
             assembly = $dll
-            executableSha256 = $zeroHash
+            taskExecutableSha256 = $zeroHash
             assemblySha256 = $zeroHash
         }
         foreach ($dotnet in $dotnetExecutables) {
             [pscustomobject]@{
-                executable = $dotnet
-                prefixArguments = @($dll)
+                taskExecutable = $dotnet
+                taskPrefixArguments = @($dll)
                 assembly = $dll
-                executableSha256 = $zeroHash
+                taskExecutableSha256 = $zeroHash
                 assemblySha256 = $zeroHash
             }
         }
@@ -437,7 +435,7 @@ function Invoke-HostForeground {
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
-    $output = @(& $Launch.executable @($Launch.prefixArguments) @Arguments 2>&1)
+    $output = @(& $Launch.cliExecutable @($Launch.cliPrefixArguments) @Arguments 2>&1)
     $exitCode = [int]$LASTEXITCODE
     foreach ($line in $output) {
         [Console]::Out.WriteLine([string]$line)
@@ -452,7 +450,7 @@ function Get-HostJsonResult {
         [Parameter(Mandatory = $true)][string]$Label
     )
 
-    $output = @(& $Launch.executable @($Launch.prefixArguments) @Arguments 2>&1)
+    $output = @(& $Launch.cliExecutable @($Launch.cliPrefixArguments) @Arguments 2>&1)
     $exitCode = [int]$LASTEXITCODE
     $text = ($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
     $payload = $null
@@ -583,8 +581,8 @@ switch ($Command) {
 
         if ($DevelopmentProcess) {
             $null = Get-CurrentInteractiveIdentity
-            $arguments = @($launch.prefixArguments) + @('run', '--engineering-root', $engineeringRootResolved)
-            $process = Start-Process -FilePath $launch.executable -ArgumentList ($arguments | ForEach-Object { ConvertTo-WindowsArgument -Value $_ }) -WindowStyle Hidden -PassThru
+            $arguments = @($launch.taskPrefixArguments) + @('run', '--engineering-root', $engineeringRootResolved)
+            $process = Start-Process -FilePath $launch.taskExecutable -ArgumentList ($arguments | ForEach-Object { ConvertTo-WindowsArgument -Value $_ }) -WindowStyle Hidden -PassThru
             $status = Wait-HostStarted -Launch $launch -Root $engineeringRootResolved -DevelopmentHostProcess $process
         }
         else {

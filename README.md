@@ -60,6 +60,9 @@ immutable `currentAction`。activation 前的历史已终态工作不会被当�
 落盘后保持 `WAITING_FOR_COORDINATOR`，等待后续 coordinator/evidence ingestion 推进 ledger。
 Host 不启动 Broker、Node、MCP、PLE，也不执行任何在线 PLC 操作。P1.3b 已完成；
 P1.3c 尚未完成，下一步是 coordinator/evidence ingestion，以及稳定安装、升级和回滚。
+Host 登录任务使用 WinExe GUI-subsystem apphost，因此后台启动不弹控制台；
+`Status/Stop/Logs` 则经 `dotnet + DLL` 保留命令行输出。完整 payload pin 仍属于 P1.3c。
+重建或升级 Host 时按 `Uninstall → Build → Install → Start`，不要覆盖运行中的二进制。
 
 ## 创建新工站 AI 旁车
 
@@ -143,7 +146,7 @@ Station、`Std`、`.project` 或闭源资料，目标目录已存在时会拒绝
 - [x] 产品化基础:可复用项目初始化器、Post-export Stage 1 审计队列、Stage 2 PlanOnly ledger 和 Codex Skill
 - [x] 产品化 MCP 技术通道:Controlled Runner P1.1、P1.2a client、P1.2b interactive Broker、受控 adapter、fresh Build、typed warning 与真实 PLE semantic snapshot
 - [x] 产品化 Host P1.3b：activation 后 immutable `currentAction` 自动发现/消费、历史隔离、旧 claim 恢复、无 Agent 等待和 `WAITING_FOR_COORDINATOR`
-- [ ] 产品化 P1.3c：coordinator/evidence ingestion、稳定安装、升级/回滚；随后再推进 project_health/change set 与正式 SFC/Symbol/I/O 工具
+- [ ] 产品化 P1.3c：coordinator/evidence ingestion、完整 payload pin、稳定安装、升级/回滚；随后再推进 project_health/change set 与正式 SFC/Symbol/I/O 工具
 
 ## 版权说明
 

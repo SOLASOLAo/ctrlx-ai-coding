@@ -335,6 +335,14 @@
 - checkpoint 为 1,991,792 bytes，SHA-256 `8274453076502750908CFC72353EB925A0504805F84B73E28DCD2FCCB18C79FD`，与 action 前后的 PLC 工程一致。operation revision 2 最终为 `DONE`，不要求 Export #2 或修复。
 - 全程无 connect、download、runtime start/stop、变量写入、FORCE、第二 PLE 或 `Std` 修改；Broker/PLE 已关闭且无 `.~u`。P1.2 至此完成，后续进入 P1.3 Windows Runner Host。
 
+## 2026-08-28 Host 无黑窗启动验证
+
+- Scheduled Task 改为启动 WinExe GUI-subsystem apphost；`Status/Stop/Logs` 保持经
+  `dotnet + DLL` 调用。完成 stop/uninstall/build/install/start 后 Host 为 `WAITING_FOR_ACTION`。
+- Host 无子进程，验证前后未新增 WindowsTerminal/OpenConsole/conhost，22 个既有
+  claim/result marker 未变化。P1.3c 仍未完成，coordinator/evidence ingestion、
+  完整 payload pin 与稳定安装/升级/回滚继续作为后续，不扩展本轮范围。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |

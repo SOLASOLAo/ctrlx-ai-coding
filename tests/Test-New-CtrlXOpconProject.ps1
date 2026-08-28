@@ -46,6 +46,23 @@ function Assert-Throws {
     }
 }
 
+function Get-PeSubsystem {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    $reader = [System.IO.BinaryReader]::new($stream)
+    try {
+        $stream.Position = 0x3c
+        $peOffset = $reader.ReadInt32()
+        $stream.Position = $peOffset + 4 + 20 + 68
+        return $reader.ReadUInt16()
+    }
+    finally {
+        $reader.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Remove-VerifiedTestRoot {
     param(
         [Parameter(Mandatory = $true)]
@@ -335,6 +352,9 @@ try {
     $generatedHostBuild = & dotnet build $generatedHostProject --configuration Release /p:RestoreIgnoreFailedSources=true 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated .NET Host build failed: " + ($generatedHostBuild -join ' '))
     Assert-True -Condition (($generatedHostBuild -join ' ') -match '0 Error\(s\)') -Message 'Generated .NET Host build did not report zero errors.'
+    $generatedHostAppHost = Join-Path $outputPath 'tools\runner\CtrlX.OpCon.Runner.Host\bin\Release\net8.0\vcrunner-host.exe'
+    Assert-True -Condition ([System.IO.File]::Exists($generatedHostAppHost)) -Message 'Generated Host apphost is missing.'
+    Assert-True -Condition ((Get-PeSubsystem -Path $generatedHostAppHost) -eq 2) -Message 'Generated Host apphost PE subsystem must be Windows GUI (2).'
     $engineeringProcessesBefore = @(Get-Process -ErrorAction SilentlyContinue | Where-Object ProcessName -Match '^(ctrlX-PLC-Engineering|node|vcrunner-broker)$' | Select-Object -ExpandProperty Id | Sort-Object)
     $generatedHostAssembly = Join-Path $outputPath 'tools\runner\CtrlX.OpCon.Runner.Host\bin\Release\net8.0\vcrunner-host.dll'
     $generatedHostStatusText = @(& dotnet $generatedHostAssembly status --engineering-root $outputPath --json 2>&1)

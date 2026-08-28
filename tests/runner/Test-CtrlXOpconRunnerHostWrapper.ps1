@@ -24,18 +24,40 @@ function Get-ParsedScript {
     return $ast
 }
 
+function Get-PeSubsystem {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    $reader = [System.IO.BinaryReader]::new($stream)
+    try {
+        $stream.Position = 0x3c
+        $peOffset = $reader.ReadInt32()
+        $stream.Position = $peOffset + 4 + 20 + 68
+        return $reader.ReadUInt16()
+    }
+    finally {
+        $reader.Dispose()
+        $stream.Dispose()
+    }
+}
+
 $methodologyRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $workspaceRoot = [System.IO.Path]::GetFullPath((Join-Path $methodologyRoot '..'))
 $templateWrapper = Join-Path $methodologyRoot 'templates\ctrlx-opcon-project\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1'
 $rootWrapper = Join-Path $workspaceRoot 'scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1'
+$hostProject = Join-Path $methodologyRoot 'src\runner\CtrlX.OpCon.Runner.Host\CtrlX.OpCon.Runner.Host.csproj'
+$hostAppHost = Join-Path $methodologyRoot 'src\runner\CtrlX.OpCon.Runner.Host\bin\Release\net8.0\vcrunner-host.exe'
 
 Assert-True -Condition ([System.IO.File]::Exists($templateWrapper)) -Message 'Template Runner Host wrapper is missing.'
 Assert-True -Condition ([System.IO.File]::Exists($rootWrapper)) -Message 'Root Runner Host wrapper is missing.'
+Assert-True -Condition ([System.IO.File]::Exists($hostProject)) -Message 'Runner Host project is missing.'
+Assert-True -Condition ([System.IO.File]::Exists($hostAppHost)) -Message 'Release Runner Host apphost is missing; build it before running wrapper tests.'
 
 $templateAst = Get-ParsedScript -Path $templateWrapper
 $null = Get-ParsedScript -Path $rootWrapper
 $templateText = [System.IO.File]::ReadAllText($templateWrapper)
 $rootText = [System.IO.File]::ReadAllText($rootWrapper)
+$hostProjectText = [System.IO.File]::ReadAllText($hostProject)
 
 Assert-True -Condition ($templateText.Contains('[switch]$DevelopmentProcess')) -Message 'Template wrapper must expose explicit DevelopmentProcess opt-in.'
 Assert-True -Condition ($rootText.Contains('[switch]$DevelopmentProcess')) -Message 'Root wrapper must expose explicit DevelopmentProcess opt-in.'
@@ -46,7 +68,12 @@ Assert-True -Condition ($templateText.Contains('-MultipleInstances IgnoreNew')) 
 Assert-True -Condition ($templateText.Contains('-RestartCount 3')) -Message 'Install must set bounded restart count.'
 Assert-True -Condition ($templateText.Contains('executableSha256=')) -Message 'Task identity must pin executable hash.'
 Assert-True -Condition ($templateText.Contains('assemblySha256=')) -Message 'Task identity must pin assembly hash.'
-Assert-True -Condition ($templateText.Contains("assembly = `$dll")) -Message 'Apphost launch must pin the managed Host DLL separately.'
+Assert-True -Condition ($hostProjectText.Contains('<OutputType>WinExe</OutputType>')) -Message 'Runner Host apphost must use the windowless Windows subsystem.'
+Assert-True -Condition ((Get-PeSubsystem -Path $hostAppHost) -eq 2) -Message 'Release Runner Host apphost PE subsystem must be Windows GUI (2).'
+Assert-True -Condition ($templateText.Contains('taskExecutable = $exe')) -Message 'Scheduled Task launch must use the windowless apphost.'
+Assert-True -Condition ($templateText.Contains('cliExecutable = $dotnet')) -Message 'Foreground management commands must use dotnet with the managed assembly.'
+Assert-True -Condition ($templateText.Contains('cliPrefixArguments = @($dll)')) -Message 'Foreground management commands must pass the Host assembly to dotnet.'
+Assert-True -Condition ($templateText.Contains("assembly = `$dll")) -Message 'Task launch must pin the managed Host DLL separately.'
 Assert-True -Condition ($templateText.Contains("-DefaultValue 'LeastPrivilege'")) -Message 'Task validation must accept only the schema default for an omitted Limited RunLevel.'
 Assert-True -Condition ($templateText.Contains("-DefaultValue 'true' -Label 'LogonTrigger Enabled'")) -Message 'Task validation must accept only the schema default for an omitted enabled trigger.'
 Assert-True -Condition ($templateText.Contains("@('Delay', 'EndBoundary')")) -Message 'Task validation must reject delayed or bounded logon triggers.'

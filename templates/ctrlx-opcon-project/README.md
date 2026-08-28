@@ -60,9 +60,11 @@ P1.3a/P1.3b Host 是独立的当前用户后台进程：除单实例、heartbeat
 终态落盘后保持 `WAITING_FOR_COORDINATOR`，等待尚未实现的
 coordinator/evidence ingestion 推进 ledger。Host 不启动 Broker、Node、MCP、PLE，也不执行
 在线 PLC 操作。P1.3b 已实现；P1.3c 尚待 coordinator/evidence ingestion、稳定安装、
-升级和回滚。构建后可用
+完整 payload pin、升级和回滚。Scheduled Task 使用无控制台 apphost，`Status/Stop/Logs`
+经 `dotnet + DLL` 保留命令行输出。构建后可用
 `scripts/runner/Invoke-CtrlXOpconRunnerHost.ps1` 执行 `Start/Stop/Status/Logs`；
 `Install/Uninstall` 只管理该项目派生的当前用户登录任务，修改前可先加 `-WhatIf`。
+重建或升级 Host 必须按 `Uninstall → Build → Install → Start`，不要覆盖正在运行的二进制。
 
 `RUNNER_ACCEPTANCE_CONTRACT: clean-compile + complete-warning-set + explicit-user-confirmation; missing-baseline => bootstrap-blocked`
 
