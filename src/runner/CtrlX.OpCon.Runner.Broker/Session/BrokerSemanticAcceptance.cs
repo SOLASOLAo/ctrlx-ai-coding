@@ -310,6 +310,7 @@ internal static class BrokerSemanticAcceptance
                 var adapter = ParseAdapterEvidence(
                     semanticSnapshotText,
                     action.PlcProject,
+                    snapshotPlan.Scope!.SymbolApplicationPath,
                     build.CompletedAtUtc,
                     receivedAtUtc);
                 if (snapshotPlan.Baseline is null)
@@ -983,6 +984,7 @@ internal static class BrokerSemanticAcceptance
     private static AdapterEvidence ParseAdapterEvidence(
         string text,
         string expectedProject,
+        string expectedSymbolApplicationPath,
         DateTimeOffset buildCompletedAtUtc,
         DateTimeOffset receivedAtUtc)
     {
@@ -1040,11 +1042,12 @@ internal static class BrokerSemanticAcceptance
 
         var sources = RequiredObject(value, "sources", "adapter semantic evidence");
         RequireOnly(sources, "adapter semantic sources", "mapping", "symbolConfig");
-        if (RequiredString(sources, "mapping", "adapter semantic sources") != "PLE ScriptEngine double-read")
+        if (RequiredString(sources, "mapping", "adapter semantic sources") !=
+            "PLE ScriptEngine semantic-projection triple-read plus final mapping/dirty guard")
         {
             throw new SemanticProofException(
                 "SEMANTIC_ADAPTER_EVIDENCE_INVALID",
-                "Adapter mapping source is not the frozen double-read producer.");
+                "Adapter mapping source is not the frozen triple-read plus final-guard producer.");
         }
 
         var symbolSource = RequiredObject(sources, "symbolConfig", "adapter semantic sources");
@@ -1055,13 +1058,25 @@ internal static class BrokerSemanticAcceptance
             "applicationPath",
             "endpointPath",
             "httpStatus",
-            "rawPayloadByteCount");
-        if (RequiredString(symbolSource, "source", "adapter Symbol source") != "PLE REST api v2 GET" ||
+            "rawPayloadByteCount",
+            "rawPayloadSha256",
+            "settleReadCount",
+            "authoritativeReadCount");
+        var symbolApplicationPath = RequiredString(symbolSource, "applicationPath", "adapter Symbol source");
+        var symbolEndpointPath = RequiredString(symbolSource, "endpointPath", "adapter Symbol source");
+        var settleReadCount = RequiredInt32(symbolSource, "settleReadCount", "adapter Symbol source");
+        if (RequiredString(symbolSource, "source", "adapter Symbol source") !=
+                "PLE REST api v2 bounded settle plus authoritative triple-read" ||
+            !symbolApplicationPath.Equals(expectedSymbolApplicationPath, StringComparison.Ordinal) ||
+            !symbolEndpointPath.Equals(ExpectedSymbolEndpointPath(expectedSymbolApplicationPath), StringComparison.Ordinal) ||
             RequiredInt32(symbolSource, "httpStatus", "adapter Symbol source") != 200 ||
-            RequiredNonNegative(symbolSource, "rawPayloadByteCount", "adapter Symbol source") > 64 * 1024 * 1024)
+            RequiredNonNegative(symbolSource, "rawPayloadByteCount", "adapter Symbol source") > 8 * 1024 * 1024 ||
+            settleReadCount is < 2 or > 4 ||
+            RequiredInt32(symbolSource, "authoritativeReadCount", "adapter Symbol source") != 3)
         {
             throw new SemanticProofException("SYMBOL_SNAPSHOT_INVALID", "Symbol Configuration source metadata is invalid.");
         }
+        _ = RequiredSha(symbolSource, "rawPayloadSha256", "adapter Symbol source");
 
         var canonicalFacts = RequiredObject(value, "canonicalFacts", "adapter semantic evidence");
         RequireOnly(canonicalFacts, "adapter canonical facts", "mapping", "symbolConfig");
@@ -1142,8 +1157,8 @@ internal static class BrokerSemanticAcceptance
             "canonicalPayloadByteCount",
             "payloadSha256",
             "shapeSummary");
-        if (RequiredString(canonicalSymbol, "applicationPath", "adapter canonical Symbol facts") !=
-                RequiredString(symbolSource, "applicationPath", "adapter Symbol source") ||
+        if (RequiredString(canonicalSymbol, "applicationPath", "adapter canonical Symbol facts") != symbolApplicationPath ||
+            !symbolApplicationPath.Equals(expectedSymbolApplicationPath, StringComparison.Ordinal) ||
             RequiredNonNegative(canonicalSymbol, "canonicalPayloadByteCount", "adapter canonical Symbol facts") > 64 * 1024 * 1024)
         {
             throw new SemanticProofException(
@@ -2237,6 +2252,11 @@ internal static class BrokerSemanticAcceptance
     }
 
     private static string NormalizedRelativePath(string path) => path.Replace('\\', '/').TrimStart('/');
+
+    private static string ExpectedSymbolEndpointPath(string applicationPath) =>
+        "/plc/engineering/api/v2/devices/" +
+        string.Join('/', applicationPath.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.EscapeDataString)) +
+        "/symbol-config";
 
     private static bool IsSafeIdentifier(string value) =>
         value.Length is > 0 and <= 128 && value.All(character =>

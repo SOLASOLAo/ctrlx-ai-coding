@@ -47,6 +47,7 @@ internal static class Program
             ("maximum combined terminal observation fails closed within Broker wire frame", MaximumCombinedObservationFailsClosedAsync),
             ("semantic response over 480 KiB is rejected before parsing", OversizedSemanticSnapshotBlocksAsync),
             ("semantic snapshot captured before Build completion is rejected", StaleSemanticSnapshotBlocksAsync),
+            ("adapter semantic source contract drift is rejected", SemanticSourceContractDriftBlocksAsync),
             ("unknown mapping record field is rejected", UnknownMappingFieldBlocksAsync),
             ("root connector parameter with empty device index is valid", RootConnectorParameterIsValidAsync),
             ("ownership manifest drift cannot be accepted", OwnershipDriftBlocksAsync),
@@ -663,6 +664,55 @@ internal static class Program
 
         Require(outcome.TerminalState == "BLOCKED" && outcome.ReasonCode == "SEMANTIC_ADAPTER_CORRELATION_INVALID",
             "A pre-Build semantic snapshot must not be accepted by the same-call Build gate.");
+    }
+
+    private static async Task SemanticSourceContractDriftBlocksAsync()
+    {
+        static JsonObject SymbolSource(JsonObject root) =>
+            root["sources"]!.AsObject()["symbolConfig"]!.AsObject();
+
+        var cases = new (string Name, Action<JsonObject> Mutate, string ExpectedReason)[]
+        {
+            ("mapping producer", root => root["sources"]!.AsObject()["mapping"] = "PLE ScriptEngine double-read",
+                "SEMANTIC_ADAPTER_EVIDENCE_INVALID"),
+            ("Symbol producer", root => SymbolSource(root)["source"] = "PLE REST api v2 GET",
+                "SYMBOL_SNAPSHOT_INVALID"),
+            ("raw payload SHA", root => SymbolSource(root).Remove("rawPayloadSha256"),
+                "SEMANTIC_PROOF_SCHEMA_INVALID"),
+            ("settle lower bound", root => SymbolSource(root)["settleReadCount"] = 1,
+                "SYMBOL_SNAPSHOT_INVALID"),
+            ("settle upper bound", root => SymbolSource(root)["settleReadCount"] = 5,
+                "SYMBOL_SNAPSHOT_INVALID"),
+            ("authoritative read count", root => SymbolSource(root)["authoritativeReadCount"] = 2,
+                "SYMBOL_SNAPSHOT_INVALID"),
+            ("raw payload bound", root => SymbolSource(root)["rawPayloadByteCount"] = (8 * 1024 * 1024) + 1,
+                "SYMBOL_SNAPSHOT_INVALID"),
+            ("endpoint binding", root => SymbolSource(root)["endpointPath"] = "/plc/engineering/api/v2/devices/Other/symbol-config",
+                "SYMBOL_SNAPSHOT_INVALID"),
+            ("application binding", root => SymbolSource(root)["applicationPath"] = "Device/Other/Application",
+                "SYMBOL_SNAPSHOT_INVALID")
+        };
+
+        foreach (var testCase in cases)
+        {
+            using var fixture = new Fixture();
+            var rpc = ExecutionRpc(fixture, $"semantic-source-{testCase.Name.Replace(' ', '-')}");
+            rpc.CompileResponseFactory = () => FreshCompile(fixture.ProjectPath);
+            rpc.SemanticResponseFactory = () =>
+            {
+                var snapshot = JsonNode.Parse(fixture.CreateSemanticSnapshot())!.AsObject();
+                testCase.Mutate(snapshot);
+                return snapshot.ToJsonString();
+            };
+            await using var session = new BrokerEngineeringSession(rpc, fixture.Options);
+            var runtime = await session.StartAsync(CancellationToken.None).ConfigureAwait(false);
+
+            var outcome = await session.ExecuteAsync(
+                fixture.CreateAction("inspect_and_build"), runtime, CancellationToken.None).ConfigureAwait(false);
+
+            Require(outcome.TerminalState == "BLOCKED" && outcome.ReasonCode == testCase.ExpectedReason,
+                $"Adapter {testCase.Name} drift must fail closed; actual={outcome.ReasonCode}.");
+        }
     }
 
     private static async Task UnknownMappingFieldBlocksAsync()
@@ -1454,14 +1504,17 @@ internal sealed class Fixture : IDisposable
             ["stableAcrossRead"] = true,
             ["sources"] = new JsonObject
             {
-                ["mapping"] = "PLE ScriptEngine double-read",
+                ["mapping"] = "PLE ScriptEngine semantic-projection triple-read plus final mapping/dirty guard",
                 ["symbolConfig"] = new JsonObject
                 {
-                    ["source"] = "PLE REST api v2 GET",
+                    ["source"] = "PLE REST api v2 bounded settle plus authoritative triple-read",
                     ["applicationPath"] = "Device/Plc Logic/Application",
-                    ["endpointPath"] = "/api/v2/symbol-configuration",
+                    ["endpointPath"] = "/plc/engineering/api/v2/devices/Device/Plc%20Logic/Application/symbol-config",
                     ["httpStatus"] = 200,
-                    ["rawPayloadByteCount"] = Encoding.UTF8.GetByteCount(symbolPayload.ToJsonString())
+                    ["rawPayloadByteCount"] = Encoding.UTF8.GetByteCount(symbolPayload.ToJsonString()),
+                    ["rawPayloadSha256"] = RunnerHash.Sha256Text(symbolPayload.ToJsonString()),
+                    ["settleReadCount"] = 2,
+                    ["authoritativeReadCount"] = 3
                 }
             },
             ["canonicalFacts"] = facts.DeepClone(),

@@ -295,6 +295,26 @@
 - 第二个 action 已封口且不可重跑；warning candidate 可生成，semantic candidate 仍需下一次
   真实 Export 的新 action。之后仍须独立人工审阅并创建正式 baseline，再用后续新 action 复验。
 
+### 2026-08-28 · Adapter/Broker contract alignment and complete candidates
+
+- 第三次真实 action 的 Clean Build 为 **0 errors / 4 complete warnings**，但以
+  `SEMANTIC_ADAPTER_EVIDENCE_INVALID` 失败关闭。根因是 adapter 已升级为 triple-read、
+  bounded-settle、raw-SHA 合同，而 Broker acceptance 仍硬编码旧 mapping/Symbol source
+  元数据；这属于 Runner 自身合同版本漂移，不是 PLC、I/O 或 Symbol 语义错误。
+- Broker 已精确同步新版合同：mapping source 必须是三组语义投影读取加最终
+  mapping/dirty guard；Symbol source 必须绑定 action application/REST endpoint，并证明
+  2–4 次 settle、3 次权威读取、raw payload SHA 与 8 MiB 上限。故障注入覆盖旧 source、
+  缺失 SHA、settle 边界、权威次数、body 上限及 application/endpoint 漂移。
+- 新真实 CpStudio Export request `cb1af562-25e6-4523-b2d8-037751d9433d` 生成 action
+  `cpstudio-stage2-cb1af562-25e6-4523-b2d8-037751d9433d-633764e6-0001`。修复版唯一 Broker
+  完成 Clean Build **0 errors / 4 complete warnings** 和稳定 semantic snapshot；工程与结构 SHA
+  前后不变，没有在线、下载、启停、变量写入、FORCE 或第二 PLE。
+- action 正确停在 `SEMANTIC_BASELINE_BOOTSTRAP_REQUIRED`。已生成待人审 warning candidate
+  和 semantic candidate：456 mapping records（438 bound / 18 unbound），mapping SHA
+  `491B719CA3FFDB28855CF207538B3CB0F1AAFD7C29AD5B577FBC5AACF51A5086`，Symbol SHA
+  `3FE32193B8EAC6FE03662F92BC2EF5AFF0827131C7C7226A2154FD6F2C8E686F`。自动化技术门禁已完成；
+  正式 baseline 仍必须由独立人工证据建立，并由另一个新 Export/action 复验。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |
@@ -326,12 +346,13 @@
 | D28 | **所有可批准证据必须同字节校验并有界读取**；AI candidate/triage 不能充当独立人审，semantic snapshot 必须在最终 REST 读取后再次证明工程 clean/stable | 08-28 |
 | D29 | **普通 `application.build()` 不是语义重建证明**；正式 baseline 必须使用独立 `clean_compile_project`（恰好一次 clean + 一次 build），warning-limit REST PUT 后必须关闭不保存并重开 | 08-28 |
 | D30 | **Runner 的正式编译证据必须来自 Broker 受控的 `clean_compile_project`**；手工隔离 Clean Build 只关闭技术完整性门禁，不能替代新的 immutable action/candidate 或独立人工 baseline 审阅 | 08-28 |
+| D31 | **Adapter 与 Broker acceptance 的证据 schema 必须作为一个版本化合同同步演进**；source 字面量、新增证明字段和上限都要有真实 action 与故障注入回归，旧 action 失败后只能由新 Export/action 验证修复 | 08-28 |
 
 ## 待办 / 下一步
 
 1. 新项目使用统一初始化器创建 AI 旁车；用户继续在 CpStudio 维护模型/标准对象/HMI，AI 维护 ownership 声明的 PLC 增量；
-2. warning-limit REST、隔离副本 `<no limit>` 保存—重开—双 Clean Build，以及 Broker/evidence 的 `clean_compile_project` 集成均已通过；下一步由一次真实 CpStudio Export 生成本轮新的 request、immutable action 与 warning/semantic candidates，禁止伪造 Export 或复用旧 action；
-3. 新 candidates 生成后由人工审阅，创建绑定独立审阅证据的正式 baseline，再生成新的 immutable action 复验；完成前不得批准正式 baseline，也不扩展写工程 action；
+2. warning-limit、Clean Build、adapter/Broker schema 与真实 candidate 生成均已通过；当前 candidates 来自 request `cb1af562-25e6-4523-b2d8-037751d9433d`，禁止复用旧 action 或自动晋升；
+3. 用户独立审阅 4 条完整 warning、456 条 mapping（特别是 18 个 unbound）和 Symbol summary，创建绑定独立审阅证据的正式 baseline，再以新的 Export/immutable action 复验；完成前不扩展写工程 action；
 4. 继续用已配置的真实 CpStudio Post-export hook 验证 Stage 1/Stage 2/Runner 闭环，任何 baseline 或 scope 漂移都必须新建 action；
 5. 按 `docs/mcp_productization_roadmap.md` 继续通用健康检查、结构化编译和 change set；`apply_change_set_and_build` 在 payload/readback/恢复门禁完成前保持关闭；
 6. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；
