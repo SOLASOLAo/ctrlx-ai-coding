@@ -26,6 +26,7 @@ internal static class Program
             ("PLE created by this Start is owned and shut down", CreatedPleIsOwnedAsync),
             ("external project mismatch is not altered or shut down", ExternalProjectMismatchIsRejectedAsync),
             ("owned PLE shutdown failure propagates after MCP cleanup", OwnedPleShutdownFailurePropagatesAsync),
+            ("transient project structure loading is retried", TransientProjectStructureLoadingIsRetriedAsync),
             ("fresh Build plus all independent semantic proofs succeeds", CompleteSemanticEvidenceSucceedsAsync),
             ("warning baseline requires explicit user confirmation", WarningReviewRequiresExplicitConfirmationAsync),
             ("semantic baseline confirmation must be Boolean true", SemanticReviewConfirmationTypeIsStrictAsync),
@@ -291,6 +292,29 @@ internal static class Program
         {
             Require(proofs[name]?["verified"]?.GetValue<bool>() == true, $"Proof {name} was not verified.");
         }
+    }
+
+    private static async Task TransientProjectStructureLoadingIsRetriedAsync()
+    {
+        using var fixture = new Fixture();
+        var rpc = ExecutionRpc(fixture, "structure-retry");
+        rpc.ProjectStructureFailuresRemaining = 1;
+        rpc.CompileResponseFactory = () => FreshCompile(fixture.ProjectPath);
+        rpc.SemanticResponseFactory = () => fixture.CreateSemanticSnapshot();
+        await using var session = new BrokerEngineeringSession(rpc, fixture.Options);
+        var runtime = await session.StartAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var outcome = await session.ExecuteAsync(
+            fixture.CreateAction("verify_after_export_2"),
+            runtime,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Require(outcome.TerminalState == "SUCCEEDED" && outcome.ReasonCode == "BUILD_AND_SEMANTICS_VERIFIED",
+            "A transient project-structure read failure must recover without weakening acceptance.");
+        Require(rpc.ProjectStructureReadCalls == 3,
+            "The transient failure must be retried once before the post-Build structure read.");
+        Require(rpc.Count("clean_compile_project") == 1,
+            "A project-structure retry must not duplicate the Build.");
     }
 
     private static async Task WarningReviewRequiresExplicitConfirmationAsync()
@@ -1950,6 +1974,10 @@ internal sealed class FakeRpc : IMcpRpcClient
 
     public Func<string>? SemanticResponseFactory { get; set; }
 
+    public int ProjectStructureFailuresRemaining { get; set; }
+
+    public int ProjectStructureReadCalls { get; private set; }
+
     public int StopCalls { get; private set; }
 
     public int Count(string tool) => calls.Count(value => value == tool);
@@ -2009,6 +2037,17 @@ internal sealed class FakeRpc : IMcpRpcClient
     {
         if (uri != "codesys://project/status")
         {
+            ProjectStructureReadCalls++;
+            if (ProjectStructureFailuresRemaining > 0)
+            {
+                ProjectStructureFailuresRemaining--;
+                return Task.FromResult(new McpResourceReadResult(
+                    uri,
+                    true,
+                    ["fixture project structure is still loading"],
+                    new JsonObject()));
+            }
+
             return Task.FromResult(new McpResourceReadResult(uri, false, ["fixture project structure"], new JsonObject()));
         }
 

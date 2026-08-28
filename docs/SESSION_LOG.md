@@ -321,6 +321,12 @@
 - Station010 正式记录为 4 条 warning / 1 个签名、456 条 mapping / 18 个当前不用的 unbound，review ID 为 `approval-3761fac2d36b-074f9525c2c7`。两份 baseline 绑定同一确认记录和 SHA。
 - PowerShell 7 的审批、Stage 1、Stage 2、candidate、evidence、静态回归通过；本轮没有启动 PLE/MCP 或执行任何在线操作。最终 P1.2 验收只剩新的正常 Export 和全新 immutable action。
 
+## 2026-08-28 最终 baseline action 与恢复门禁冲突
+
+- 首个新 action 在 Build 前遇到 PLE 工程树瞬时未就绪并以 `PROJECT_STRUCTURE_READ_FAILED` 封口；Broker 现仅对该只读 resource 增加 500 ms 间隔、最多 30 s 的有界重试，取得有效前快照前绝不进入 Build。
+- 新真实 request `aadf8692-07e0-4862-b525-5dcfd0b78fb0` 的 action 完成 Clean Build **0 errors / 4 warnings**，456 mapping、Symbol 和正式 baseline 全部匹配，工程与结构 SHA 前后不变且无在线操作。
+- action 仅因 `RECOVERABLE_BASELINE_NOT_AT_HEAD` 阻断。当前 Git-blob 证明与 D8 的 `.project` 不入库规则冲突；禁止为变绿而提交二进制或删除门禁，下一步改为可验证、可恢复且不入 Git 的最小合同后再执行新 action。
+
 ## 关键决策清单
 
 | # | 决策 | 日期 |
@@ -354,12 +360,13 @@
 | D30 | **Runner 的正式编译证据必须来自 Broker 受控的 `clean_compile_project`**；手工隔离 Clean Build 只关闭技术完整性门禁，不能替代新的 immutable action/candidate 或独立人工 baseline 审阅 | 08-28 |
 | D31 | **Adapter 与 Broker acceptance 的证据 schema 必须作为一个版本化合同同步演进**；source 字面量、新增证明字段和上限都要有真实 action 与故障注入回归，旧 action 失败后只能由新 Export/action 验证修复 | 08-28 |
 | D32 | **baseline 不采集个人身份**；删除 reviewer 姓名/工号，改为 `confirmedByUser: true`，机器自动生成 reviewId/time/path/SHA；仍保留独立确认记录、漂移检测和新 action 复验 | 08-28 |
+| D33 | **工程树瞬时未就绪只做窄范围有界重试**；有效前快照前禁止 Build，终态 action 不自动重放；recoverable baseline 不得靠提交 `.project` 二进制绕过 | 08-28 |
 
 ## 待办 / 下一步
 
 1. 新项目使用统一初始化器创建 AI 旁车；用户继续在 CpStudio 维护模型/标准对象/HMI，AI 维护 ownership 声明的 PLC 增量；
 2. warning-limit、Clean Build、adapter/Broker schema 与真实 candidate 生成均已通过；当前 candidates 来自 request `cb1af562-25e6-4523-b2d8-037751d9433d`，禁止复用旧 action 或自动晋升；
-3. 用户确认的正式 warning/semantic baselines 已按无个人身份合同建立；下一步以新的正常 Export/immutable action 复验，完成前不扩展写工程 action；
+3. 用户确认的正式 warning/semantic baselines 已验证通过；当前只处理 `RECOVERABLE_BASELINE_NOT_AT_HEAD` 与 `.project` 不入库规则的合同冲突，完成前不扩展写工程 action；
 4. 继续用已配置的真实 CpStudio Post-export hook 验证 Stage 1/Stage 2/Runner 闭环，任何 baseline 或 scope 漂移都必须新建 action；
 5. 按 `docs/mcp_productization_roadmap.md` 继续通用健康检查、结构化编译和 change set；`apply_change_set_and_build` 在 payload/readback/恢复门禁完成前保持关闭；
 6. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；

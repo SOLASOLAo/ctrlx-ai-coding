@@ -9,7 +9,7 @@
 3. HMI 产品化；
 4. 商业交付。
 
-本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client、P1.2b Broker、受控 adapter、typed warning 与 semantic snapshot 的真实 PLE 技术通道已跑通。隔离 warning-limit REST 事务和显式 `clean_compile_project` 已实现并安装；可丢弃隔离副本的 `<no limit>` 保存—重开—连续两次 Clean Build 已取得一致且完整的 0 errors / 4 warnings，Broker/evidence 集成和全部 PowerShell 7 离线回归也已通过。后续真实 Export action 暴露并修复了 Symbol 多阶段重建、raw mapping 表示噪声及 adapter/Broker schema 漂移；完整 warning/semantic candidates 已生成，项目负责人已确认 18 个 unbound 当前不用、4 条 warning 暂不处理，正式 baseline 也已通过无个人身份的单次确认工具建立。当前只剩新的正常 Export/immutable action 复验。
+本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面提供统一入口、OS 级单 owner 租约、项目上下文预检、Stage 1/Stage 2 编排和结构化运行清单，默认不启动 PLE/MCP；P1.2a client、P1.2b Broker、受控 adapter、typed warning 与 semantic snapshot 的真实 PLE 技术通道已跑通。正式 warning/semantic baseline 已建立；新的真实 Export/action 也已取得 0 errors / 4 warnings并验证 456 mapping 与 Symbol baseline。当前唯一 blocker 是旧 recoverable-baseline 实现要求 `.project` 等于 Git HEAD，而项目政策禁止把 `.project` 二进制继续入库；下一步只收敛这一合同冲突，不扩张其他阶段。
 
 `codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2b 由交互用户会话中的唯一 Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次 action 都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
 
@@ -57,8 +57,9 @@
   baseline。隔离副本连续两次显式 Clean Build 已取得相同的完整 0 errors / 4 条
   `OPC.UA.DA` warning。后续两次真实 Export action 均再次取得完整 0 errors / 4 warnings；
   warning candidate 已生成；修复后的 semantic adapter 与 Broker 合同已通过另一次真实
-  Export action，完整 semantic candidate 也已生成。用户确认与正式 baseline 已完成，
-  仅后续新的正常 Export/action 复验仍待收口。这不表示仿真、下载或真机已验收。
+  Export action，完整 semantic candidate 也已生成。用户确认与正式 baseline 已完成；后续新 action
+  已验证 Build、warning、mapping 与 Symbol，但以 `RECOVERABLE_BASELINE_NOT_AT_HEAD` 关闭失败。
+  下一步须提供不提交 `.project` 二进制的最小恢复证明，再用新 action 收口。这不表示仿真、下载或真机已验收。
 - Runner 的 protocol v2 timeout fixture 通过 submit/query 明确握手并由客户端 3 秒
   deadline 决定 pending，不再依赖 250 ms 调度窗口。Broker atomic JSON 仅对 Windows
   access/sharing/lock violation 做 6 次、总计约 230 ms 的有界短重试；耗尽后仍抛出，

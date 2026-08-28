@@ -57,6 +57,8 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
     private const string FreshCompileContractId = "ctrlx-clean-compile-v1";
     private const string FreshCompileProducer = "codesys-persistent.clean_compile_project";
     private const string PleOwnershipContract = "ctrlx-ple-ownership-v1";
+    private static readonly TimeSpan ProjectStructureReadyTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ProjectStructureRetryInterval = TimeSpan.FromMilliseconds(500);
 
     private readonly IMcpRpcClient mcp;
     private readonly BrokerHostOptions options;
@@ -633,14 +635,28 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
             throw new BrokerEngineeringException("PLC_PROJECT_NOT_FOUND", $"PLC project disappeared: {projectPath}");
         }
 
-        var structure = await mcp.ReadResourceAsync(
-            ProjectStructureUri(projectPath),
-            options.StatusTimeout + TimeSpan.FromMinutes(1),
-            cancellationToken).ConfigureAwait(false);
-        if (structure.IsError || structure.TextContent.Count == 0)
+        var structureUri = ProjectStructureUri(projectPath);
+        var deadline = DateTimeOffset.UtcNow + ProjectStructureReadyTimeout;
+        McpResourceReadResult structure;
+        do
         {
-            throw new BrokerEngineeringException("PROJECT_STRUCTURE_READ_FAILED", JoinText(structure.TextContent));
+            structure = await mcp.ReadResourceAsync(
+                structureUri,
+                options.StatusTimeout + TimeSpan.FromMinutes(1),
+                cancellationToken).ConfigureAwait(false);
+            if (!structure.IsError && structure.TextContent.Count > 0)
+            {
+                break;
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                throw new BrokerEngineeringException("PROJECT_STRUCTURE_READ_FAILED", JoinText(structure.TextContent));
+            }
+
+            await Task.Delay(ProjectStructureRetryInterval, cancellationToken).ConfigureAwait(false);
         }
+        while (true);
 
         return new FileProjectSnapshot(
             RunnerHash.Sha256File(projectPath),
