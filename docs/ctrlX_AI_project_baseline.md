@@ -365,6 +365,14 @@ ctrlX-PLC-Engineering.exe --profile="ctrlX PLC 2.6.8" --noUI --runscript="脚本
 - 正式 baseline 的 project/profile、scope、candidate hashes、review evidence path/SHA 任一变化都使旧 action 失效；必须回到 Stage 1 创建新的 operation/action。
 - 本条门禁已于 2026-08-28 满足，P1.2 已正式完成；P1.3a/b 因而可以推进。该规则继续适用于未来 baseline 变更：没有新的用户确认与 immutable action 复验，不得把变化后的基线视为正式可用。
 
+## 10.3 Project Pack 与流程事实源（2026-08-29）
+
+- 新项目由根目录 `project-pack.json` 引用既有 Station/I/O/Event/Unit/Process/HMI/Catalog 与 ownership manifests；不复制第二份字段事实。
+- `specs/processes/*.process.json` 是 Chain 流程、双语提示、需求和验收的唯一流程事实源；CpStudio 生成的 POU interface 必须标记 `source: cpstudio`。
+- `scripts/project/Build-CtrlXOpconProjectPack.ps1` 只提供 PowerShell 7 `Build/Check`，生成内容寻址的 `generated/engineering-plan.json`；它不启动或写入 CpStudio、PLE/MCP。
+- 初始化器先生成 draft plan；补齐流程并显式改为 `ready` 后才可通过 `-RequireReady`。新 action 固定 contentId、Pack/plan hash；Host 与直接 ExecuteAction 共用校验器逐项验证 plan source 的路径、长度和 SHA-256，任一源漂移即在 Broker 前失败关闭。
+- 本层刻意不实现通用 SFC 编译器、后台服务或插件；实际图形/接口仍按 ownership 进入 CpStudio/PLE 受控闭环。
+
 ---
 
 ## 11. 故障排查 FAQ

@@ -42,6 +42,7 @@ CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型�
 | 冒烟编译 | ✅ 0 errors / 35 warnings(培训样板固有符号警告) |
 | 分工 | 用户做骨架(CpStudio),AI 做 PLC 代码细节 |
 | 项目模板 | ✅ 新项目初始化器 + Stage 1 离线审计队列 + Stage 2 PlanOnly operation ledger |
+| Project Pack | ✅ schema + PowerShell 7 Build/Check + draft initializer + Runner 漂移门禁 |
 | Codex Skill | ✅ `ctrlx-opcon-engineering`，源码可版本化、安装可校验 |
 | Controlled Runner | ✅ P1.1/P1.2、P1.3a/b/c 及 P1.4a 精简团队离线包已完成；⏸ AtLogOn bootstrap 延期到商业化/无人值守部署阶段，兼容矩阵与新工作站验收有工位时再做 |
 | 产品化计划 | `docs/mcp_productization_roadmap.md` |
@@ -116,6 +117,17 @@ dotnet run --project `
   -OutputPath 'C:\Engineering\ExampleCell\McpCoding' `
   -WhatIf
 ```
+
+初始化器会生成 `project-pack.json` 和 draft `generated/engineering-plan.json`。补齐
+`specs/processes/*.process.json` 并把 Pack 状态改为 `ready` 后执行：
+
+```powershell
+pwsh -File .\scripts\project\Build-CtrlXOpconProjectPack.ps1 -Command Build -RequireReady -Json
+pwsh -File .\scripts\project\Build-CtrlXOpconProjectPack.ps1 -Command Check -RequireReady -Json
+```
+
+生成器不写 CpStudio/PLE，只输出流程计划、提示、测试和追溯。新 action 固定 Pack/plan 身份；
+Host 与直接 ExecuteAction 共用校验器逐项验证计划事实源，对 stale/draft Pack 失败关闭。
 
 完整参数和离线测试见 `templates/README.md`。初始化器只创建 AI 旁车，所有工程路径写成相对路径；不会复制
 Station、`Std`、`.project` 或闭源资料，目标目录已存在时会拒绝覆盖。

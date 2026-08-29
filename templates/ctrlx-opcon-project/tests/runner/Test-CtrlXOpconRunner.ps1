@@ -90,6 +90,7 @@ function Read-LatestManifest {
 }
 
 $runnerPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\runner\Invoke-CtrlXOpconRunner.ps1'))
+$templateRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 if (-not [System.IO.File]::Exists($runnerPath)) {
     throw "Runner script does not exist: $runnerPath"
 }
@@ -132,6 +133,83 @@ manifests:
     foreach ($name in @('ownership.yaml', 'hooks.yaml', 'graphical.yaml')) {
         Write-TestText -Path (Join-Path $testRoot ('ai\' + $name)) -Content "schema_version: 1`n"
     }
+
+    foreach ($relativePath in @(
+            'schemas\project-pack.schema.json',
+            'schemas\process.schema.json',
+            'scripts\project\Build-CtrlXOpconProjectPack.ps1'
+        )) {
+        $sourcePath = Join-Path $templateRoot $relativePath
+        $destinationPath = Join-Path $testRoot $relativePath
+        [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($destinationPath)) | Out-Null
+        [System.IO.File]::Copy($sourcePath, $destinationPath, $true)
+    }
+    Write-TestText -Path (Join-Path $testRoot 'specs\station.yaml') -Content "schema_version: 1`nstation_id: Fixture`n"
+    Write-TestText -Path (Join-Path $testRoot 'specs\io.yaml') -Content "schema_version: 1`nstatus: fixture`n"
+    Write-TestText -Path (Join-Path $testRoot 'specs\events.yaml') -Content "schema_version: 1`nevents: []`n"
+    Write-TestText -Path (Join-Path $testRoot 'specs\processes\fixture.process.json') -Content @'
+{
+  "schemaVersion": 1,
+  "kind": "ctrlx-opcon-process",
+  "processId": "FixtureProcess",
+  "displayName": "Fixture process",
+  "status": "ready",
+  "chain": {
+    "name": "SqS_Fixture",
+    "kind": "subchain",
+    "plcPath": "Application/Station/Fixture/SqS_Fixture",
+    "interfaceOwner": "cpstudio",
+    "inputs": [],
+    "outputs": []
+  },
+  "requirements": [
+    { "id": "REQ_READY", "text": "The fixture process is ready." }
+  ],
+  "steps": [
+    {
+      "id": "N100",
+      "kind": "check",
+      "comment": "Check fixture readiness",
+      "operation": "Evaluate the fixture readiness condition.",
+      "requirements": ["REQ_READY"],
+      "acceptance": ["The readiness condition is evaluated."]
+    }
+  ],
+  "cleanup": ["Leave no active command."],
+  "acceptanceTests": [
+    {
+      "id": "TEST_READY",
+      "title": "Fixture readiness",
+      "requirements": ["REQ_READY"],
+      "steps": ["N100"],
+      "expected": ["The process reaches its finish condition."]
+    }
+  ]
+}
+'@
+    Write-TestText -Path (Join-Path $testRoot 'project-pack.json') -Content @'
+{
+  "schemaVersion": 1,
+  "kind": "ctrlx-opcon-project-pack",
+  "status": "ready",
+  "projectConfig": "config/project.yaml",
+  "sources": {
+    "station": "specs/station.yaml",
+    "io": "specs/io.yaml",
+    "events": "specs/events.yaml",
+    "units": [],
+    "processes": ["specs/processes/fixture.process.json"],
+    "hmi": [],
+    "catalog": [],
+    "manifests": ["ai/ownership.yaml", "ai/hooks.yaml", "ai/graphical.yaml"]
+  }
+}
+'@
+    $projectPackBuilder = Join-Path $testRoot 'scripts\project\Build-CtrlXOpconProjectPack.ps1'
+    $projectPackBuildOutput = @(& $projectPackBuilder -Command Build -EngineeringRoot $testRoot -RequireReady -Json)
+    Assert-True -Condition ($projectPackBuildOutput.Count -eq 1) -Message 'Project Pack fixture Build returned unexpected output.'
+    $projectPackBuild = [string]$projectPackBuildOutput[0] | ConvertFrom-Json
+    Assert-True -Condition ([string]$projectPackBuild.status -eq 'BUILT') -Message 'Project Pack fixture was not built.'
 
     $auditScriptPath = Join-Path $testRoot 'scripts\cpstudio\Invoke-PostExportAudit.ps1'
     $coordinatorScriptPath = Join-Path $testRoot 'scripts\cpstudio\Invoke-PostExportEngineering.ps1'
@@ -182,10 +260,35 @@ Write-Output ([pscustomobject]@{
     $statusManifest = Read-LatestManifest -Root $testRoot
     Assert-True -Condition ([string]$statusManifest.result.status -eq 'READY') -Message 'Status manifest is not READY.'
     Assert-True -Condition ([string]$statusManifest.project.profile -eq 'ctrlX PLC Test Profile') -Message 'Profile was not read from project.yaml.'
+    Assert-True -Condition ([string]$statusManifest.project.projectPackContentId -cmatch '^[0-9a-f]{64}$') -Message 'Project Pack content identity was not recorded.'
+    Assert-True -Condition ([string]$statusManifest.project.files.projectPack.contentId -ceq [string]$statusManifest.project.projectPackContentId) -Message 'Project Pack content identity is inconsistent in the manifest.'
     Assert-True -Condition ($statusManifest.lease.scope -eq 'os-file-exclusive') -Message 'Lease scope is not OS-file-exclusive.'
     Assert-True -Condition ($statusManifest.lease.acquired -and $statusManifest.lease.released) -Message 'Status lease lifecycle was not recorded.'
     Assert-True -Condition (-not $statusManifest.guardrails.onlineOperationsUsed) -Message 'Status claimed online operations.'
     Assert-True -Condition (-not $statusManifest.guardrails.pleOrMcpStartedByAction) -Message 'Status claimed PLE/MCP startup by an action.'
+
+    $projectPackPath = Join-Path $testRoot 'project-pack.json'
+    $draftPack = [System.IO.File]::ReadAllText($projectPackPath) | ConvertFrom-Json -Depth 64
+    $draftPack.status = 'draft'
+    Write-TestText -Path $projectPackPath -Content (($draftPack | ConvertTo-Json -Depth 64) + "`n")
+    $null = & $projectPackBuilder -Command Build -EngineeringRoot $testRoot -Json
+    $draftStatusResult = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'Status'
+    Assert-True -Condition ($draftStatusResult.ExitCode -eq 0) -Message 'Draft Project Pack Status should return structured NOT_READY.'
+    $draftStatusManifest = Read-LatestManifest -Root $testRoot
+    Assert-True -Condition ([string]$draftStatusManifest.result.status -eq 'NOT_READY') -Message 'Draft Project Pack Status was not NOT_READY.'
+    $draftProcessResult = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'ProcessOne'
+    Assert-True -Condition ($draftProcessResult.ExitCode -eq 50) -Message 'ProcessOne accepted a draft Project Pack.'
+    $draftPack.status = 'ready'
+    Write-TestText -Path $projectPackPath -Content (($draftPack | ConvertTo-Json -Depth 64) + "`n")
+    $null = & $projectPackBuilder -Command Build -EngineeringRoot $testRoot -RequireReady -Json
+
+    Write-TestText -Path (Join-Path $testRoot 'specs\station.yaml') -Content "schema_version: 1`nstation_id: DriftedFixture`n"
+    $staleResult = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'Status'
+    Assert-True -Condition ($staleResult.ExitCode -eq 50) -Message 'Runner accepted a stale engineering plan.'
+    $staleManifest = Read-LatestManifest -Root $testRoot
+    Assert-True -Condition ([string]$staleManifest.result.status -eq 'FAILED') -Message 'Stale Project Pack did not fail closed.'
+    Assert-True -Condition ([string]$staleManifest.error.message -match 'stale|edited') -Message 'Stale Project Pack failure was not explained.'
+    $null = & $projectPackBuilder -Command Build -EngineeringRoot $testRoot -RequireReady -Json
 
     $leaseRoot = Join-Path $testRoot 'data\runner'
     [System.IO.Directory]::CreateDirectory($leaseRoot) | Out-Null

@@ -11,11 +11,15 @@ $requiredFiles = @(
     'HANDOVER.md',
     'TODO.md',
     'TEAM_SETUP.md',
+    'project-pack.json',
     'config/project.yaml',
     'config/quality-gates.yaml',
+    'schemas/project-pack.schema.json',
+    'schemas/process.schema.json',
     'specs/station.yaml',
     'specs/io.yaml',
     'specs/events.yaml',
+    'specs/processes/README.md',
     'ai/ownership.yaml',
     'ai/hooks.yaml',
     'ai/graphical.yaml',
@@ -30,17 +34,21 @@ $requiredFiles = @(
     'scripts/cpstudio/offline_mcp_build.cjs',
     'scripts/cpstudio/Run-OfflinePostExportCheck.cmd',
     'scripts/git/Get-ReadOnlyGitAudit.ps1',
+    'scripts/project/Build-CtrlXOpconProjectPack.ps1',
     'tests/cpstudio/Test-PostExportQueue.ps1',
     'tests/cpstudio/Test-PostExportEngineering.ps1',
     'tests/cpstudio/Test-PostExportRunnerEvidence.ps1',
     'tests/cpstudio/Test-EngineeringSemanticBaselineCandidate.ps1',
     'docs/reviews/README.md',
-    'tests/cpstudio/Test-OfflinePostExportCheck.ps1'
+    'tests/cpstudio/Test-OfflinePostExportCheck.ps1',
+    'tests/project/Test-CtrlXOpconProjectPack.ps1',
+    'generated/engineering-plan.json'
 )
 
 $requiredDirectories = @(
     'specs/units',
     'specs/chains',
+    'specs/processes',
     'src/plc/common',
     'src/plc/project/{{STATION_ID}}',
     'catalog/units',
@@ -50,8 +58,10 @@ $requiredDirectories = @(
     'scripts/plc',
     'scripts/ioe',
     'scripts/git',
+    'scripts/project',
     'scripts/setup',
     'tests/static',
+    'tests/project',
     'tests/cpstudio',
     'tests/compile',
     'tests/simulation',
@@ -180,6 +190,25 @@ $offlineCheckerText = [System.IO.File]::ReadAllText((Join-Path $repositoryRoot '
 foreach ($forbiddenText in @('Stop-Process', 'taskkill')) {
     if ($offlineCheckerText.Contains($forbiddenText)) {
         $failures.Add("Offline Build checker contains destructive process operation '$forbiddenText'.")
+    }
+}
+
+$projectPackBuilder = Join-Path $repositoryRoot 'scripts/project/Build-CtrlXOpconProjectPack.ps1'
+if ([System.IO.File]::Exists($projectPackBuilder)) {
+    try {
+        $projectPackCheckOutput = @(& $projectPackBuilder -Command Check -EngineeringRoot $repositoryRoot -Json)
+        if ($projectPackCheckOutput.Count -ne 1) {
+            $failures.Add('Project Pack Check did not return exactly one JSON result.')
+        }
+        else {
+            $projectPackCheck = [string]$projectPackCheckOutput[0] | ConvertFrom-Json
+            if ([string]$projectPackCheck.status -ne 'VALID') {
+                $failures.Add("Project Pack Check returned unexpected status '$($projectPackCheck.status)'.")
+            }
+        }
+    }
+    catch {
+        $failures.Add("Project Pack Check failed: $($_.Exception.Message)")
     }
 }
 

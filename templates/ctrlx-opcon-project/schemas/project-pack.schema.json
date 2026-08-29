@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://bpp.local/schemas/ctrlx-opcon-project-pack-v1.json",
+  "title": "ctrlX OpCon Project Pack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "status",
+    "projectConfig",
+    "sources"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "kind": {
+      "const": "ctrlx-opcon-project-pack"
+    },
+    "status": {
+      "enum": ["draft", "ready"]
+    },
+    "projectConfig": {
+      "$ref": "#/definitions/relativePath"
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "station",
+        "io",
+        "events",
+        "units",
+        "processes",
+        "hmi",
+        "catalog",
+        "manifests"
+      ],
+      "properties": {
+        "station": {
+          "$ref": "#/definitions/relativePath"
+        },
+        "io": {
+          "$ref": "#/definitions/relativePath"
+        },
+        "events": {
+          "$ref": "#/definitions/relativePath"
+        },
+        "units": {
+          "$ref": "#/definitions/relativePathArray"
+        },
+        "processes": {
+          "$ref": "#/definitions/relativePathArray"
+        },
+        "hmi": {
+          "$ref": "#/definitions/relativePathArray"
+        },
+        "catalog": {
+          "$ref": "#/definitions/relativePathArray"
+        },
+        "manifests": {
+          "$ref": "#/definitions/relativePathArray"
+        }
+      }
+    }
+  },
+  "definitions": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\\\]+$"
+    },
+    "relativePathArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/relativePath"
+      }
+    }
+  }
+}

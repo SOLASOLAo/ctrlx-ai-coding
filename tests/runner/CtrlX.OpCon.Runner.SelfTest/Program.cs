@@ -135,6 +135,36 @@ internal static class RunnerSelfTest
                 Check(broker.Calls == 0, "Sensitive action reached Broker.");
                 Check(sealer.Calls == 0, "Rejected actions reached evidence sealing.");
 
+                var projectPackPath = Path.Combine(fixture.EngineeringRoot, "project-pack.json");
+                var originalProjectPack = File.ReadAllBytes(projectPackPath);
+                try
+                {
+                    File.AppendAllText(projectPackPath, " ", new UTF8Encoding(false));
+                    await ExpectGateAsync(
+                        () => executor.ExecuteAsync(fixture.Request(action)),
+                        "FINGERPRINT_DRIFT").ConfigureAwait(false);
+                    Check(broker.Calls == 0, "Project Pack drift reached Broker.");
+                }
+                finally
+                {
+                    File.WriteAllBytes(projectPackPath, originalProjectPack);
+                }
+
+                var projectPackSourcePath = Path.Combine(fixture.EngineeringRoot, "specs", "fixture.yaml");
+                var originalProjectPackSource = File.ReadAllBytes(projectPackSourcePath);
+                try
+                {
+                    File.AppendAllText(projectPackSourcePath, "drift", new UTF8Encoding(false));
+                    await ExpectGateAsync(
+                        () => executor.ExecuteAsync(fixture.Request(action)),
+                        "PROJECT_PACK_SOURCE_DRIFT").ConfigureAwait(false);
+                    Check(broker.Calls == 0, "Project Pack source drift reached Broker.");
+                }
+                finally
+                {
+                    File.WriteAllBytes(projectPackSourcePath, originalProjectPackSource);
+                }
+
                 var legacy = fixture.CreateAction("fixture-legacy-action-schema", "inspect_and_build");
                 var legacyDocument = ReadObject(legacy.Path);
                 var legacyGuardrails = Object(legacyDocument, "guardrails");
@@ -1969,6 +1999,29 @@ internal sealed class RunnerFixture : IDisposable
             ["requestId"] = "fixture-request"
         });
 
+        var projectPackPath = Path.Combine(EngineeringRoot, "project-pack.json");
+        WriteJson(projectPackPath, new JsonObject
+        {
+            ["schemaVersion"] = 1,
+            ["kind"] = "ctrlx-opcon-project-pack"
+        });
+        var projectPackSha256 = RunnerHash.Sha256File(projectPackPath);
+        var contentId = RunnerHash.Sha256Text("fixture-project-pack-content");
+        var fixtureSourcePath = Path.Combine(EngineeringRoot, "specs", "fixture.yaml");
+        Directory.CreateDirectory(Path.GetDirectoryName(fixtureSourcePath)!);
+        File.WriteAllText(fixtureSourcePath, "schema_version: 1\n", new UTF8Encoding(false));
+        WriteJson(Path.Combine(EngineeringRoot, "generated", "engineering-plan.json"), new JsonObject
+        {
+            ["schemaVersion"] = 1,
+            ["kind"] = "ctrlx-opcon-engineering-plan",
+            ["contentId"] = contentId,
+            ["projectPackSha256"] = projectPackSha256,
+            ["readyForEngineering"] = true,
+            ["sources"] = new JsonArray(
+                SourceRecord(EngineeringRoot, "project-pack.json"),
+                SourceRecord(EngineeringRoot, "specs/fixture.yaml"))
+        });
+
         var producerSource = Path.Combine(
             repositoryRoot,
             "templates",
@@ -2033,6 +2086,7 @@ internal sealed class RunnerFixture : IDisposable
                     Fingerprint(EngineeringRoot, Path.Combine("ai", "ownership.yaml")),
                     Fingerprint(EngineeringRoot, Path.Combine("ai", "hooks.yaml")),
                     Fingerprint(EngineeringRoot, Path.Combine("ai", "graphical.yaml"))),
+                ["projectPack"] = ProjectPackReference(),
                 ["fingerprints"] = new JsonArray(
                     Fingerprint(StationRoot, Path.Combine("Engineering", "Engineering_Data.xml")),
                     Fingerprint(StationRoot, Path.Combine("Plc", "Fixture PLC.project")),
@@ -2167,6 +2221,32 @@ internal sealed class RunnerFixture : IDisposable
             ["sizeBytes"] = file is null ? null : JsonValue.Create(file.Length),
             ["lastWriteTimeUtc"] = file is null ? null : JsonValue.Create(file.LastWriteTimeUtc.ToString("O")),
             ["sha256"] = exists ? RunnerHash.Sha256File(path) : null
+        };
+    }
+
+    private static JsonObject SourceRecord(string root, string relativePath)
+    {
+        var path = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        return new JsonObject
+        {
+            ["path"] = relativePath,
+            ["length"] = new FileInfo(path).Length,
+            ["sha256"] = RunnerHash.Sha256File(path)
+        };
+    }
+
+    private JsonObject ProjectPackReference()
+    {
+        var projectPackPath = Path.Combine(EngineeringRoot, "project-pack.json");
+        var engineeringPlanPath = Path.Combine(EngineeringRoot, "generated", "engineering-plan.json");
+        var plan = JsonNode.Parse(File.ReadAllText(engineeringPlanPath))!.AsObject();
+        return new JsonObject
+        {
+            ["contentId"] = String(plan, "contentId"),
+            ["projectPackPath"] = "project-pack.json",
+            ["projectPackSha256"] = RunnerHash.Sha256File(projectPackPath),
+            ["engineeringPlanPath"] = "generated/engineering-plan.json",
+            ["engineeringPlanSha256"] = RunnerHash.Sha256File(engineeringPlanPath)
         };
     }
 

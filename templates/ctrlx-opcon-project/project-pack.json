@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "kind": "ctrlx-opcon-project-pack",
+  "status": "draft",
+  "projectConfig": "config/project.yaml",
+  "sources": {
+    "station": "specs/station.yaml",
+    "io": "specs/io.yaml",
+    "events": "specs/events.yaml",
+    "units": [],
+    "processes": [],
+    "hmi": [],
+    "catalog": [],
+    "manifests": [
+      "ai/ownership.yaml",
+      "ai/hooks.yaml",
+      "ai/graphical.yaml"
+    ]
+  }
+}

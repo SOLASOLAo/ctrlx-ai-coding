@@ -327,6 +327,86 @@ internal static class Program
                 WriteText(Path.Combine(engineeringRoot, "config", "project.yaml"),
                     "schema_version: 1\npaths:\n  station_root: '../StationDemo'\n  plc_project: '../StationDemo/Plc/Demo_PLC.project'\n  export_request: 'data/requests'\ntools:\n  plc_engineering_profile: 'ctrlX PLC 2.6.8'\n");
 
+                foreach (var relativePath in new[]
+                {
+                    Path.Combine("scripts", "project", "Build-CtrlXOpconProjectPack.ps1"),
+                    Path.Combine("schemas", "project-pack.schema.json"),
+                    Path.Combine("schemas", "process.schema.json")
+                })
+                {
+                    var sourcePath = Path.Combine(repositoryRoot, "templates", "ctrlx-opcon-project", relativePath);
+                    var targetPath = Path.Combine(engineeringRoot, relativePath);
+                    Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+                    File.Copy(sourcePath, targetPath);
+                }
+                WriteText(Path.Combine(engineeringRoot, "specs", "station.yaml"), "schema_version: 1\n");
+                WriteText(Path.Combine(engineeringRoot, "specs", "io.yaml"), "schema_version: 1\n");
+                WriteText(Path.Combine(engineeringRoot, "specs", "events.yaml"), "schema_version: 1\n");
+                WriteJson(Path.Combine(engineeringRoot, "specs", "processes", "fixture.process.json"), new JsonObject
+                {
+                    ["schemaVersion"] = 1,
+                    ["kind"] = "ctrlx-opcon-process",
+                    ["processId"] = "fixture-process",
+                    ["displayName"] = "Fixture process",
+                    ["status"] = "ready",
+                    ["chain"] = new JsonObject
+                    {
+                        ["name"] = "SqS_Fixture",
+                        ["kind"] = "subchain",
+                        ["plcPath"] = "Application/Station/Fixture/SqS_Fixture",
+                        ["interfaceOwner"] = "cpstudio",
+                        ["inputs"] = new JsonArray(),
+                        ["outputs"] = new JsonArray()
+                    },
+                    ["requirements"] = new JsonArray(new JsonObject { ["id"] = "REQ_FIXTURE", ["text"] = "Fixture process remains deterministic." }),
+                    ["steps"] = new JsonArray(new JsonObject
+                    {
+                        ["id"] = "N100",
+                        ["kind"] = "finish",
+                        ["comment"] = "Finish fixture",
+                        ["operation"] = "Finish the fixture process.",
+                        ["requirements"] = new JsonArray("REQ_FIXTURE"),
+                        ["acceptance"] = new JsonArray("The fixture finishes.")
+                    }),
+                    ["cleanup"] = new JsonArray("Leave no active command."),
+                    ["acceptanceTests"] = new JsonArray(new JsonObject
+                    {
+                        ["id"] = "TEST_FIXTURE",
+                        ["title"] = "Fixture completes",
+                        ["requirements"] = new JsonArray("REQ_FIXTURE"),
+                        ["steps"] = new JsonArray("N100"),
+                        ["expected"] = new JsonArray("The fixture completes.")
+                    })
+                });
+                WriteJson(Path.Combine(engineeringRoot, "project-pack.json"), new JsonObject
+                {
+                    ["schemaVersion"] = 1,
+                    ["kind"] = "ctrlx-opcon-project-pack",
+                    ["status"] = "ready",
+                    ["projectConfig"] = "config/project.yaml",
+                    ["sources"] = new JsonObject
+                    {
+                        ["station"] = "specs/station.yaml",
+                        ["io"] = "specs/io.yaml",
+                        ["events"] = "specs/events.yaml",
+                        ["units"] = new JsonArray(),
+                        ["processes"] = new JsonArray("specs/processes/fixture.process.json"),
+                        ["hmi"] = new JsonArray(),
+                        ["catalog"] = new JsonArray(),
+                        ["manifests"] = new JsonArray("ai/ownership.yaml", "ai/hooks.yaml", "ai/graphical.yaml")
+                    }
+                });
+                var projectPackBuilder = Path.Combine(engineeringRoot, "scripts", "project", "Build-CtrlXOpconProjectPack.ps1");
+                var packBuild = await RunPowerShell7Async(
+                    engineeringRoot,
+                    projectPackBuilder,
+                    "-Command", "Build",
+                    "-EngineeringRoot", engineeringRoot,
+                    "-RequireReady",
+                    "-Json").ConfigureAwait(false);
+                Require(packBuild.ExitCode == 0,
+                    $"Fixture Project Pack Build failed (exit {packBuild.ExitCode}): {Limit(packBuild.StandardError)} {Limit(packBuild.StandardOutput)}");
+
                 CreateReviewedBaselines(engineeringRoot);
                 var requestedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-10);
                 var auditPath = Path.Combine(reportRoot, "ingestor-e2e.json");

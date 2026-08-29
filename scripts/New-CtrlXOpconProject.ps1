@@ -72,6 +72,10 @@ $ErrorActionPreference = 'Stop'
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $utf8WithBom = New-Object System.Text.UTF8Encoding($true)
 
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    throw 'PowerShell 7 or newer is required by the Project Pack initializer.'
+}
+
 function Assert-SingleLineValue {
     param(
         [Parameter(Mandatory = $true)]
@@ -394,6 +398,7 @@ try {
     foreach ($relativeDirectory in @(
             'specs/units',
             'specs/chains',
+            'specs/processes',
             'src/plc/common',
             "src/plc/project/$StationId",
             'catalog/units',
@@ -404,16 +409,29 @@ try {
             'scripts/ioe',
             'scripts/git',
             'scripts/setup',
+            'scripts/project',
             'tests/static',
+            'tests/project',
             'tests/compile',
             'tests/simulation',
             'data/requests',
             'data/snapshots',
             'data/reports',
             'data/backups',
-            'docs'
+            'docs',
+            'schemas',
+            'generated'
         )) {
         [System.IO.Directory]::CreateDirectory((Join-Path $stagingPath $relativeDirectory)) | Out-Null
+    }
+
+    $projectPackBuilder = Join-Path $stagingPath 'scripts\project\Build-CtrlXOpconProjectPack.ps1'
+    if (-not [System.IO.File]::Exists($projectPackBuilder)) {
+        throw "Generated Project Pack builder is missing: $projectPackBuilder"
+    }
+    $projectPackBuild = & $projectPackBuilder -Command Build -EngineeringRoot $stagingPath -Json | ConvertFrom-Json
+    if ([string]$projectPackBuild.status -ne 'BUILT') {
+        throw 'Generated draft Project Pack did not build successfully.'
     }
 
     $unresolvedTokens = New-Object System.Collections.Generic.List[string]

@@ -1,0 +1,268 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://bpp.local/schemas/ctrlx-opcon-process-v1.json",
+  "title": "ctrlX OpCon Process",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "processId",
+    "displayName",
+    "status",
+    "chain",
+    "requirements",
+    "steps",
+    "cleanup",
+    "acceptanceTests"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "kind": {
+      "const": "ctrlx-opcon-process"
+    },
+    "processId": {
+      "$ref": "#/definitions/id"
+    },
+    "displayName": {
+      "$ref": "#/definitions/text"
+    },
+    "status": {
+      "enum": ["draft", "ready"]
+    },
+    "chain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "plcPath", "interfaceOwner", "inputs", "outputs"],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/id"
+        },
+        "kind": {
+          "enum": ["command_chain", "subchain"]
+        },
+        "plcPath": {
+          "$ref": "#/definitions/text"
+        },
+        "interfaceOwner": {
+          "enum": ["cpstudio", "ai"]
+        },
+        "caller": {
+          "$ref": "#/definitions/text"
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/interfaceItem"
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/interfaceItem"
+          }
+        }
+      }
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "text"],
+        "properties": {
+          "id": {
+            "$ref": "#/definitions/requirementId"
+          },
+          "text": {
+            "$ref": "#/definitions/text"
+          }
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "comment", "operation", "requirements", "acceptance"],
+        "properties": {
+          "id": {
+            "$ref": "#/definitions/id"
+          },
+          "kind": {
+            "enum": ["initialize", "check", "wait", "start", "capture", "command", "delay", "finish"]
+          },
+          "comment": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "operation": {
+            "$ref": "#/definitions/text"
+          },
+          "transition": {
+            "$ref": "#/definitions/text"
+          },
+          "prompt": {
+            "$ref": "#/definitions/prompt"
+          },
+          "promptVariants": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/definitions/promptVariant"
+            }
+          },
+          "requirements": {
+            "$ref": "#/definitions/requirementIdArray"
+          },
+          "acceptance": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/definitions/text"
+            }
+          },
+          "parallel": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["group", "branch"],
+            "properties": {
+              "group": {
+                "$ref": "#/definitions/id"
+              },
+              "branch": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "cleanup": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/text"
+      }
+    },
+    "acceptanceTests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "requirements", "steps", "expected"],
+        "properties": {
+          "id": {
+            "$ref": "#/definitions/id"
+          },
+          "title": {
+            "$ref": "#/definitions/text"
+          },
+          "requirements": {
+            "$ref": "#/definitions/requirementIdArray"
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/definitions/id"
+            }
+          },
+          "expected": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/definitions/text"
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+      "maxLength": 128
+    },
+    "requirementId": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_-]*$",
+      "maxLength": 128
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "requirementIdArray": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/requirementId"
+      }
+    },
+    "interfaceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "source"],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/id"
+        },
+        "type": {
+          "$ref": "#/definitions/text"
+        },
+        "source": {
+          "enum": ["cpstudio", "ai"]
+        }
+      }
+    },
+    "prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "english", "chinese"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "maxLength": 128
+        },
+        "english": {
+          "$ref": "#/definitions/text"
+        },
+        "chinese": {
+          "$ref": "#/definitions/text"
+        }
+      }
+    },
+    "promptVariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when", "key", "english", "chinese"],
+      "properties": {
+        "when": {
+          "$ref": "#/definitions/text"
+        },
+        "key": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "maxLength": 128
+        },
+        "english": {
+          "$ref": "#/definitions/text"
+        },
+        "chinese": {
+          "$ref": "#/definitions/text"
+        }
+      }
+    }
+  }
+}

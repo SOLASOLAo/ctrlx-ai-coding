@@ -132,7 +132,8 @@ public sealed class RunnerActionValidator
             "fingerprints",
             "warningBaseline",
             "semanticBaseline",
-            "semanticSnapshotRequest");
+            "semanticSnapshotRequest",
+            "projectPack");
         _ = RunnerValidation.RequiredString(preconditions, "workflowRevision", "Runner action preconditions");
         var idempotencyKey = RunnerValidation.RequiredString(preconditions, "idempotencyKey", "Runner action preconditions");
         if (!RunnerValidation.IsSha256(idempotencyKey))
@@ -157,6 +158,7 @@ public sealed class RunnerActionValidator
             "config/engineering-semantic-baseline.json",
             "semanticBaseline");
         ValidateSnapshotScopeReference(root, preconditions["semanticSnapshotRequest"]);
+        ValidateProjectPackReference(root, preconditions["projectPack"]);
 
         var fingerprints = RunnerValidation.RequiredArray(preconditions, "fingerprints", "Runner action preconditions");
         if (actionKind == "verify_after_export_2")
@@ -510,6 +512,122 @@ public sealed class RunnerActionValidator
             path,
             RunnerValidation.RequiredString(reference, "sha256", "Runner semanticSnapshotRequest"),
             "Engineering semantic snapshot scope");
+    }
+
+    private static void ValidateProjectPackReference(string engineeringRoot, JsonNode? referenceNode)
+    {
+        if (referenceNode is not JsonObject reference)
+        {
+            throw new RunnerGateException(
+                "PROJECT_PACK_REFERENCE_INVALID",
+                "Runner action preconditions.projectPack must be an object.");
+        }
+
+        RunnerValidation.RequireOnly(
+            reference,
+            "Runner Project Pack precondition",
+            "contentId",
+            "projectPackPath",
+            "projectPackSha256",
+            "engineeringPlanPath",
+            "engineeringPlanSha256");
+        var contentId = RunnerValidation.RequiredString(reference, "contentId", "Runner Project Pack precondition");
+        var projectPackSha256 = RunnerValidation.RequiredString(reference, "projectPackSha256", "Runner Project Pack precondition");
+        var engineeringPlanSha256 = RunnerValidation.RequiredString(reference, "engineeringPlanSha256", "Runner Project Pack precondition");
+        if (!RunnerValidation.IsSha256(contentId) ||
+            !RunnerValidation.IsSha256(projectPackSha256) ||
+            !RunnerValidation.IsSha256(engineeringPlanSha256))
+        {
+            throw new RunnerGateException(
+                "PROJECT_PACK_REFERENCE_INVALID",
+                "Runner Project Pack contentId and file hashes must be SHA-256 values.");
+        }
+
+        var projectPackRelativePath = RunnerValidation.RequiredString(reference, "projectPackPath", "Runner Project Pack precondition")
+            .Replace('\\', '/');
+        var engineeringPlanRelativePath = RunnerValidation.RequiredString(reference, "engineeringPlanPath", "Runner Project Pack precondition")
+            .Replace('\\', '/');
+        if (projectPackRelativePath != "project-pack.json" ||
+            engineeringPlanRelativePath != "generated/engineering-plan.json")
+        {
+            throw new RunnerGateException(
+                "PROJECT_PACK_REFERENCE_INVALID",
+                "Runner Project Pack precondition must use project-pack.json and generated/engineering-plan.json.");
+        }
+
+        var projectPackPath = RunnerValidation.EnsureInside(
+            engineeringRoot,
+            Path.Combine(engineeringRoot, projectPackRelativePath),
+            "Runner Project Pack");
+        var engineeringPlanPath = RunnerValidation.EnsureInside(
+            engineeringRoot,
+            Path.Combine(engineeringRoot, engineeringPlanRelativePath),
+            "Runner engineering plan");
+        ValidateFileHash(projectPackPath, projectPackSha256, "Runner Project Pack");
+        ValidateFileHash(engineeringPlanPath, engineeringPlanSha256, "Runner engineering plan");
+
+        var plan = RunnerJson.ReadObject(engineeringPlanPath, "Runner engineering plan");
+        if (RunnerValidation.RequiredString(plan, "kind", "Runner engineering plan") != "ctrlx-opcon-engineering-plan" ||
+            !RunnerValidation.RequiredBoolean(plan, "readyForEngineering", "Runner engineering plan") ||
+            !RunnerValidation.RequiredString(plan, "contentId", "Runner engineering plan").Equals(contentId, StringComparison.OrdinalIgnoreCase) ||
+            !RunnerValidation.RequiredString(plan, "projectPackSha256", "Runner engineering plan").Equals(projectPackSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new RunnerGateException(
+                "PROJECT_PACK_REFERENCE_INVALID",
+                "Runner engineering plan does not match the action-creation ready Project Pack identity.");
+        }
+
+        var sources = RunnerValidation.RequiredArray(plan, "sources", "Runner engineering plan");
+        if (sources.Count == 0)
+        {
+            throw new RunnerGateException("PROJECT_PACK_SOURCE_DRIFT", "Runner engineering plan contains no source records.");
+        }
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var sourceNode in sources)
+        {
+            if (sourceNode is not JsonObject source)
+            {
+                throw new RunnerGateException("PROJECT_PACK_SOURCE_DRIFT", "Runner engineering plan source entry must be an object.");
+            }
+            RunnerValidation.RequireOnly(source, "Runner engineering plan source", "path", "length", "sha256");
+            var relativePath = RunnerValidation.RequiredString(source, "path", "Runner engineering plan source");
+            if (Path.IsPathRooted(relativePath) ||
+                relativePath.Contains('\\') ||
+                relativePath.Split('/').Any(segment => segment.Length == 0 || segment is "." or "..") ||
+                !seenPaths.Add(relativePath))
+            {
+                throw new RunnerGateException("PROJECT_PACK_SOURCE_DRIFT", $"Runner engineering plan has an unsafe or duplicate source path: {relativePath}");
+            }
+            if (source["length"] is not JsonValue lengthValue ||
+                !lengthValue.TryGetValue<long>(out var expectedLength) ||
+                expectedLength < 0)
+            {
+                throw new RunnerGateException("PROJECT_PACK_SOURCE_DRIFT", $"Runner engineering plan source has an invalid length: {relativePath}");
+            }
+            var sourcePath = RunnerValidation.EnsureInside(
+                engineeringRoot,
+                Path.Combine(engineeringRoot, relativePath),
+                "Runner Project Pack source");
+            RunnerValidation.AssertExistingPathChainNotReparse(
+                engineeringRoot,
+                sourcePath,
+                "PROJECT_PACK_SOURCE_DRIFT",
+                "Runner Project Pack source");
+            if (!File.Exists(sourcePath) || new FileInfo(sourcePath).Length != expectedLength)
+            {
+                throw new RunnerGateException("PROJECT_PACK_SOURCE_DRIFT", $"Runner Project Pack source length drifted: {relativePath}");
+            }
+            var expectedSourceSha = RunnerValidation.RequiredString(source, "sha256", "Runner engineering plan source");
+            if (!RunnerValidation.IsSha256(expectedSourceSha) ||
+                !RunnerHash.Sha256File(sourcePath).Equals(expectedSourceSha, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new RunnerGateException("PROJECT_PACK_SOURCE_DRIFT", $"Runner Project Pack source SHA-256 drifted: {relativePath}");
+            }
+        }
+        if (!seenPaths.Contains("project-pack.json"))
+        {
+            throw new RunnerGateException("PROJECT_PACK_SOURCE_DRIFT", "Runner engineering plan does not bind project-pack.json as a source.");
+        }
     }
 
     private static void ValidateRequiredFingerprint(JsonArray fingerprints, string root, string requiredPath)

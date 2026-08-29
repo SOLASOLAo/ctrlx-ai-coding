@@ -141,12 +141,16 @@ try {
             'HANDOVER.md',
             'TODO.md',
             'TEAM_SETUP.md',
+            'project-pack.json',
+            'schemas\project-pack.schema.json',
+            'schemas\process.schema.json',
             'config\project.yaml',
             'config\engineering-semantic-scope.json',
             'config\quality-gates.yaml',
             'specs\station.yaml',
             'specs\io.yaml',
             'specs\events.yaml',
+            'specs\processes\README.md',
             'ai\ownership.yaml',
             'src\plc\project\Station020\README.md',
             'catalog\units\.gitkeep',
@@ -165,6 +169,7 @@ try {
             'scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1',
             'scripts\runner\RunnerHostDeployment.psm1',
             'scripts\runner\README.md',
+            'scripts\project\Build-CtrlXOpconProjectPack.ps1',
             'tools\runner\CtrlX.OpCon.Runner.Core\CtrlX.OpCon.Runner.Core.csproj',
             'tools\runner\CtrlX.OpCon.Runner.Core\RunnerExecutor.cs',
             'tools\runner\CtrlX.OpCon.Runner.Core\NamedPipeSessionBrokerClient.cs',
@@ -186,7 +191,9 @@ try {
             'tests\cpstudio\semantic-canonical-vectors.json',
             'tests\cpstudio\Test-OfflinePostExportCheck.ps1',
             'tests\runner\Test-CtrlXOpconRunner.ps1',
+            'tests\project\Test-CtrlXOpconProjectPack.ps1',
             'tests\static\Test-ProjectFramework.ps1',
+            'generated\engineering-plan.json',
             'data\requests\.gitkeep',
             'docs\project_structure.md',
             'docs\reviews\README.md'
@@ -207,6 +214,12 @@ try {
     Assert-True -Condition ([string]$semanticScope.project.profile -eq 'ctrlX PLC 2.6.8') -Message 'Generated semantic scope profile was not rendered.'
     Assert-True -Condition ([string]$semanticScope.mappingScopes[0].devicePath -eq 'Device/Realtime_Data') -Message 'Generated semantic scope did not use the default mapping root.'
     Assert-True -Condition ([string]$semanticScope.symbolApplicationPath -ceq 'Device/Plc Logic/Application') -Message 'Generated semantic scope Symbol application path has incorrect casing.'
+    $generatedPack = [System.IO.File]::ReadAllText((Join-Path $outputPath 'project-pack.json')) | ConvertFrom-Json -Depth 32
+    $generatedPlan = [System.IO.File]::ReadAllText((Join-Path $outputPath 'generated\engineering-plan.json')) | ConvertFrom-Json -Depth 64
+    Assert-True -Condition ([string]$generatedPack.kind -eq 'ctrlx-opcon-project-pack') -Message 'Generated Project Pack has the wrong contract kind.'
+    Assert-True -Condition ([string]$generatedPack.status -eq 'draft') -Message 'Fresh Project Pack must remain draft until process facts are supplied.'
+    Assert-True -Condition ([string]$generatedPlan.kind -eq 'ctrlx-opcon-engineering-plan') -Message 'Generated engineering plan has the wrong contract kind.'
+    Assert-True -Condition (-not [bool]$generatedPlan.readyForEngineering) -Message 'Fresh draft engineering plan must not be ready for engineering.'
 
     $generatedRunnerWrapper = [System.IO.File]::ReadAllText((Join-Path $outputPath 'scripts\runner\Invoke-CtrlXOpconRunner.ps1'))
     Assert-True -Condition (-not [regex]::IsMatch($generatedRunnerWrapper, '(?im)^\s*&\s*dotnet\s+run\b')) -Message 'Generated action wrapper invokes dotnet run/MSBuild while consuming an action.'
@@ -311,6 +324,12 @@ try {
     $staticOutput = & $powerShell7 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $staticTest 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated framework test failed: " + ($staticOutput -join ' '))
     Assert-True -Condition (($staticOutput -join ' ') -match 'Project framework OK') -Message 'Generated framework test did not report success.'
+
+    Write-Host '[initializer] generated Project Pack test (PowerShell 7)'
+    $projectPackTest = Join-Path $outputPath 'tests\project\Test-CtrlXOpconProjectPack.ps1'
+    $projectPackOutput = & $powerShell7 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $projectPackTest 2>&1
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated Project Pack test failed: " + ($projectPackOutput -join ' '))
+    Assert-True -Condition (($projectPackOutput -join ' ') -match 'Project Pack tests OK') -Message 'Generated Project Pack test did not report success.'
 
     Write-Host '[initializer] generated post-export queue test (PowerShell 7)'
     $queueTest = Join-Path $outputPath 'tests\cpstudio\Test-PostExportQueue.ps1'

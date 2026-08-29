@@ -820,6 +820,39 @@ tools:
   plc_engineering_profile: 'ctrlX PLC 2.6.8'
 "@
 
+    foreach ($relativePath in @(
+        'scripts\project\Build-CtrlXOpconProjectPack.ps1',
+        'schemas\project-pack.schema.json',
+        'schemas\process.schema.json'
+    )) {
+        $sourcePath = Join-Path $repositoryRoot $relativePath
+        $targetPath = Join-Path $engineeringRoot $relativePath
+        [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($targetPath)) | Out-Null
+        [System.IO.File]::Copy($sourcePath, $targetPath, $true)
+    }
+    Write-Utf8NoBom -Path (Join-Path $engineeringRoot 'specs\station.yaml') -Text "schema_version: 1`n"
+    Write-Utf8NoBom -Path (Join-Path $engineeringRoot 'specs\io.yaml') -Text "schema_version: 1`n"
+    Write-Utf8NoBom -Path (Join-Path $engineeringRoot 'specs\events.yaml') -Text "schema_version: 1`n"
+    Write-JsonFile -Path (Join-Path $engineeringRoot 'specs\processes\fixture.process.json') -Value ([ordered]@{
+        schemaVersion = 1; kind = 'ctrlx-opcon-process'; processId = 'fixture-process'; displayName = 'Fixture process'; status = 'ready'
+        chain = [ordered]@{ name = 'SqS_Fixture'; kind = 'subchain'; plcPath = 'Application/Station/Fixture/SqS_Fixture'; interfaceOwner = 'cpstudio'; inputs = @(); outputs = @() }
+        requirements = @([ordered]@{ id = 'REQ_FIXTURE'; text = 'Fixture process remains deterministic.' })
+        steps = @([ordered]@{ id = 'N100'; kind = 'finish'; comment = 'Finish fixture'; operation = 'Finish the fixture process.'; requirements = @('REQ_FIXTURE'); acceptance = @('The fixture finishes.') })
+        cleanup = @('Leave no active command.')
+        acceptanceTests = @([ordered]@{ id = 'TEST_FIXTURE'; title = 'Fixture completes'; requirements = @('REQ_FIXTURE'); steps = @('N100'); expected = @('The fixture completes.') })
+    })
+    Write-JsonFile -Path (Join-Path $engineeringRoot 'project-pack.json') -Value ([ordered]@{
+        schemaVersion = 1; kind = 'ctrlx-opcon-project-pack'; status = 'ready'; projectConfig = 'config/project.yaml'
+        sources = [ordered]@{
+            station = 'specs/station.yaml'; io = 'specs/io.yaml'; events = 'specs/events.yaml'; units = @()
+            processes = @('specs/processes/fixture.process.json'); hmi = @(); catalog = @()
+            manifests = @('ai/ownership.yaml', 'ai/hooks.yaml', 'ai/graphical.yaml')
+        }
+    })
+    $packBuilderPath = Join-Path $engineeringRoot 'scripts\project\Build-CtrlXOpconProjectPack.ps1'
+    $packBuildOutput = @(& $packBuilderPath -Command Build -EngineeringRoot $engineeringRoot -RequireReady -Json)
+    Assert-True -Condition ($packBuildOutput.Count -eq 1) -Message 'Fixture Project Pack Build returned unexpected output.'
+
     $warningReviewPath = Join-Path $engineeringRoot 'docs\reviews\warning-baseline-review.md'
     Write-Utf8NoBom -Path $warningReviewPath -Text "# Warning baseline review`n`nFixture warning signatures reviewed.`n"
     $warningBaselinePath = Join-Path $engineeringRoot 'config\warning-signature-baseline.json'

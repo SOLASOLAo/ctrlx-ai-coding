@@ -253,7 +253,10 @@ function Exit-RunnerLease {
 }
 
 function Get-Preflight {
-    param([Parameter(Mandatory = $true)][string]$Root)
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [switch]$RequireReady
+    )
 
     $configurationPath = Join-Path $Root 'config\project.yaml'
     $qualityGatePath = Join-Path $Root 'config\quality-gates.yaml'
@@ -289,10 +292,46 @@ function Get-Preflight {
 
     $auditScript = Join-Path $Root 'scripts\cpstudio\Invoke-PostExportAudit.ps1'
     $coordinatorScript = Join-Path $Root 'scripts\cpstudio\Invoke-PostExportEngineering.ps1'
-    foreach ($path in @($qualityGatePath, $auditScript, $coordinatorScript)) {
+    $projectPackPath = Join-Path $Root 'project-pack.json'
+    $engineeringPlanPath = Join-Path $Root 'generated\engineering-plan.json'
+    $projectPackBuilder = Join-Path $Root 'scripts\project\Build-CtrlXOpconProjectPack.ps1'
+    foreach ($path in @(
+            $qualityGatePath,
+            $auditScript,
+            $coordinatorScript,
+            $projectPackPath,
+            $engineeringPlanPath,
+            $projectPackBuilder
+        )) {
         if (-not [System.IO.File]::Exists($path)) {
             throw "Required Runner dependency does not exist: $path"
         }
+    }
+
+    $projectPackParameters = @{
+        Command = 'Check'
+        EngineeringRoot = $Root
+        Json = $true
+    }
+    if ($RequireReady) {
+        $projectPackParameters.RequireReady = $true
+    }
+    $projectPackCheckOutput = @(& $projectPackBuilder @projectPackParameters)
+    if ($projectPackCheckOutput.Count -ne 1) {
+        throw 'Project Pack preflight did not return exactly one JSON result.'
+    }
+    try {
+        $projectPackCheck = [string]$projectPackCheckOutput[0] | ConvertFrom-Json
+    }
+    catch {
+        throw "Project Pack preflight returned invalid JSON: $($_.Exception.Message)"
+    }
+    if (([string]$projectPackCheck.status -ne 'VALID') -or
+        (-not ([string]$projectPackCheck.contentId -cmatch '^[0-9a-f]{64}$'))) {
+        throw 'Project Pack preflight is not VALID and content-addressed.'
+    }
+    if ($RequireReady -and (-not [bool]$projectPackCheck.readyForEngineering)) {
+        throw 'Project Pack preflight is valid but not ready for engineering.'
     }
 
     return [ordered]@{
@@ -301,9 +340,18 @@ function Get-Preflight {
         plcProject      = $plcProject
         profile         = $profile
         gitCommit       = Get-GitCommit -Root $Root
+        projectPackContentId = [string]$projectPackCheck.contentId
+        readyForEngineering = [bool]$projectPackCheck.readyForEngineering
         files           = [ordered]@{
             projectConfig = [ordered]@{ path = $configurationPath; sha256 = Get-FileSha256 -Path $configurationPath }
             qualityGates = [ordered]@{ path = $qualityGatePath; sha256 = Get-FileSha256 -Path $qualityGatePath }
+            projectPack = [ordered]@{
+                path = $projectPackPath
+                sha256 = Get-FileSha256 -Path $projectPackPath
+                contentId = [string]$projectPackCheck.contentId
+            }
+            engineeringPlan = [ordered]@{ path = $engineeringPlanPath; sha256 = Get-FileSha256 -Path $engineeringPlanPath }
+            projectPackBuilder = [ordered]@{ path = $projectPackBuilder; sha256 = Get-FileSha256 -Path $projectPackBuilder }
             manifests = $manifestRecords.ToArray()
             auditScript = [ordered]@{ path = $auditScript; sha256 = Get-FileSha256 -Path $auditScript }
             coordinatorScript = [ordered]@{ path = $coordinatorScript; sha256 = Get-FileSha256 -Path $coordinatorScript }
@@ -424,7 +472,7 @@ if (-not $RunRoot) {
 $runRootResolved = Assert-PathInsideRoot -Root $dataRoot -Path $RunRoot -Description 'Runner output root'
 
 if ($WhatIfPreference) {
-    $preflight = Get-Preflight -Root $engineeringRootResolved
+    $preflight = Get-Preflight -Root $engineeringRootResolved -RequireReady:($Command -ne 'Status')
     Write-Output ([pscustomobject]@{
         status = 'WHATIF'
         command = $Command
@@ -465,7 +513,7 @@ try {
     $manifestPath = Join-Path $runDirectory 'run-manifest.json'
 
     $preflightStarted = [DateTime]::UtcNow
-    $preflight = Get-Preflight -Root $engineeringRootResolved
+    $preflight = Get-Preflight -Root $engineeringRootResolved -RequireReady:($Command -ne 'Status')
     $steps.Add([ordered]@{
         name = 'PREFLIGHT'
         startedAtUtc = $preflightStarted.ToString('o')
@@ -507,9 +555,14 @@ try {
     }
 
     if ($Command -eq 'Status') {
-        $manifest.result.status = 'READY'
+        $manifest.result.status = if ($preflight.readyForEngineering) { 'READY' } else { 'NOT_READY' }
         $manifest.result.exitCode = 0
-        $manifest.result.nextAction = 'Use ProcessOne after a CpStudio export request is pending.'
+        $manifest.result.nextAction = if ($preflight.readyForEngineering) {
+            'Use ProcessOne after a CpStudio export request is pending.'
+        }
+        else {
+            'Complete the Project Pack and set the pack and every process to status=ready before ProcessOne.'
+        }
         $exitCode = 0
     }
     else {

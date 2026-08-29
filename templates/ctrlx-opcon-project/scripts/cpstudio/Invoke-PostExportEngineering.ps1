@@ -162,6 +162,98 @@ function Read-JsonDocument {
     }
 }
 
+function Get-ProjectPackReference {
+    param([Parameter(Mandatory = $true)][string]$ResolvedEngineeringRoot)
+
+    $builderPath = Join-Path $ResolvedEngineeringRoot 'scripts\project\Build-CtrlXOpconProjectPack.ps1'
+    $projectPackPath = Join-Path $ResolvedEngineeringRoot 'project-pack.json'
+    $engineeringPlanPath = Join-Path $ResolvedEngineeringRoot 'generated\engineering-plan.json'
+    foreach ($requiredPath in @($builderPath, $projectPackPath, $engineeringPlanPath)) {
+        if (-not [System.IO.File]::Exists($requiredPath)) {
+            throw "Project Pack action precondition is missing: $requiredPath"
+        }
+    }
+
+    $checkOutput = @(& $builderPath -Command Check -EngineeringRoot $ResolvedEngineeringRoot -RequireReady -Json)
+    if ($checkOutput.Count -ne 1) {
+        throw 'Project Pack action precondition did not return exactly one JSON result.'
+    }
+    try {
+        $check = [string]$checkOutput[0] | ConvertFrom-Json
+    }
+    catch {
+        throw "Project Pack action precondition returned invalid JSON: $($_.Exception.Message)"
+    }
+    if (([string]$check.status -ne 'VALID') -or
+        (-not [bool]$check.readyForEngineering) -or
+        (-not (Test-HexSha256 -Value ([string]$check.contentId)))) {
+        throw 'Project Pack must be VALID, ready, and content-addressed before a Runner action is created.'
+    }
+
+    $packDocument = Read-JsonDocument -Path $projectPackPath -Description 'Project Pack'
+    $planDocument = Read-JsonDocument -Path $engineeringPlanPath -Description 'Generated engineering plan'
+    if (([string]$planDocument.payload.kind -ne 'ctrlx-opcon-engineering-plan') -or
+        (-not [bool]$planDocument.payload.readyForEngineering) -or
+        ([string]$planDocument.payload.contentId -cne ([string]$check.contentId).ToLowerInvariant()) -or
+        ([string]$planDocument.payload.projectPackSha256 -cne ([string]$packDocument.sha256).ToLowerInvariant())) {
+        throw 'Generated engineering plan identity does not match the current ready Project Pack.'
+    }
+
+    return [ordered]@{
+        contentId = ([string]$check.contentId).ToLowerInvariant()
+        projectPackPath = 'project-pack.json'
+        projectPackSha256 = ([string]$packDocument.sha256).ToLowerInvariant()
+        engineeringPlanPath = 'generated/engineering-plan.json'
+        engineeringPlanSha256 = ([string]$planDocument.sha256).ToLowerInvariant()
+    }
+}
+
+function Assert-ProjectPackReferenceCurrent {
+    param(
+        [Parameter(Mandatory = $true)][object]$Reference,
+        [Parameter(Mandatory = $true)][string]$ResolvedEngineeringRoot,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    foreach ($name in @('contentId', 'projectPackSha256', 'engineeringPlanSha256')) {
+        if (-not (Test-HexSha256 -Value ([string]$Reference.$name))) {
+            throw "$Context has an invalid $name."
+        }
+    }
+    if (([string]$Reference.projectPackPath -cne 'project-pack.json') -or
+        ([string]$Reference.engineeringPlanPath -cne 'generated/engineering-plan.json')) {
+        throw "$Context uses an unsupported Project Pack path."
+    }
+
+    $packPath = Assert-PathInsideRoot -Root $ResolvedEngineeringRoot -Path (Join-Path $ResolvedEngineeringRoot 'project-pack.json') -Description "$Context Project Pack"
+    $planPath = Assert-PathInsideRoot -Root $ResolvedEngineeringRoot -Path (Join-Path $ResolvedEngineeringRoot 'generated\engineering-plan.json') -Description "$Context engineering plan"
+    $pack = Read-JsonDocument -Path $packPath -Description "$Context Project Pack"
+    $plan = Read-JsonDocument -Path $planPath -Description "$Context engineering plan"
+    if ((-not ([string]$pack.sha256).Equals([string]$Reference.projectPackSha256, [System.StringComparison]::OrdinalIgnoreCase)) -or
+        (-not ([string]$plan.sha256).Equals([string]$Reference.engineeringPlanSha256, [System.StringComparison]::OrdinalIgnoreCase)) -or
+        ([string]$plan.payload.kind -ne 'ctrlx-opcon-engineering-plan') -or
+        (-not [bool]$plan.payload.readyForEngineering) -or
+        (-not ([string]$plan.payload.contentId).Equals([string]$Reference.contentId, [System.StringComparison]::OrdinalIgnoreCase)) -or
+        (-not ([string]$plan.payload.projectPackSha256).Equals([string]$Reference.projectPackSha256, [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw "$Context no longer matches its action-creation Project Pack identity."
+    }
+
+    $builderPath = Join-Path $ResolvedEngineeringRoot 'scripts\project\Build-CtrlXOpconProjectPack.ps1'
+    if (-not [System.IO.File]::Exists($builderPath)) {
+        throw "$Context Project Pack builder is missing."
+    }
+    $checkOutput = @(& $builderPath -Command Check -EngineeringRoot $ResolvedEngineeringRoot -RequireReady -Json)
+    if ($checkOutput.Count -ne 1) {
+        throw "$Context Project Pack source check returned unexpected output."
+    }
+    $check = [string]$checkOutput[0] | ConvertFrom-Json
+    if (([string]$check.status -ne 'VALID') -or
+        (-not [bool]$check.readyForEngineering) -or
+        (-not ([string]$check.contentId).Equals([string]$Reference.contentId, [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw "$Context Project Pack source facts drifted after action creation."
+    }
+}
+
 function Assert-JsonArrayProperty {
     param(
         [Parameter(Mandatory = $true)][string]$RawJson,
@@ -1476,6 +1568,10 @@ function Assert-OperationSourcesCurrent {
             throw "Ownership manifest changed during the Stage2 operation: $($manifest.path)"
         }
     }
+    Assert-ProjectPackReferenceCurrent `
+        -Reference $Operation.baseline.projectPack `
+        -ResolvedEngineeringRoot ([string]$Operation.identity.engineeringRoot) `
+        -Context 'Operation Project Pack precondition'
     Assert-WarningBaselineReference `
         -Reference $Operation.baseline.warningBaseline `
         -EngineeringRoot ([string]$Operation.identity.engineeringRoot) `
@@ -1637,6 +1733,11 @@ function Assert-OperationLedgerIntegrity {
             -Expected $Operation.baseline.semanticBaseline `
             -Actual $action.preconditions.semanticBaseline `
             -Context 'Runner action semanticBaseline'
+        foreach ($name in @('contentId', 'projectPackPath', 'projectPackSha256', 'engineeringPlanPath', 'engineeringPlanSha256')) {
+            if ([string]$action.preconditions.projectPack.$name -cne [string]$Operation.baseline.projectPack.$name) {
+                throw "Runner action Project Pack precondition '$name' does not match the operation ledger."
+            }
+        }
     }
 
     $seenEvidenceActions = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
@@ -1786,6 +1887,7 @@ function New-RunnerAction {
             warningBaseline  = $Operation.baseline.warningBaseline
             semanticSnapshotRequest = $Operation.baseline.semanticSnapshotRequest
             semanticBaseline = $Operation.baseline.semanticBaseline
+            projectPack      = $Operation.baseline.projectPack
             fingerprints     = $Operation.baseline.fingerprints
         }
         guardrails    = [ordered]@{
@@ -2927,7 +3029,8 @@ function Start-NewOperation {
     $newOperationId = Get-OperationIdForRequest -RequestId $Audit.requestId
     $operationDirectory = Get-OperationDirectory -Root $ResolvedOperationRoot -Id $newOperationId
     $operationPath = Join-Path $operationDirectory 'operation.json'
-    $idempotencyText = $workflowRevision + '|' + $Audit.requestId + '|' + $Audit.document.sha256 + '|' + $ResolvedPlcProject.ToLowerInvariant() + '|' + $Profile
+    $projectPackReference = Get-ProjectPackReference -ResolvedEngineeringRoot $ResolvedEngineeringRoot
+    $idempotencyText = $workflowRevision + '|' + $Audit.requestId + '|' + $Audit.document.sha256 + '|' + $ResolvedPlcProject.ToLowerInvariant() + '|' + $Profile + '|' + $projectPackReference.contentId
     $idempotencyKey = Get-Sha256ForText -Text $idempotencyText
 
     if ([System.IO.File]::Exists($operationPath)) {
@@ -2987,6 +3090,7 @@ function Start-NewOperation {
         }
         baseline         = [ordered]@{
             manifests       = @($Audit.report.manifests)
+            projectPack     = $projectPackReference
             warningBaseline = $Audit.report.warningBaseline
             semanticSnapshotRequest = $Audit.report.semanticSnapshotRequest
             semanticBaseline = $Audit.report.semanticBaseline
