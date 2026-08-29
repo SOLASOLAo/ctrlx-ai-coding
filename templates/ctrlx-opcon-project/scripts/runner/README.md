@@ -81,10 +81,31 @@ baseline-bootstrap `BLOCKED` reason and can never turn a clean compile into a
 successful Stage 2 result. `apply_change_set_and_build` remains unsupported and
 returns `BLOCKED_UNSUPPORTED_ACTION`.
 
-## P1.3a/P1.3b/P1.3c current-user background Host
+## P1.3a/P1.3b/P1.3c Host and P1.4a team package
 
-Build the Host once from the checked-in source, then use its thin PowerShell
-entry for lifecycle and read-only status:
+On a team workstation, use the P1.4a offline package produced by the methodology
+repository. It contains `Install.ps1`, the canonical wrapper/module,
+`package-manifest.json` and the exact five-file Host payload. The installer
+verifies the package path/length/SHA-256/contentId before every command.
+Installation uses PowerShell 7 against this engineering root. The Host still
+needs a .NET 8 runtime, but no Git checkout, Runner source, SDK or local build:
+
+```powershell
+pwsh -File '<runner-host-package>\Install.ps1' `
+  -Command Install -EngineeringRoot '<absolute-ai-root>'
+pwsh -File '<runner-host-package>\Install.ps1' `
+  -Command Status -EngineeringRoot '<absolute-ai-root>'
+pwsh -File '<runner-host-package>\Install.ps1' `
+  -Command Rollback -EngineeringRoot '<absolute-ai-root>'
+pwsh -File '<runner-host-package>\Install.ps1' `
+  -Command Uninstall -EngineeringRoot '<absolute-ai-root>'
+```
+
+Use the same `Install` command for first installation and upgrades. A fresh
+install intentionally leaves the Host stopped and requires a separate explicit
+canonical-wrapper `Start`; an upgrade preserves the prior running/stopped state.
+Source developers may instead build the checked-in
+Host and exercise that same wrapper directly:
 
 ```powershell
 dotnet build .\tools\runner\CtrlX.OpCon.Runner.Host\CtrlX.OpCon.Runner.Host.csproj -c Release
@@ -136,8 +157,11 @@ release `faa27c1d79415996ddcd524833160c57ea23ac63888f17b853487a81b46ab0f1`,
 previous release
 `ac89b28f9a93a61c10b5bd7731c3b5b83288169a105c62eb4218a30c119f4b51`, and
 `WAITING_FOR_ACTION`. This does not claim a new real-PLE or physical-PLC
-acceptance. P1.4 remains incomplete for team distribution, signing/ACLs,
-controlled installation and an AtLogOn five-file prelaunch bootstrap.
+acceptance. P1.4a's offline package is complete. It uses normal current-user
+permissions and adds no custom ACL; code signing is deferred until commercial
+distribution or company IT explicitly requires it. The independent AtLogOn
+five-file prelaunch bootstrap, compatibility matrix and new-workstation
+acceptance remain incomplete, so P1.4 as a whole stays open.
 
 The upstream release gate includes this production-ingestor regression (the
 methodology SelfTest project is not copied into an initialized sidecar):

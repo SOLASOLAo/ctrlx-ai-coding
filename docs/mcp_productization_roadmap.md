@@ -9,7 +9,7 @@
 3. HMI 产品化；
 4. 商业交付。
 
-本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面和 P1.2 工程 action 执行器已经完成；Station010 的正式 warning/semantic baseline、Build 前本机内容寻址 checkpoint 与全新 immutable action 均已复验，结果为 0 errors / 4 warnings、456 mapping，Symbol 和工程/结构哈希稳定。P1.3a Host 生命周期、P1.3b 自动 action consumer，以及 P1.3c 自动 result/evidence 摄取、production ingestor、durable deployment/recovery 和 immutable release 生命周期均已实现并完成参考工作站验收。P1.4 的团队发行安全与 AtLogOn prelaunch bootstrap 尚未完成。P1.3c 新增验收不表示真机或新的真实 PLE 验收。
+本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面和 P1.2 工程 action 执行器已经完成；Station010 的正式 warning/semantic baseline、Build 前本机内容寻址 checkpoint 与全新 immutable action 均已复验，结果为 0 errors / 4 warnings、456 mapping，Symbol 和工程/结构哈希稳定。P1.3a Host 生命周期、P1.3b 自动 action consumer，以及 P1.3c 自动 result/evidence 摄取、production ingestor、durable deployment/recovery 和 immutable release 生命周期均已实现并完成参考工作站验收。P1.4a 的精简团队离线包已完成；独立 AtLogOn prelaunch bootstrap、兼容矩阵与新工作站验收仍未完成，因此 P1.4 整体保持开放。P1.3c/P1.4a 新增验收不表示真机或新的真实 PLE 验收。
 
 `codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2b 由交互用户会话中的唯一 Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次 action 都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
 
@@ -29,8 +29,9 @@
   identity，调用者不能传入 Pipe/PID。Pipe 使用 `CurrentUserOnly`，Broker 同时反查
   client PID/session。
 - 这些校验防止误连和跨会话混用，但不防御同一 Windows 用户下的恶意进程；同一
-  Windows 用户是本阶段明确的本地信任边界。团队发行、签名/ACL、受控安装与
-  release-bound Broker identity 统一进入 P1.4。
+  Windows 用户是本阶段明确的本地信任边界。P1.4a 用 manifest-bound 离线包解决 Host
+  内容交付，但沿用当前用户默认权限、不增加自定义 ACL；数字签名延期到商业发行或公司 IT
+  明确要求。release-bound Broker identity 仍是后续产品加固项。
 - durable operation journal 持久化 actionId/action SHA/idempotency/state/history；
   exact replay 不重复执行。store 层区分 pre-dispatch cancel 与 engineering call 开始后
   继续完成，但当前公开 Pipe contract 仅开放 submit/query；进程中断则进入
@@ -98,14 +99,30 @@
 - Scheduled Task 使用 WinExe GUI-subsystem apphost，后台启动不弹控制台；
   `Status/Stop/Logs` 经 `dotnet + DLL` 保留命令行输出。本机无黑窗生命周期验收已通过。
 
-### P1.4 团队发行与 AtLogOn bootstrap（未完成）
+### P1.4a 精简团队离线包（2026-08-29，已完成）
 
-- 建立团队可重复的受控安装与发行流程，不再把参考工作站的 current-user 安装视为团队交付；
-- 为发行物和关键本地状态补齐签名、ACL 与升级来源门禁；
-- 在 AtLogOn 真正启动 Host 前增加五文件 runtime closure bootstrap，显式验证 exe、Host DLL、
-  Core DLL、`.deps.json` 与 `.runtimeconfig.json`。P1.3c wrapper 的显式 manifest/self-check 不能
-  冒充这一 prelaunch 门禁；
-- 完成团队工作站安装、升级、回滚和交接验收。以上全部完成前，P1.4 保持未完成。
+- `scripts/runner/New-CtrlXOpconRunnerHostPackage.ps1` 从可信 Release payload 生成新目录，固定包含
+  `Install.ps1`、canonical Host wrapper、deployment module、`package-manifest.json` 和仅含五文件
+  runtime 的 `payload/`；拒绝额外或缺失文件。
+- package manifest 记录每个内容文件的规范相对路径、长度与 SHA-256，并以整体 `contentId`
+  绑定清单。`Install.ps1` 在任何命令前先验证清单、路径、长度、hash 和 contentId。
+- 接收工位通过 PowerShell 7 对现有 AI 工程根目录安装；framework-dependent Host 仍需 .NET 8
+  runtime，但不依赖 Git、源码 checkout、SDK 或本机 build，更广的运行前提仍由待完成兼容矩阵约束。
+  同一个 `Install` 命令承担首次安装与升级；另提供精确 `Rollback`、失败关闭的安全 `Uninstall`
+  和只读 `Status`。`Install` 不暴露 `Start`；fresh Install 完成后默认保持 Host 停止，首次启动
+  仍须显式调用 canonical wrapper，升级则保留升级前的 running/stopped 状态。
+- 包和已安装 release 继续使用当前 Windows 用户的默认权限，不设置自定义 ACL。数字签名不是
+  本次轻量离线交付的完成门槛，延期到商业发行或公司 IT 明确要求。
+
+### P1.4 后续：AtLogOn bootstrap 与团队验收（未完成）
+
+- 在 AtLogOn 真正启动 Host 前增加独立五文件 runtime closure bootstrap，显式验证 exe、Host DLL、
+  Core DLL、`.deps.json` 与 `.runtimeconfig.json`。包安装前校验和 P1.3c wrapper 的显式
+  manifest/self-check 都不能冒充这一 prelaunch 门禁；
+- 固化 PLE/PowerShell/.NET/Windows 兼容矩阵，并在一台全新团队工作站完成包传递、安装、升级、
+  精确回滚、安全卸载、显式启动及交接验收；
+- 若商业发行或公司 IT 后续要求签名/ACL，再按其证书、发布链和权限模型另立验收，不在 P1.4a
+  假设具体企业策略。以上剩余项完成前，P1.4 保持未完成。
 
 显式启动与只读状态/客户端命令：
 
@@ -124,11 +141,14 @@ dotnet .\src\runner\CtrlX.OpCon.Runner.Cli\bin\Release\net8.0\vcrunner.dll `
   execute-action --engineering-root '<ai-root>' --action-path '<action.json>' `
   --expected-sha256 '<64-hex-sha256>' --broker-action-timeout-ms 1800000 --json
 
-.\templates\ctrlx-opcon-project\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 `
+.\scripts\runner\New-CtrlXOpconRunnerHostPackage.ps1 `
+  -OutputPath 'C:\Transfer\CtrlXRunnerHost'
+
+pwsh -File 'C:\Transfer\CtrlXRunnerHost\Install.ps1' `
   -Command Install -EngineeringRoot '<ai-root>'
 
-.\templates\ctrlx-opcon-project\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 `
-  -Command Rollback -EngineeringRoot '<ai-root>'
+pwsh -File 'C:\Transfer\CtrlXRunnerHost\Install.ps1' `
+  -Command Status -EngineeringRoot '<ai-root>'
 ```
 
 这些 `start` 命令只用于受控交互式 acceptance；Broker 是唯一可显式持有 MCP/PLE 的

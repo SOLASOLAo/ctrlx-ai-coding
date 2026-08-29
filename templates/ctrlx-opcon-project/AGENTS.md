@@ -58,8 +58,13 @@ busy 有界退避，任一其他 fresh ledger 异常阻断。Host 绝不启动 B
 也不执行在线 PLC 操作。Host 以五文件内容寻址 immutable release 安装；task action 必须精确
 指向 active release exe，description 记录 `releaseId + manifest SHA-256`。显式 lifecycle 校验
 五文件 manifest/self-check，但 AtLogOn 自身不会预检 `.deps.json`/`.runtimeconfig.json`。
-通用 P1.3c 技术实现和参考工作站验收已完成；团队发行、签名/ACL、受控安装及 AtLogOn 启动前
-五文件 bootstrap 属于尚未完成的 P1.4。
+通用 P1.3c 技术实现和参考工作站验收已完成。P1.4a 精简团队离线包固定包含 `Install.ps1`、
+canonical wrapper/module、Host 五文件与 package manifest；接收工位用 PowerShell 7 安装，Host
+仍需 .NET 8 runtime，但无需 Git、源码、SDK 或本机 build。安装器先校验
+path/length/SHA-256/contentId；同一 `Install` 用于首装/升级，fresh Install 默认不启动 Host，
+升级保留原 running/stopped 状态；另提供精确回滚、安全卸载和状态查询。包沿用当前用户默认权限、不设置自定义 ACL，
+数字签名延期到商业发行或公司 IT 明确要求。独立 AtLogOn 五文件 prelaunch bootstrap、兼容矩阵
+与新工作站验收仍属未完成的 P1.4。
 在受控 adapter、语义证据 producer 及真实 PLE 离线 acceptance 通过前，生产 action 必须失败关闭。
 
 ## 6. PLC ST 风格
@@ -85,4 +90,4 @@ THEN
 - [ ] 用显式 `clean_compile_project` 建立首次离线编译与完整 warning 签名基线；
 - [ ] 配置并验证 CpStudio Post-export Stage 1 请求与 Stage 2 PlanOnly ledger。
 - [ ] 验证本工位受控 adapter、语义证据 producer 和真实 PLE 离线 acceptance；完成前不得将生产 action 标记成功。
-- [ ] 验证本工位 P1.3b/P1.3c Host 的 activation 后 action 消费、历史隔离、旧 claim 恢复、自动 evidence 摄取与合法无 evidence 人工复核；记录 immutable release 的 `Install`/`Rollback`、durable reconcile、损坏拒绝和安全卸载。通用 P1.3c 已完成，P1.4 团队发行/签名/ACL/受控安装/AtLogOn 五文件 bootstrap 仍待完成。
+- [ ] 用 P1.4a 离线包验证本工位 P1.3b/P1.3c Host 的 activation 后 action 消费、历史隔离、旧 claim 恢复、自动 evidence 摄取与合法无 evidence 人工复核；记录 package `contentId`、immutable release 的 `Install`/`Rollback`、durable reconcile、损坏拒绝、安全卸载和 `Status`。通用 P1.3c/P1.4a 已完成；独立 AtLogOn 五文件 bootstrap、兼容矩阵与新工作站验收仍待完成。

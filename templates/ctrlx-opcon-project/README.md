@@ -35,10 +35,12 @@
    ```powershell
    .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Status
    .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Doctor
-   .\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Status
-   .\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Install -WhatIf
-   .\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Install
-   .\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 -Command Rollback -WhatIf
+   pwsh -File '<runner-host-package>\Install.ps1' `
+     -Command Install -EngineeringRoot '<absolute-ai-root>' -WhatIf
+   pwsh -File '<runner-host-package>\Install.ps1' `
+     -Command Install -EngineeringRoot '<absolute-ai-root>'
+   pwsh -File '<runner-host-package>\Install.ps1' `
+     -Command Status -EngineeringRoot '<absolute-ai-root>'
    ```
 
 CpStudio Export #1 的离线报告可交给
@@ -74,9 +76,17 @@ release exe，description 记录 `releaseId + manifest SHA-256`。构建后可�
 通用 P1.3c 的 production 默认 ingestor 6 项 E2E（含真实 ledger lock）、durable
 journal/reconcile、真实断点/强杀、升级回滚、损坏拒绝及 missing-deployment 安全卸载均已在
 参考工作站通过；每个新工位仍需单独验证。显式 lifecycle 校验五文件 manifest/self-check；
-AtLogOn 自身直接启动 action，不预检 deps/runtimeconfig。团队发行、签名/ACL、受控安装和
-AtLogOn 五文件 prelaunch bootstrap 属于未完成的 P1.4。Scheduled Task 使用无控制台 apphost，
+AtLogOn 自身直接启动 action，不预检 deps/runtimeconfig。Scheduled Task 使用无控制台 apphost，
 `Status/Stop/Logs` 经 `dotnet + DLL`。
+
+团队工位使用 P1.4a 精简离线包；Host 仍需 .NET 8 runtime，但不必在本机保留 Git、Runner 源码、
+SDK 或执行 build。包固定含
+`Install.ps1`、canonical wrapper/module、`package-manifest.json` 和 Host 五文件；安装器在任何
+命令前验证 exact inventory、path/length/SHA-256 与整体 `contentId`。同一 `Install` 用于首装和
+升级，另提供精确 `Rollback`、安全 `Uninstall` 与 `Status`；fresh Install 默认不启动 Host，首次
+启动仍须显式调用 canonical wrapper，升级保留原 running/stopped 状态。包沿用当前用户默认权限且不设置自定义 ACL，数字签名延期到
+商业发行或公司 IT 明确要求。独立 AtLogOn 五文件 prelaunch bootstrap、兼容矩阵和全新团队
+工作站验收仍未完成，因此 P1.4 不得标记完成。
 
 `RUNNER_ACCEPTANCE_CONTRACT: clean-compile + complete-warning-set + explicit-user-confirmation; missing-baseline => bootstrap-blocked`
 

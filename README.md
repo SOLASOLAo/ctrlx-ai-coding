@@ -33,7 +33,7 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 **核心结论(已实测)**:`.project` 是加密容器，只能经对应 IDE、MCP 或正式 REST 接口修改；
 CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型文件，也不覆盖未声明的生成对象。
 
-## 当前状态(2026-08-28)
+## 当前状态(2026-08-29)
 
 | 项 | 状态 |
 |---|---|
@@ -43,7 +43,7 @@ CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型�
 | 分工 | 用户做骨架(CpStudio),AI 做 PLC 代码细节 |
 | 项目模板 | ✅ 新项目初始化器 + Stage 1 离线审计队列 + Stage 2 PlanOnly operation ledger |
 | Codex Skill | ✅ `ctrlx-opcon-engineering`，源码可版本化、安装可校验 |
-| Controlled Runner | ✅ P1.1/P1.2 与 P1.3a/P1.3b/P1.3c 技术实现及参考工作站验收完成；🚧 团队发行安全与 AtLogOn bootstrap 进入 P1.4 |
+| Controlled Runner | ✅ P1.1/P1.2、P1.3a/b/c 及 P1.4a 精简团队离线包已完成；🚧 独立 AtLogOn bootstrap、兼容矩阵与新工作站验收仍属 P1.4 |
 | 产品化计划 | `docs/mcp_productization_roadmap.md` |
 
 Stage 2 是哈希绑定、可恢复的 PlanOnly 协调器；P1.2 interactive Broker 使用
@@ -75,14 +75,27 @@ AtLogOn 任务自身只是直接启动该 action，不会先独立校验 `.deps.
 `faa27c1d79415996ddcd524833160c57ea23ac63888f17b853487a81b46ab0f1`，previous release 为
 `ac89b28f9a93a61c10b5bd7731c3b5b83288169a105c62eb4218a30c119f4b51`，Host 为
 `WAITING_FOR_ACTION`。P1.3c 技术实现和参考工作站验收至此完成；该结果不新增真机或真实 PLE
-验收声明。团队发行、签名/ACL、受控安装及 AtLogOn 启动前的五文件 bootstrap 属于尚未完成的
-P1.4。
+验收声明。
+
+P1.4a 已提供精简团队离线包：发行机用 `New-CtrlXOpconRunnerHostPackage.ps1` 固定封装
+`Install.ps1`、canonical wrapper/module、Host 五文件和 `package-manifest.json`；manifest 记录每个
+内容文件的 path/length/SHA-256 与整体 `contentId`，安装器在任何命令前验证。接收工位通过
+PowerShell 7 对指定 AI 工程根目录安装；Host 仍需 .NET 8 runtime，但无需 Git、源码、SDK 或
+本机 build。同一 `Install` 同时承担首装与升级，
+另提供精确 `Rollback`、安全 `Uninstall` 和只读 `Status`。fresh `Install` 只注册 release 并默认
+保持 Host 停止，首次启动必须另行显式执行；升级 `Install` 保留升级前的 running/stopped 状态。
+当前沿用 Windows 当前用户权限，不增加自定义 ACL；
+数字签名延期到商业发行或公司 IT 明确要求。独立的 AtLogOn 五文件 prelaunch bootstrap 尚未实现，
+包含 Host/.NET 运行前提的兼容矩阵与新团队工作站验收也未完成，因此 P1.4 不能标记完成。
 
 ```powershell
-.\templates\ctrlx-opcon-project\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 `
-  -Command Install -EngineeringRoot '<ai-root>'
-.\templates\ctrlx-opcon-project\scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1 `
-  -Command Rollback -EngineeringRoot '<ai-root>'
+.\scripts\runner\New-CtrlXOpconRunnerHostPackage.ps1 `
+  -OutputPath 'C:\Transfer\CtrlXRunnerHost'
+
+pwsh -File 'C:\Transfer\CtrlXRunnerHost\Install.ps1' `
+  -EngineeringRoot '<ai-root>'
+pwsh -File 'C:\Transfer\CtrlXRunnerHost\Install.ps1' `
+  -Command Status -EngineeringRoot '<ai-root>'
 
 dotnet run --project `
   .\tests\runner\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest.csproj `
@@ -172,7 +185,8 @@ Station、`Std`、`.project` 或闭源资料，目标目录已存在时会拒绝
 - [x] 产品化 MCP 技术通道:Controlled Runner P1.1、P1.2a client、P1.2b interactive Broker、受控 adapter、fresh Build、typed warning 与真实 PLE semantic snapshot
 - [x] 产品化 Host P1.3b：activation 后 immutable `currentAction` 自动发现/消费、历史隔离、旧 claim 恢复和无 Agent 等待
 - [x] 产品化 Host P1.3c：自动 result/evidence 摄取、production ingestor 6 项 E2E、durable deployment journal/reconcile，以及 immutable release 的真实强杀/升级回滚/损坏拒绝/安全卸载验收
-- [ ] 产品化 Host P1.4：团队发行、签名/ACL、受控安装和 AtLogOn 启动前五文件 bootstrap；随后再推进 project_health/change set 与正式 SFC/Symbol/I/O 工具
+- [x] 产品化 Host P1.4a：带内容 manifest 的精简团队离线包；接收工位无需 Git/源码/build，PowerShell 7 支持首装/升级、回滚、卸载和状态查询；fresh Install 默认停止，升级保留原运行状态
+- [ ] 产品化 Host P1.4 后续：独立 AtLogOn 启动前五文件 bootstrap、兼容矩阵与新工作站验收；默认不自定义 ACL，数字签名按商业/公司 IT 要求延期
 
 ## 版权说明
 

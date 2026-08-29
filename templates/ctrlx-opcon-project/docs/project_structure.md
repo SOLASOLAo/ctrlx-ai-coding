@@ -40,7 +40,13 @@ Scheduled Task action 精确指向 active release exe，description 记录 `rele
 `Install` 负责首装/升级，`Rollback` 负责精确回退。P1.3c 的 production ingestor 6 项 E2E、
 durable journal/reconcile、真实强杀恢复、升级回滚、损坏拒绝和 missing-deployment 安全卸载已在
 参考工作站通过。显式 lifecycle 校验五文件/self-check；AtLogOn 自身不预检 deps/runtimeconfig。
-团队发行、签名/ACL、受控安装与 AtLogOn 五文件 prelaunch bootstrap 属于未完成的 P1.4。
+P1.4a 团队离线包固定包含 `Install.ps1`、canonical wrapper/module、package manifest 与 Host
+五文件；接收工位用 PowerShell 7 安装，Host 仍需 .NET 8 runtime，但不需要 Git、源码、SDK
+或 build。安装器在任何命令前验证
+path/length/SHA-256/contentId；同一 `Install` 用于首装/升级，fresh Install 默认不启动 Host，
+升级保留原 running/stopped 状态；另提供精确 `Rollback`、安全 `Uninstall` 与 `Status`。包沿用当前用户默认权限，不设置自定义 ACL；数字签名
+延期到商业发行或公司 IT 明确要求。独立 AtLogOn 五文件 prelaunch bootstrap、兼容矩阵和新工作站
+验收仍未完成，所以 P1.4 保持开放。
 
 ## 通用与项目专用
 

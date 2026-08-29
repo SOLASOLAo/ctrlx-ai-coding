@@ -63,7 +63,7 @@ AI 可以创建标准化的 AI 旁车目录，但不伪造 CpStudio 供应商模
 - 提交信息风格:`docs:` / `patches:` / `scripts:` / `config:` / `hmi:` 前缀 + 简述;中文正文可
 - 日期一律 ISO 格式(YYYY-MM-DD);新增决策追加到 SESSION_LOG 决策清单与基线红线章节
 
-## 7. 当前状态快照(2026-08-28)
+## 7. 当前状态快照(2026-08-29)
 
 - [x] 阶段 0:环境基线 + persistent 上线验证 + ctrlX 兼容补丁产品化（含编译超时修复）
 - [x] 通用 AI 旁车初始化器 + Post-export 离线审计队列 + `ctrlx-opcon-engineering` Skill
@@ -74,8 +74,9 @@ AI 可以创建标准化的 AI 旁车目录，但不伪造 CpStudio 供应商模
 - [x] Controlled Runner P1.2 真实 PLE 技术通道：受控 ownership/fresh/Clean Build、typed-warning 与 semantic-snapshot adapter 已应用；Station010 新 action 连续取得完整 0 errors / 4 条 `OPC.UA.DA` warnings，工程/结构 SHA 前后不变
 - [x] Controlled Runner P1.2 失败关闭加固：用户确认记录、同字节有界 hash/parse、warning 截断阻断、畸形请求/证据脱敏、三组 Mapping/Symbol 交叉权威读取、最终 Mapping/dirty guard、REST timeout/stream cap 与 patch rollback 回归完成
 - [x] Controlled Runner P1.2 正式基线验收：Station010 的 warning/semantic baselines 已由一次明确用户确认建立，不采集姓名/工号；全新 immutable action 已完成 0 errors / 4 warnings、456 mapping、Symbol、checkpoint 与工程/结构哈希复验
-- [x] Controlled Runner P1.3a：current-user interactive Host、单实例、状态/心跳、受控停止、日志保留与可选 AtLogOn Scheduled Task 已实现；Host 不启动 Broker/MCP/PLE/Node 或在线操作；P1.3b 下仅在存在待处理 action 且无同会话 Agent 时保持 `WAITING_FOR_AGENT`
-- [ ] Controlled Runner P1.3 后续：自动 action 消费、完整崩溃恢复与产品级安装仍未完成；不得把 P1.3a 视为整个 P1.3 已完成
+- [x] Controlled Runner P1.3a/P1.3b/P1.3c：current-user Host 生命周期、自动 action 消费、result/evidence 摄取、durable recovery 与五文件 immutable release 已完成技术实现及参考工作站验收；Host 不启动 Broker/MCP/PLE/Node 或在线操作
+- [x] Controlled Runner P1.4a：精简团队离线包可在接收工位用 PowerShell 7 完成完整性校验、安装/升级、精确回滚、安全卸载与状态查询；Host 仍需 .NET 8 runtime，但不依赖 Git、源码、SDK 或本机 build；fresh `Install` 默认不启动 Host，升级保留原 running/stopped 状态
+- [ ] Controlled Runner P1.4 后续：独立 AtLogOn 五文件 prelaunch bootstrap、兼容矩阵与新团队工作站验收尚未完成；默认沿用当前用户权限、不自定义 ACL，数字签名延期到商业发行或公司 IT 明确要求
 - [ ] 阶段 A(进行中):用户 CpStudio 骨架 → AI 填充逻辑(阶段 3)→ 仿真 → 真机
 - [ ] 阶段 B:路线② HMI 原型(OPC UA demo → hmi-framework,主画面 Avalonia 原生壳,Web 版远程备选)
 - [ ] 阶段 C:路线③ 标准 CODESYS + MCP 实测(先验证后买授权)

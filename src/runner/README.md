@@ -2,7 +2,7 @@
 
 This directory contains the .NET 8 control plane, action client, explicit
 interactive Broker and the completed P1.3c technical implementation of the
-current-user background Host.
+current-user background Host, plus the P1.4a offline team-package contract.
 
 ## Implemented P1.2b boundary
 
@@ -17,8 +17,10 @@ current-user background Host.
   path/hash, Windows session and exact engineering/station/profile/project
   identity before connecting. Callers cannot override the Pipe name or PID.
 - This is validation inside the current Windows user boundary, not protection
-  from malicious code already running as that user. P1.4 still needs controlled
-  team installation, signing/ACLs and signed/release-bound Broker identity.
+  from malicious code already running as that user. P1.4a adds a manifest-bound
+  offline Host package but intentionally keeps normal current-user permissions;
+  custom ACLs are not part of this release, and code signing is deferred until
+  a commercial release or company IT policy requires it.
 - The Broker Pipe is current-user only. The Broker accepts only the typed
   `inspect_and_build` and `verify_after_export_2` actions. There is no generic
   MCP tool call and `apply_change_set_and_build` remains blocked.
@@ -109,9 +111,53 @@ not claim simulation, download or physical-PLC acceptance.
   previous release
   `ac89b28f9a93a61c10b5bd7731c3b5b83288169a105c62eb4218a30c119f4b51`,
   and state `WAITING_FOR_ACTION`.
-- P1.4 remains open for team distribution, signing/ACLs, controlled
-  installation and a five-file prelaunch bootstrap before AtLogOn starts the
-  Host.
+- P1.4a provides the offline team package described below. Full P1.4 remains
+  open because the independent five-file prelaunch bootstrap before AtLogOn,
+  the compatibility matrix and new-workstation acceptance are not complete.
+
+## P1.4a offline team package
+
+Create the package on the release workstation from the trusted five-file
+Release payload:
+
+```powershell
+.\scripts\runner\New-CtrlXOpconRunnerHostPackage.ps1 `
+  -OutputPath 'C:\Transfer\CtrlXRunnerHost'
+```
+
+The package has an exact inventory: `Install.ps1`, the canonical
+`Invoke-CtrlXOpconRunnerHost.ps1`, `RunnerHostDeployment.psm1`,
+`package-manifest.json`, and a `payload/` directory containing only the five
+Host runtime files. The manifest records each content file's normalized path,
+length and SHA-256 plus a package `contentId`. `Install.ps1` verifies the exact
+inventory and manifest before every command.
+
+Installation on the receiving workstation is driven by PowerShell 7 against
+the AI engineering root. The framework-dependent Host still needs a .NET 8
+runtime, but no Git checkout, source tree, SDK or local build. The wider runtime
+matrix remains pending. Use the same `Install` command for first installation
+and upgrades:
+
+```powershell
+pwsh -File 'C:\Transfer\CtrlXRunnerHost\Install.ps1' `
+  -Command Install -EngineeringRoot 'C:\Engineering\Cell\McpCoding'
+pwsh -File 'C:\Transfer\CtrlXRunnerHost\Install.ps1' `
+  -Command Status -EngineeringRoot 'C:\Engineering\Cell\McpCoding'
+pwsh -File 'C:\Transfer\CtrlXRunnerHost\Install.ps1' `
+  -Command Rollback -EngineeringRoot 'C:\Engineering\Cell\McpCoding'
+pwsh -File 'C:\Transfer\CtrlXRunnerHost\Install.ps1' `
+  -Command Uninstall -EngineeringRoot 'C:\Engineering\Cell\McpCoding'
+```
+
+The first/fresh `Install` publishes/registers the verified immutable release
+and intentionally leaves the Host stopped. Starting it remains a separate
+explicit canonical wrapper action. An upgrade through the same `Install`
+preserves the prior running/stopped state. Rollback targets the exact recorded previous release; uninstall
+retains the existing fail-closed task/release identity checks. The package uses
+the current user's normal filesystem and Scheduled Task permissions and does
+not add custom ACLs. Code signing is deferred until commercial distribution or
+company IT explicitly requires it. Package verification is not the still
+missing independent AtLogOn prelaunch bootstrap, so P1.4 is not complete.
 
 The template wrapper exposes the release lifecycle explicitly:
 
@@ -131,6 +177,7 @@ dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Broker.EngineeringSelfTes
 dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Broker.SelfTest\CtrlX.OpCon.Runner.Broker.SelfTest.csproj -c Release
 dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Host.SelfTest\CtrlX.OpCon.Runner.Host.SelfTest.csproj -c Release
 dotnet run --project .\tests\runner\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest.csproj -c Release
+pwsh -File .\tests\runner\Test-CtrlXOpconRunnerTeamPackage.ps1
 ```
 
 The SelfTests use local fixtures, fake engineering sessions and local named
@@ -207,6 +254,8 @@ automatic result/evidence ingestion, production-ingestor E2E, durable
 deployment recovery and the immutable release lifecycle without changing that
 engineering boundary. P1.3c technical implementation and reference-workstation
 acceptance are complete, but no new simulation, download, runtime control,
-variable write, FORCE, physical-PLC or real-PLE acceptance is claimed. P1.4
-remains open for team release, signing/ACLs, controlled installation and the
-AtLogOn five-file prelaunch bootstrap.
+variable write, FORCE, physical-PLC or real-PLE acceptance is claimed. P1.4a's
+manifest-bound offline package is complete; full P1.4 remains open for the
+independent AtLogOn five-file prelaunch bootstrap, compatibility matrix and
+new-workstation acceptance. Current-user default permissions remain the chosen
+boundary, with signing deferred to a commercial/company-IT requirement.

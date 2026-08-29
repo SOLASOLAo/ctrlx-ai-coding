@@ -1,7 +1,7 @@
 ﻿# ctrlX AI 项目基线记录(MD 版)
 
 > Persistent MCP + Control plus Studio 混合工作流
-> 记录日期:2026-08-11 · 更新:2026-08-28（Controlled Runner 真实 PLE 技术通道与失败关闭加固）· 环境:已验证工程工作站
+> 记录日期:2026-08-11 · 更新:2026-08-29（Controlled Runner P1.4a 精简团队离线包）· 环境:已验证工程工作站
 > 配套 HTML:`ctrlX_AI_project_baseline.html`(同目录)
 
 ---
@@ -348,9 +348,11 @@ ctrlX-PLC-Engineering.exe --profile="ctrlX PLC 2.6.8" --noUI --runscript="脚本
 - 2026-08-22 已增加 Stage 2 PlanOnly operation ledger：成功的 Stage 1 报告生成不可变 action，并只接受与 operation/action 哈希绑定的 runner evidence；它本身不启动 PLE、MCP 或 REST
 - Stage 2 的纯离线 runner evidence 封装器不执行 PLE/MCP/REST；它复核 action/Stage 1/ownership/关键 Station 指纹、Build 新鲜度、当前 PLC SHA 和 semantic proofs，并以固定算法生成 warning 签名多重集。live engineering action 由显式启动的 interactive Broker 执行，该 Broker 是唯一 persistent MCP/PLE owner。
 - P1.1 已提供 OS 排他运行租约；P1.2 client/action 与 Broker session/action serialization 分别提供跨进程和执行期门禁。条件 Export #2 仍只在记录到 Symbol/后处理需求时进入人工同步点。
-- current-user Pipe/registration、PID/session/executable/project identity 校验用于防止误连和跨会话混用，但不防御同一 Windows 用户下的恶意进程；商业发行仍需受控安装和签名/release-bound Broker identity。evidence 是哈希绑定的审计证据，不是加密签名。
+- current-user Pipe/registration、PID/session/executable/project identity 校验用于防止误连和跨会话混用，但不防御同一 Windows 用户下的恶意进程。P1.4a 的离线包增加内容 manifest 与可重复安装边界，但仍沿用当前用户默认权限、不设置自定义 ACL；数字签名延期到商业发行或公司 IT 明确要求，release-bound Broker identity 仍是后续加固项。evidence 是哈希绑定的审计证据，不是加密签名。
 - 完整 warning population、去身份用户确认 baseline 与新 immutable action 已于 2026-08-28 完成复验；P1.3a/b Host 已落地。P1.3c 的自动 result/evidence 摄取、SHA 绑定/只读锁、合法无 evidence 终态人工复核、busy 有界退避和其他 ledger 异常阻断均已实现；production 默认 ingestor 的 6 项 fixture E2E（含真实 workflow ledger 独占锁及零 mutation 复核）已通过。五文件内容寻址 immutable release、durable deployment journal/reconcile、真实断点/强杀恢复、升级与精确 `Rollback`、损坏拒绝、普通失败恢复，以及 `deployment.json` 缺失时基于精确 task pin 的安全卸载也已完成参考工作站验收。P1.3c 技术实现和参考工作站验收至此完成；Host 不启动 Broker/MCP/PLE/Node 或在线操作，该验收不新增真实 PLE、仿真或真机结论。
-- Scheduled Task action 精确指向 active release 的 `vcrunner-host.exe`，description 记录 `releaseId + manifest SHA-256`。wrapper 的显式 lifecycle 校验 manifest/五文件 payload，并在启动、切换和安全卸载路径执行 apphost self-check；AtLogOn 任务自身直接执行 action，不会先独立校验 `.deps.json` 或 `.runtimeconfig.json`。参考工作站当前 active 为 `faa27c1d79415996ddcd524833160c57ea23ac63888f17b853487a81b46ab0f1`、previous 为 `ac89b28f9a93a61c10b5bd7731c3b5b83288169a105c62eb4218a30c119f4b51`，Host 为 `WAITING_FOR_ACTION`。团队发行、签名/ACL、受控安装和 AtLogOn 启动前五文件 bootstrap 属于未完成的 P1.4；其后再推进 `project_health`、`compile_project_v2`、受控 change set、FORCE 生命周期及正式 Symbol/I/O/SFC 接口。
+- Scheduled Task action 精确指向 active release 的 `vcrunner-host.exe`，description 记录 `releaseId + manifest SHA-256`。wrapper 的显式 lifecycle 校验 manifest/五文件 payload，并在启动、切换和安全卸载路径执行 apphost self-check；AtLogOn 任务自身直接执行 action，不会先独立校验 `.deps.json` 或 `.runtimeconfig.json`。参考工作站当前 active 为 `faa27c1d79415996ddcd524833160c57ea23ac63888f17b853487a81b46ab0f1`、previous 为 `ac89b28f9a93a61c10b5bd7731c3b5b83288169a105c62eb4218a30c119f4b51`，Host 为 `WAITING_FOR_ACTION`。
+- P1.4a 已提供 `New-CtrlXOpconRunnerHostPackage.ps1`：包固定包含 `Install.ps1`、canonical wrapper/module、`package-manifest.json` 与 Host 五文件 payload；manifest 绑定每个内容文件的 path/length/SHA-256 和整体 `contentId`，安装器在所有命令前验证。接收工位通过 PowerShell 7 对指定 AI 工程根目录安装；framework-dependent Host 仍需 .NET 8 runtime，但不需要 Git、源码、SDK 或本机 build。同一 `Install` 用于首装/升级，并提供精确 `Rollback`、安全 `Uninstall` 和 `Status`。fresh Install 默认不启动 Host，升级保留原 running/stopped 状态；更广的运行前提仍由待完成兼容矩阵约束。
+- 独立 AtLogOn 五文件 prelaunch bootstrap、兼容矩阵与全新团队工作站验收仍属未完成的 P1.4；包级校验和显式 lifecycle self-check 都不能替代 prelaunch bootstrap。P1.4 完成后再推进 `project_health`、`compile_project_v2`、受控 change set、FORCE 生命周期及正式 Symbol/I/O/SFC 接口。
 
 ## 10.2 Runner baseline 审阅边界（2026-08-28）
 

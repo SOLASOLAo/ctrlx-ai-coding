@@ -16,5 +16,10 @@ evidence 经 SHA/只读锁门禁后只交给 release-bound 的纯离线 Stage 2�
 首装/升级、`Rollback` 精确回退。P1.3c 的 production ingestor 6 项 E2E、durable
 journal/reconcile、真实强杀恢复、升级回滚、损坏拒绝与 missing-deployment 安全卸载已通过
 参考工作站验收；task action 指向 exact release exe，description 记录 manifest。显式 lifecycle
-校验五文件/self-check，AtLogOn 自身不预检 deps/runtimeconfig。P1.4 的团队发行、签名/ACL、
-受控安装与 AtLogOn 五文件 prelaunch bootstrap 尚未完成。
+校验五文件/self-check，AtLogOn 自身不预检 deps/runtimeconfig。P1.4a 精简团队离线包固定包含
+`Install.ps1`、canonical wrapper/module、package manifest 与 Host 五文件；接收工位用
+PowerShell 7 安装，Host 仍需 .NET 8 runtime，但无需 Git、源码、SDK 或 build。同一 `Install`
+用于首装/升级；fresh Install 默认不 Start，升级保留原 running/stopped 状态。另有精确
+`Rollback`、安全 `Uninstall` 和 `Status`。默认沿用当前用户权限、不设置自定义 ACL，数字签名
+延期到商业/公司 IT 明确要求。独立 AtLogOn 五文件 prelaunch bootstrap、兼容矩阵和新工作站验收
+仍未完成，P1.4 不得标记完成。

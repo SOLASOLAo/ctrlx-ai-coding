@@ -461,3 +461,24 @@
 - 编译结果只从 Build 与 Additional code checks 两个类别读取，每类只调用一次 `System.get_messages(category)`；IDE summary 是 error/warning 计数事实源。
 - 不能解析 Build summary 时必须返回错误，不能以空消息推断编译成功。
 - 该扩展纳入统一 `apply-crlf-patch.ps1`，npm 升级后与 CRLF、connector I/O Mapping 补丁一同检查和重装。
+
+## D37(2026-08-29)P1.4a 精简团队离线包
+
+> 本节是对 D36 之后“P1.4 全部尚未完成”规划口径的追加 superseding 记录；D36 所记录的
+> P1.3c 当时事实与安全边界不变，不回写或删除历史内容。
+
+- `scripts/runner/New-CtrlXOpconRunnerHostPackage.ps1` 已实现 P1.4a 离线包：根目录 exact inventory
+  为 `Install.ps1`、canonical `Invoke-CtrlXOpconRunnerHost.ps1`、`RunnerHostDeployment.psm1`、
+  `package-manifest.json` 与 `payload/`；payload 只含 Host 五文件。
+- package manifest 以规范相对 path、length、SHA-256 和整体 `contentId` 绑定 8 个内容文件；
+  `Install.ps1` 在 `Install`、`Rollback`、`Uninstall`、`Status` 等任何命令前验证 exact inventory
+  与 manifest。PowerShell 7 离线回归 exit 0，并覆盖篡改拒绝；未启动 PLE、MCP、PLC、Broker
+  或 Node，也未执行在线操作。
+- 接收工位通过 PowerShell 7 对指定 AI 工程根目录安装；Host 仍需 .NET 8 runtime，但无需 Git、
+  源码 checkout、SDK 或本机 build。
+  同一 canonical `Install` 路径承担首装和升级；精确回滚、安全卸载与状态查询复用既有 P1.3c
+  lifecycle 门禁。`Install` 不暴露 `Start`；fresh Install 默认保持 Host 停止，升级保留升级前的
+  running/stopped 状态。
+- P1.4a 沿用当前用户默认权限，不设置自定义 ACL；数字签名延期到商业发行或公司 IT 明确要求。
+  这不是 AtLogOn 前的独立 runtime closure 校验：五文件 prelaunch bootstrap 尚未实现，兼容矩阵
+  与全新团队工作站验收也未完成，所以 P1.4 整体继续保持未完成。
