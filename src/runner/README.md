@@ -111,9 +111,11 @@ not claim simulation, download or physical-PLC acceptance.
   previous release
   `ac89b28f9a93a61c10b5bd7731c3b5b83288169a105c62eb4218a30c119f4b51`,
   and state `WAITING_FOR_ACTION`.
-- P1.4a provides the offline team package described below. Full P1.4 remains
-  open because the independent five-file prelaunch bootstrap before AtLogOn,
-  the compatibility matrix and new-workstation acceptance are not complete.
+- P1.4a provides the offline team package described below. The independent
+  five-file prelaunch bootstrap before AtLogOn is deferred until commercial or
+  explicitly unattended deployment, and new-workstation acceptance runs when a
+  team workstation is available. These deployment items do not block current
+  development; the full P1.4 productization scope remains open.
 
 ## P1.4a offline team package
 
@@ -156,8 +158,9 @@ preserves the prior running/stopped state. Rollback targets the exact recorded p
 retains the existing fail-closed task/release identity checks. The package uses
 the current user's normal filesystem and Scheduled Task permissions and does
 not add custom ACLs. Code signing is deferred until commercial distribution or
-company IT explicitly requires it. Package verification is not the still
-missing independent AtLogOn prelaunch bootstrap, so P1.4 is not complete.
+company IT explicitly requires it. Package verification is not an independent
+AtLogOn prelaunch bootstrap; that bootstrap is intentionally deferred during
+development rather than treated as implemented.
 
 The template wrapper exposes the release lifecycle explicitly:
 
@@ -255,7 +258,9 @@ deployment recovery and the immutable release lifecycle without changing that
 engineering boundary. P1.3c technical implementation and reference-workstation
 acceptance are complete, but no new simulation, download, runtime control,
 variable write, FORCE, physical-PLC or real-PLE acceptance is claimed. P1.4a's
-manifest-bound offline package is complete; full P1.4 remains open for the
-independent AtLogOn five-file prelaunch bootstrap, compatibility matrix and
-new-workstation acceptance. Current-user default permissions remain the chosen
-boundary, with signing deferred to a commercial/company-IT requirement.
+manifest-bound offline package is complete; the independent AtLogOn five-file
+prelaunch bootstrap is deferred until commercial/unattended deployment, and the
+compatibility matrix/new-workstation acceptance run when a team workstation is
+available. These deployment items do not block current development. Current-user
+default permissions remain the chosen boundary, with signing deferred to a
+commercial/company-IT requirement.

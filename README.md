@@ -43,7 +43,7 @@ CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型�
 | 分工 | 用户做骨架(CpStudio),AI 做 PLC 代码细节 |
 | 项目模板 | ✅ 新项目初始化器 + Stage 1 离线审计队列 + Stage 2 PlanOnly operation ledger |
 | Codex Skill | ✅ `ctrlx-opcon-engineering`，源码可版本化、安装可校验 |
-| Controlled Runner | ✅ P1.1/P1.2、P1.3a/b/c 及 P1.4a 精简团队离线包已完成；🚧 独立 AtLogOn bootstrap、兼容矩阵与新工作站验收仍属 P1.4 |
+| Controlled Runner | ✅ P1.1/P1.2、P1.3a/b/c 及 P1.4a 精简团队离线包已完成；⏸ AtLogOn bootstrap 延期到商业化/无人值守部署阶段，兼容矩阵与新工作站验收有工位时再做 |
 | 产品化计划 | `docs/mcp_productization_roadmap.md` |
 
 Stage 2 是哈希绑定、可恢复的 PlanOnly 协调器；P1.2 interactive Broker 使用
@@ -86,7 +86,8 @@ PowerShell 7 对指定 AI 工程根目录安装；Host 仍需 .NET 8 runtime，�
 保持 Host 停止，首次启动必须另行显式执行；升级 `Install` 保留升级前的 running/stopped 状态。
 当前沿用 Windows 当前用户权限，不增加自定义 ACL；
 数字签名延期到商业发行或公司 IT 明确要求。独立的 AtLogOn 五文件 prelaunch bootstrap 尚未实现，
-包含 Host/.NET 运行前提的兼容矩阵与新团队工作站验收也未完成，因此 P1.4 不能标记完成。
+并按用户决定延期到商业化/无人值守部署阶段；开发期继续显式启动 Host。包含 Host/.NET 运行前提的
+兼容矩阵与新团队工作站验收在有工位时再做。这些部署项不阻塞当前功能开发，P1.4 产品化范围仍开放。
 
 ```powershell
 .\scripts\runner\New-CtrlXOpconRunnerHostPackage.ps1 `
@@ -186,7 +187,7 @@ Station、`Std`、`.project` 或闭源资料，目标目录已存在时会拒绝
 - [x] 产品化 Host P1.3b：activation 后 immutable `currentAction` 自动发现/消费、历史隔离、旧 claim 恢复和无 Agent 等待
 - [x] 产品化 Host P1.3c：自动 result/evidence 摄取、production ingestor 6 项 E2E、durable deployment journal/reconcile，以及 immutable release 的真实强杀/升级回滚/损坏拒绝/安全卸载验收
 - [x] 产品化 Host P1.4a：带内容 manifest 的精简团队离线包；接收工位无需 Git/源码/build，PowerShell 7 支持首装/升级、回滚、卸载和状态查询；fresh Install 默认停止，升级保留原运行状态
-- [ ] 产品化 Host P1.4 后续：独立 AtLogOn 启动前五文件 bootstrap、兼容矩阵与新工作站验收；默认不自定义 ACL，数字签名按商业/公司 IT 要求延期
+- [ ] 产品化 Host P1.4 后续：AtLogOn 启动前五文件 bootstrap 延期到商业化/无人值守部署阶段；兼容矩阵与新工作站验收在有工位时再做；两者不阻塞当前开发，默认不自定义 ACL，数字签名按商业/公司 IT 要求延期
 
 ## 版权说明
 

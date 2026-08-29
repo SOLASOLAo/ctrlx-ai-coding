@@ -85,8 +85,9 @@ SDK 或执行 build。包固定含
 命令前验证 exact inventory、path/length/SHA-256 与整体 `contentId`。同一 `Install` 用于首装和
 升级，另提供精确 `Rollback`、安全 `Uninstall` 与 `Status`；fresh Install 默认不启动 Host，首次
 启动仍须显式调用 canonical wrapper，升级保留原 running/stopped 状态。包沿用当前用户默认权限且不设置自定义 ACL，数字签名延期到
-商业发行或公司 IT 明确要求。独立 AtLogOn 五文件 prelaunch bootstrap、兼容矩阵和全新团队
-工作站验收仍未完成，因此 P1.4 不得标记完成。
+商业发行或公司 IT 明确要求。独立 AtLogOn 五文件 prelaunch bootstrap 延期到商业化/无人值守
+部署阶段；兼容矩阵和全新团队工作站验收在有工位时执行。这些部署项不阻塞当前开发，P1.4
+产品化范围仍保持开放。
 
 `RUNNER_ACCEPTANCE_CONTRACT: clean-compile + complete-warning-set + explicit-user-confirmation; missing-baseline => bootstrap-blocked`
 

@@ -436,7 +436,7 @@
 2. warning-limit、Clean Build、adapter/Broker schema 与真实 candidate 生成均已通过；当前 candidates 来自 request `cb1af562-25e6-4523-b2d8-037751d9433d`，禁止复用旧 action 或自动晋升；
 3. 正式 warning/semantic baselines、本机内容寻址 checkpoint 与全新 immutable action 均已验证；P1.2 已关闭，写工程 action 仍保持未开放；
 4. 继续用已配置的真实 CpStudio Post-export hook 处理后续变更；任何 baseline 或 scope 漂移都必须新建 action；
-5. P1.3c 已关闭；按 `docs/mcp_productization_roadmap.md` 推进 P1.4 团队发行、签名/ACL、受控安装和 AtLogOn 五文件 bootstrap，再继续通用健康检查、结构化编译和 change set；`apply_change_set_and_build` 在 payload/readback/恢复门禁完成前保持关闭；
+5. P1.3c 与 P1.4a 已关闭；AtLogOn 五文件 bootstrap 延期到商业化/无人值守部署阶段，兼容矩阵与新工作站验收有工位时再做；当前可推进项目目录/流程生成及后续通用健康检查、结构化编译，`apply_change_set_and_build` 在 payload/readback/恢复门禁完成前保持关闭；
 6. 仿真验证（set_simulation_mode）后，由用户单独批准真机下载调试；
 7. **路线④**:开发机已就绪,P0~P2 完成(继承 PreemptRt);执行转入 **FreePLCDemo**(v4 安装 → P4 集成);
    交接见 `route4-rtpreempt-openplc/HANDOVER.md` §7。
@@ -482,3 +482,13 @@
 - P1.4a 沿用当前用户默认权限，不设置自定义 ACL；数字签名延期到商业发行或公司 IT 明确要求。
   这不是 AtLogOn 前的独立 runtime closure 校验：五文件 prelaunch bootstrap 尚未实现，兼容矩阵
   与全新团队工作站验收也未完成，所以 P1.4 整体继续保持未完成。
+
+## D38(2026-08-29)开发阶段延期 AtLogOn Bootstrap
+
+> 本节追加用户最新优先级决定，不回写 D36/D37 的历史事实。
+
+- 当前仍处开发阶段，独立 AtLogOn 五文件 prelaunch Bootstrap 不实施、不注册，也不迁移现有任务；
+  开发期继续通过 canonical wrapper 显式启动 Host。
+- Bootstrap 只在进入商业化或明确需要无人值守登录自启时恢复；兼容矩阵和新团队工作站验收在有
+  工位时执行。两项不阻塞项目目录/流程生成和后续通用开发能力。
+- P1.4a 离线包、fresh Install 默认停止、当前用户默认权限和签名延期边界均保持不变。

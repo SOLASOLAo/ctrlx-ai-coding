@@ -9,7 +9,7 @@
 3. HMI 产品化；
 4. 商业交付。
 
-本文只展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务，不与其他阶段并行扩张。P1.1 Runner 控制面和 P1.2 工程 action 执行器已经完成；Station010 的正式 warning/semantic baseline、Build 前本机内容寻址 checkpoint 与全新 immutable action 均已复验，结果为 0 errors / 4 warnings、456 mapping，Symbol 和工程/结构哈希稳定。P1.3a Host 生命周期、P1.3b 自动 action consumer，以及 P1.3c 自动 result/evidence 摄取、production ingestor、durable deployment/recovery 和 immutable release 生命周期均已实现并完成参考工作站验收。P1.4a 的精简团队离线包已完成；独立 AtLogOn prelaunch bootstrap、兼容矩阵与新工作站验收仍未完成，因此 P1.4 整体保持开放。P1.3c/P1.4a 新增验收不表示真机或新的真实 PLE 验收。
+本文展开 **Phase 1 Runner** 所依赖的 MCP/core/ctrlX adapter 技术任务。P1.1 Runner 控制面和 P1.2 工程 action 执行器已经完成；Station010 的正式 warning/semantic baseline、Build 前本机内容寻址 checkpoint 与全新 immutable action 均已复验，结果为 0 errors / 4 warnings、456 mapping，Symbol 和工程/结构哈希稳定。P1.3a Host 生命周期、P1.3b 自动 action consumer，以及 P1.3c 自动 result/evidence 摄取、production ingestor、durable deployment/recovery 和 immutable release 生命周期均已实现并完成参考工作站验收。P1.4a 的精简团队离线包已完成；独立 AtLogOn prelaunch bootstrap 按用户决定延期到商业化/无人值守部署阶段，兼容矩阵与新工作站验收在有团队工位时再做。这些部署项不阻塞当前开发，P1.4 产品化范围仍保持开放。P1.3c/P1.4a 新增验收不表示真机或新的真实 PLE 验收。
 
 `codesys-persistent` 是 stdio MCP，独立 CLI 不能复用另一个进程已经持有的会话。因此 P1.2b 由交互用户会话中的唯一 Broker 持有 stdio 与 PLE，再通过本地 IPC 服务 Runner Core；不得用“每次 action 都启动一个 MCP/PLE”代替 Broker。Windows Service 也不得从 Session 0 直接启动可见 PLE。
 
@@ -114,15 +114,15 @@
 - 包和已安装 release 继续使用当前 Windows 用户的默认权限，不设置自定义 ACL。数字签名不是
   本次轻量离线交付的完成门槛，延期到商业发行或公司 IT 明确要求。
 
-### P1.4 后续：AtLogOn bootstrap 与团队验收（未完成）
+### P1.4 后续：部署增强（延期/按需验收）
 
-- 在 AtLogOn 真正启动 Host 前增加独立五文件 runtime closure bootstrap，显式验证 exe、Host DLL、
-  Core DLL、`.deps.json` 与 `.runtimeconfig.json`。包安装前校验和 P1.3c wrapper 的显式
-  manifest/self-check 都不能冒充这一 prelaunch 门禁；
-- 固化 PLE/PowerShell/.NET/Windows 兼容矩阵，并在一台全新团队工作站完成包传递、安装、升级、
+- 独立五文件 runtime closure bootstrap 延期到商业化或明确需要无人值守 AtLogOn 自启时实施；
+  开发期继续显式启动 Host。届时仍须在 Host/.NET 启动前验证 exe、Host DLL、Core DLL、
+  `.deps.json` 与 `.runtimeconfig.json`，不能用包安装前校验或 wrapper lifecycle self-check 冒充；
+- 有团队工位时固化 PLE/PowerShell/.NET/Windows 兼容矩阵，并完成包传递、安装、升级、
   精确回滚、安全卸载、显式启动及交接验收；
 - 若商业发行或公司 IT 后续要求签名/ACL，再按其证书、发布链和权限模型另立验收，不在 P1.4a
-  假设具体企业策略。以上剩余项完成前，P1.4 保持未完成。
+  假设具体企业策略。以上属于产品部署范围，P1.4 保持开放，但不阻塞当前功能开发。
 
 显式启动与只读状态/客户端命令：
 

@@ -25,7 +25,7 @@
 - [ ] 验证 P1.3c 自动 result/evidence 摄取：SHA 绑定与只读锁、Stage 2 ledger 自动推进、合法无 evidence 终态保持 `WAITING_FOR_COORDINATOR`、busy 有界退避，以及任一其他 fresh ledger 异常阻断；
 - [ ] 获取 P1.4a 精简团队离线包并记录 package `contentId`；准备 PowerShell 7 与 .NET 8 runtime，不使用 Git/源码/SDK/build，依次执行 `Install -WhatIf`、fresh `Install`、`Status`、显式 `Start`、升级 `Install` 和 `Rollback -WhatIf`/`Rollback`，验证 fresh Install 默认停止、升级保留原 running/stopped 状态，并记录 task 的 active/previous `releaseId`、runtime manifest SHA、最终状态及普通切换失败恢复；
 - [ ] 在本工位复验通用 P1.3c：production ingestor、durable journal/reconcile、强杀恢复、升级回滚、损坏拒绝及 missing-deployment 安全卸载；记录 active/previous release 与最终 Host 状态；
-- [ ] P1.4a 包安装边界已通用交付；本工位仍须验证安全 `Uninstall`。P1.4 整体完成前继续标记独立 AtLogOn 五文件 prelaunch bootstrap、兼容矩阵和全新工作站验收未完成；沿用当前用户默认权限、不自定义 ACL，数字签名仅在商业/公司 IT 明确要求时另行验收；
+- [ ] P1.4a 包安装边界已通用交付；本工位仍须验证安全 `Uninstall`。独立 AtLogOn 五文件 prelaunch bootstrap 延期到商业化/无人值守部署阶段，不阻塞开发；兼容矩阵和全新工作站验收在有团队工位时执行。沿用当前用户默认权限、不自定义 ACL，数字签名仅在商业/公司 IT 明确要求时另行验收；
 - [ ] 安装并 `-Check` 本工位受控 adapter，配置 semantic scope，用显式 Clean Build 取得完整且未截断的 warning 集合，由项目负责人一次确认 candidates（不采集姓名/工号），再用新的 immutable action 完成真实 PLE 离线 acceptance；缺 baseline 时必须以对应 bootstrap `BLOCKED` 失败关闭；
 - [ ] 记录导出批次、回读结果、编译证据和 baseline 审阅证据。
 
