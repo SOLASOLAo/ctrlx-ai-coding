@@ -23,7 +23,7 @@
 | 组件 | 项目基线 |
 |---|---|
 | PowerShell | 7.5+；`%ProgramFiles%\PowerShell\7\pwsh.exe`，必须支持 `ConvertFrom-Json -DateKind` |
-| .NET SDK | 8.x，用于构建和运行受控 Runner/Host |
+| .NET SDK / Desktop Runtime | 8.x，用于构建和运行受控 Runner/Host 及 WPF Engineering Console |
 | CpStudio | 由项目负责人确认精确版本 |
 | ctrlX PLC Engineering | `config/project.yaml` 中的 profile/version |
 | ctrlX IO Engineering | `config/project.yaml` 中的 version |

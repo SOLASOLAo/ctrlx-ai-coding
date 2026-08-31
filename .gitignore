@@ -26,3 +26,9 @@ src/runner/**/bin/
 src/runner/**/obj/
 tests/runner/**/bin/
 tests/runner/**/obj/
+
+# .NET Engineering Console build output
+src/workbench/**/bin/
+src/workbench/**/obj/
+tests/workbench/**/bin/
+tests/workbench/**/obj/

@@ -392,6 +392,17 @@ Clean Build 合同、正式 baseline、Build 前 checkpoint 与新的 immutable 
 
 验收标准：新工作站可由固定版本清单完成只读体检；Skill 能调用安装后的工具执行“初始化、CpStudio 导出审计、离线开发、故障诊断、离线验收”，且所有项目事实仍来自当前项目配置。
 
+#### 14. Engineering Console 薄壳
+
+提供独立 .NET 8 WPF 工程控制台，集中显示项目声明的工程阶段、Runner/Host、下一步、人工
+IDE 边界和不可变证据。GUI 只调用固定白名单，不复制 Runner 状态机、不提供任意
+shell、不嵌入 AI 服务，也不创建第二个 PLE/MCP/IOE owner。
+
+v0.1 已完成 Runner Status/Run、Host Status/Start/Stop、Project Pack Check、工程/
+计划/证据入口和三页界面。P2 IOE Apply 只有在第 11 项的
+`Plan -> checkpoint -> Apply -> reopen/readback` 后端通过回归后才可启用；所有 PLC
+连接、下载、runtime 启停、写变量和 FORCE 永久不属于日常工程控制台。
+
 ## 4. 不进入 MCP 的内容
 
 - 任一工站的 BMK、事件号、Unit 实例名、对象绝对路径和工艺顺序；

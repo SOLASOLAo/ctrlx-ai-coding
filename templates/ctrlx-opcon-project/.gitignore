@@ -55,3 +55,5 @@ __pycache__/
 # Local .NET Runner build output
 tools/runner/**/bin/
 tools/runner/**/obj/
+tools/workbench/**/bin/
+tools/workbench/**/obj/

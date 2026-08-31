@@ -33,7 +33,7 @@ ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon �
 **核心结论(已实测)**:`.project` 是加密容器，只能经对应 IDE、MCP 或正式 REST 接口修改；
 CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型文件，也不覆盖未声明的生成对象。
 
-## 当前状态(2026-08-29)
+## 当前状态(2026-09-01)
 
 | 项 | 状态 |
 |---|---|
@@ -45,6 +45,7 @@ CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型�
 | Project Pack | ✅ schema + PowerShell 7 Build/Check + draft initializer + Runner 漂移门禁 |
 | Codex Skill | ✅ `ctrlx-opcon-engineering`，源码可版本化、安装可校验 |
 | Controlled Runner | ✅ P1.1/P1.2、P1.3a/b/c 及 P1.4a 精简团队离线包已完成；⏸ AtLogOn bootstrap 延期到商业化/无人值守部署阶段，兼容矩阵与新工作站验收有工位时再做 |
+| Engineering Console | ✅ 独立 .NET 8 WPF 薄壳；固定 Runner/Host/Project Pack 白名单、工程阶段/下一步/人工边界/证据显示；P2 Apply 和全部在线 PLC 操作禁用 |
 | 产品化计划 | `docs/mcp_productization_roadmap.md` |
 
 Stage 2 是哈希绑定、可恢复的 PlanOnly 协调器；P1.2 interactive Broker 使用

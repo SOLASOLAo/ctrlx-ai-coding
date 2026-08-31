@@ -169,6 +169,8 @@ try {
             'scripts\runner\Invoke-CtrlXOpconRunnerHost.ps1',
             'scripts\runner\RunnerHostDeployment.psm1',
             'scripts\runner\README.md',
+            'scripts\workbench\Start-CtrlXOpconWorkbench.ps1',
+            'scripts\workbench\Start-CtrlXOpconWorkbench.cmd',
             'scripts\project\Build-CtrlXOpconProjectPack.ps1',
             'scripts\ioe\Convert-CpStudioEplanIoAscToCsv.ps1',
             'scripts\ioe\New-CpStudioEplanIoAsc.ps1',
@@ -186,6 +188,12 @@ try {
             'tools\runner\CtrlX.OpCon.Runner.Host\Program.cs',
             'tools\runner\CtrlX.OpCon.Runner.Host\HostRuntime.cs',
             'tools\runner\README.md',
+            'tools\workbench\CtrlX.OpCon.Workbench\CtrlX.OpCon.Workbench.csproj',
+            'tools\workbench\CtrlX.OpCon.Workbench\App.xaml',
+            'tools\workbench\CtrlX.OpCon.Workbench\App.xaml.cs',
+            'tools\workbench\CtrlX.OpCon.Workbench\MainWindow.xaml',
+            'tools\workbench\CtrlX.OpCon.Workbench\MainWindow.xaml.cs',
+            'tools\workbench\CtrlX.OpCon.Workbench\WorkbenchCore.cs',
             'scripts\git\Get-ReadOnlyGitAudit.ps1',
             'tests\cpstudio\Test-PostExportQueue.ps1',
             'tests\cpstudio\Test-PostExportEngineering.ps1',
@@ -260,6 +268,32 @@ try {
         $generatedFile = Join-Path $generatedRunnerRoot $relative
         Assert-True -Condition ([System.IO.File]::Exists($generatedFile)) -Message "Generated Runner source is missing: $relative"
         Assert-True -Condition ((Get-FileHash -LiteralPath $sourceFile.FullName -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $generatedFile -Algorithm SHA256).Hash) -Message "Generated Runner source drifted: $relative"
+    }
+
+    $productWorkbenchRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\src\workbench'))
+    $productWorkbenchFiles = @(Get-ChildItem -LiteralPath $productWorkbenchRoot -Recurse -File |
+        Where-Object {
+            $relative = $_.FullName.Substring($productWorkbenchRoot.Length).TrimStart('\', '/')
+            $segments = $relative -split '[\\/]'
+            ($segments -notcontains 'bin') -and
+            ($segments -notcontains 'obj') -and
+            ($_.Extension.ToLowerInvariant() -in @('.cs', '.csproj', '.xaml', '.md'))
+        })
+    $generatedWorkbenchRoot = Join-Path $outputPath 'tools\workbench'
+    $generatedWorkbenchFiles = @(Get-ChildItem -LiteralPath $generatedWorkbenchRoot -Recurse -File |
+        Where-Object {
+            $relative = $_.FullName.Substring($generatedWorkbenchRoot.Length).TrimStart('\', '/')
+            $segments = $relative -split '[\\/]'
+            ($segments -notcontains 'bin') -and
+            ($segments -notcontains 'obj') -and
+            ($_.Extension.ToLowerInvariant() -in @('.cs', '.csproj', '.xaml', '.md'))
+        })
+    Assert-True -Condition ($generatedWorkbenchFiles.Count -eq $productWorkbenchFiles.Count) -Message 'Initializer did not copy the complete Engineering Console source set.'
+    foreach ($sourceFile in $productWorkbenchFiles) {
+        $relative = $sourceFile.FullName.Substring($productWorkbenchRoot.Length).TrimStart('\', '/')
+        $generatedFile = Join-Path $generatedWorkbenchRoot $relative
+        Assert-True -Condition ([System.IO.File]::Exists($generatedFile)) -Message "Generated Engineering Console source is missing: $relative"
+        Assert-True -Condition ((Get-FileHash -LiteralPath $sourceFile.FullName -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $generatedFile -Algorithm SHA256).Hash) -Message "Generated Engineering Console source drifted: $relative"
     }
 
     $generatedControlDocs = @(
@@ -393,6 +427,10 @@ try {
     Assert-True -Condition (-not [bool]$generatedHostStatus.safety.startsPleOrMcp) -Message 'Generated Host status claims it can start PLE/MCP.'
     $engineeringProcessesAfter = @(Get-Process -ErrorAction SilentlyContinue | Where-Object ProcessName -Match '^(ctrlX-PLC-Engineering|node|vcrunner-broker)$' | Select-Object -ExpandProperty Id | Sort-Object)
     Assert-True -Condition (($engineeringProcessesBefore -join ',') -eq ($engineeringProcessesAfter -join ',')) -Message 'Host status started or stopped an engineering process.'
+    Write-Host '[initializer] generated Engineering Console build and smoke test'
+    $generatedWorkbenchSmoke = @(& $powerShell7 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $outputPath 'scripts\workbench\Start-CtrlXOpconWorkbench.ps1') -SmokeTest 2>&1)
+    Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated Engineering Console smoke test failed: " + ($generatedWorkbenchSmoke -join ' '))
+    Assert-True -Condition (($generatedWorkbenchSmoke -join ' ') -match '"Ready"\s*:\s*true') -Message 'Generated Engineering Console smoke test did not report ready.'
     Write-Host '[initializer] generated Runner doctor (PowerShell 7)'
     $generatedRunnerDoctor = & $powerShell7 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $outputPath 'scripts\runner\Invoke-CtrlXOpconRunner.ps1') -Command Doctor 2>&1
     Assert-True -Condition ($LASTEXITCODE -eq 0) -Message ("Generated .NET Runner doctor failed: " + ($generatedRunnerDoctor -join ' '))

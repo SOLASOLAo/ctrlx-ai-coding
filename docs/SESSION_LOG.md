@@ -516,3 +516,15 @@
 - 覆盖已有 CSV 时，模块/地址/DI-DO 类型 key 集必须相同，部分文件和拓扑漂移不会覆盖旧源。
   ASC 不包含可靠的 EtherCAT 模块 BOM；硬件拓扑后续仍须独立 manifest + IOE 官方接口。
 - 根项目与模板 Runner/ASC 脚本和测试同步；完整离线回归未启动 PLE/MCP/Broker 或在线操作。
+
+## D41(2026-09-01)Engineering Console v0.1
+
+- 新增独立 .NET 8 WPF Engineering Console，作为 Runner、Host、Project Pack 的薄 GUI；
+  三页集中显示工程阶段、下一步、完整 IOE/CpStudio/AI/PLE 流程、人工边界和证据。
+- 命令面固定为 Runner Status/Run、Host Status/Start/Stop、Project Pack Check；不提供任意
+  shell、嵌入式 AI、第二个 IDE owner、直接 `.project` 修改或任何在线 PLC 能力。
+- P2 IOE Apply 按钮保持禁用；P3 Link I/O 继续显示为人工步骤，P4 等待真实 DAT。
+- 模板新增 PowerShell 7/双击 CMD 入口；初始化器只把 `.cs/.csproj/.xaml/.md` 复制到
+  `tools/workbench`，排除 `bin/obj`，并校验数量、SHA、生成工程 Build 和 smoke。
+- Release Build 0 errors / 0 warnings，Workbench 84 项断言、初始化器 278 项断言和当前/
+  通用模板 smoke 均通过；没有启动 PLE/MCP/IOE 或执行在线操作。

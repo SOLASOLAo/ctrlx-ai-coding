@@ -283,6 +283,10 @@ $runnerSourceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\s
 if (-not [System.IO.Directory]::Exists($runnerSourceRoot)) {
     throw "Runner product source is missing: $runnerSourceRoot"
 }
+$workbenchSourceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\src\workbench'))
+if (-not [System.IO.Directory]::Exists($workbenchSourceRoot)) {
+    throw "Engineering Console source is missing: $workbenchSourceRoot"
+}
 
 $tokens = [ordered]@{
     '{{PROJECT_ID}}' = $ProjectId
@@ -392,6 +396,30 @@ try {
         [System.IO.File]::WriteAllText(
             $destinationPath,
             [System.IO.File]::ReadAllText($runnerSourceFile.FullName),
+            $destinationEncoding)
+    }
+
+    $workbenchSourceFiles = Get-ChildItem -LiteralPath $workbenchSourceRoot -Recurse -File |
+        Where-Object {
+            $relative = $_.FullName.Substring($workbenchSourceRoot.Length).TrimStart('\', '/')
+            $segments = $relative -split '[\\/]'
+            ($segments -notcontains 'bin') -and
+            ($segments -notcontains 'obj') -and
+            ($_.Extension.ToLowerInvariant() -in @('.cs', '.csproj', '.xaml', '.md'))
+        }
+    foreach ($workbenchSourceFile in $workbenchSourceFiles) {
+        $relativePath = $workbenchSourceFile.FullName.Substring($workbenchSourceRoot.Length).TrimStart('\', '/')
+        $destinationPath = Join-Path $stagingPath (Join-Path 'tools\workbench' $relativePath)
+        [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($destinationPath)) | Out-Null
+        $sourceBytes = [System.IO.File]::ReadAllBytes($workbenchSourceFile.FullName)
+        $sourceHasUtf8Bom = ($sourceBytes.Length -ge 3) -and
+            ($sourceBytes[0] -eq 0xEF) -and
+            ($sourceBytes[1] -eq 0xBB) -and
+            ($sourceBytes[2] -eq 0xBF)
+        $destinationEncoding = if ($sourceHasUtf8Bom) { $utf8WithBom } else { $utf8NoBom }
+        [System.IO.File]::WriteAllText(
+            $destinationPath,
+            [System.IO.File]::ReadAllText($workbenchSourceFile.FullName),
             $destinationEncoding)
     }
 

@@ -44,6 +44,15 @@
      -Command Status -EngineeringRoot '<absolute-ai-root>'
    ```
 
+9. 启动工程控制台（可双击同目录 `.cmd`；只包含离线固定白名单）：
+
+   ```powershell
+   pwsh -NoProfile -File .\scripts\workbench\Start-CtrlXOpconWorkbench.ps1
+   ```
+
+   控制台显示 Runner/Host、本项目 TODO 中的工程阶段、下一步、CpStudio/PLE 人工操作和最新证据；
+   P2 Apply 与全部在线 PLC 操作默认禁用。
+
 CpStudio Export #1 的离线报告可交给
 `scripts/cpstudio/Invoke-PostExportEngineering.ps1`。该工具只生成带哈希的
 operation/action 并接收 runner 证据，不启动 PLE/MCP/REST。P1.1 Runner 统一执行
