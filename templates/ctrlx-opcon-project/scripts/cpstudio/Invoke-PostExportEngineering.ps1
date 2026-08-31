@@ -840,7 +840,8 @@ function Assert-NoOnlineCapabilities {
     $approvedOfflineCapabilities = @(
         'get_codesys_status',
         'clean_compile_project',
-        'get_ctrlx_semantic_snapshot'
+        'get_ctrlx_semantic_snapshot',
+        'get_ctrlx_semantic_snapshot_retry'
     )
     foreach ($capability in @($capabilityProperty.Value)) {
         if ($null -eq $capability) {
@@ -855,6 +856,10 @@ function Assert-NoOnlineCapabilities {
         if ($approvedOfflineCapabilities -notcontains [string]$capability) {
             throw "Runner evidence reports an unapproved offline capability: $capability"
         }
+    }
+    if ((@($capabilityProperty.Value | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot_retry' }).Count -gt 0) -and
+        (@($capabilityProperty.Value | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot' }).Count -ne 1)) {
+        throw 'Runner evidence reports a semantic snapshot retry without exactly one initial semantic snapshot call.'
     }
 }
 
@@ -2801,6 +2806,9 @@ function Read-AndValidateEvidence {
             if (@($capabilities | Where-Object { [string]$_ -eq $requiredCapability }).Count -ne 1) {
                 throw "Successful runner evidence must report capability '$requiredCapability' exactly once."
             }
+        }
+        if (@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot_retry' }).Count -gt 1) {
+            throw 'Successful runner evidence cannot report more than one semantic snapshot retry.'
         }
 
         $session = Get-PropertyValue -Object $evidence -Name 'session'

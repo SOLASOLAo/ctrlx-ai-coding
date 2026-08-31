@@ -20,7 +20,7 @@ public sealed class PowerShellStage2EvidenceIngestor : IStage2EvidenceIngestor
     // SHA-256 of Invoke-PostExportEngineering.ps1 after CRLF/CR are normalized
     // to LF. Updating the coordinator requires an explicit Runner release.
     public const string TrustedCoordinatorNormalizedSha256 =
-        "52BEC49AD01AB9549ADDABFAC920B36ED1F6D86CF79DDED79DB724BF6B491BE0";
+        "15E2C141CF4DFF53BD92A3939CD6102E690A44EB2BFAA747C4D232B8F2067AC9";
 
     private const int MaximumOperationBytes = 1024 * 1024;
     private const int MaximumEvidenceBytes = 8 * 1024 * 1024;

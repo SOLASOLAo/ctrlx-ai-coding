@@ -932,7 +932,8 @@ $prohibitedCapability = '(?i)(connect[_-]?to[_-]?device|download[_-]?to[_-]?devi
 $approvedOfflineCapabilities = @(
     'get_codesys_status',
     'clean_compile_project',
-    'get_ctrlx_semantic_snapshot'
+    'get_ctrlx_semantic_snapshot',
+    'get_ctrlx_semantic_snapshot_retry'
 )
 foreach ($capability in $capabilities) {
     if (([string]$capability -notmatch '^[A-Za-z0-9_.-]{1,96}$') -or
@@ -943,6 +944,10 @@ foreach ($capability in $capabilities) {
         throw "Runner observation reports an unapproved offline capability: $capability"
     }
 }
+if ((@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot_retry' }).Count -gt 0) -and
+    (@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot' }).Count -ne 1)) {
+    throw 'Runner observation reports a semantic snapshot retry without exactly one initial semantic snapshot call.'
+}
 if ($status -eq 'succeeded') {
     if ($identity.actionKind -eq 'apply_change_set_and_build') {
         throw 'apply_change_set_and_build is not supported by the typed Broker and cannot produce successful evidence.'
@@ -951,6 +956,9 @@ if ($status -eq 'succeeded') {
         if (@($capabilities | Where-Object { [string]$_ -eq $requiredCapability }).Count -ne 1) {
             throw "Successful runner observation must report capability '$requiredCapability' exactly once."
         }
+    }
+    if (@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot_retry' }).Count -gt 1) {
+        throw 'Successful runner observation cannot report more than one semantic snapshot retry.'
     }
 }
 

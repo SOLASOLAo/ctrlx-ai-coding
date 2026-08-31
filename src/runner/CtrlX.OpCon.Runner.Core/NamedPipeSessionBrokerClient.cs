@@ -456,12 +456,16 @@ public sealed class NamedPipeSessionBrokerClient : ISessionBrokerClient
     {
         var capabilities = RunnerValidation.RequiredArray(observation, "capabilitiesInvoked", "Broker observation");
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        var allowed = new HashSet<string>(new[]
+        var required = new HashSet<string>(new[]
         {
             "get_codesys_status",
             "clean_compile_project",
             "get_ctrlx_semantic_snapshot"
         }, StringComparer.Ordinal);
+        var allowed = new HashSet<string>(required, StringComparer.Ordinal)
+        {
+            "get_ctrlx_semantic_snapshot_retry"
+        };
         foreach (var node in capabilities)
         {
             string value;
@@ -480,7 +484,13 @@ public sealed class NamedPipeSessionBrokerClient : ISessionBrokerClient
             }
         }
 
-        if (success && !seen.SetEquals(allowed))
+        if (seen.Contains("get_ctrlx_semantic_snapshot_retry") &&
+            !seen.Contains("get_ctrlx_semantic_snapshot"))
+        {
+            throw new RunnerGateException(ProtocolInvalid, "Broker reported a semantic retry without the initial semantic snapshot call.");
+        }
+
+        if (success && !required.IsSubsetOf(seen))
         {
             throw new RunnerGateException(ProtocolInvalid, "Successful Broker observation lacks the fixed capability sequence.");
         }

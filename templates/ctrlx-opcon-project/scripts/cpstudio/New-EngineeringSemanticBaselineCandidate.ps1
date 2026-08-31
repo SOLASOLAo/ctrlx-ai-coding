@@ -16,6 +16,7 @@ $semanticPatchId = 'ctrlx-semantic-snapshot-v1'
 $canonicalization = 'ctrlx-semantic-canonical-json-v1'
 $maximumInputBytes = 2 * 1024 * 1024
 $maximumScopeBytes = 256 * 1024
+$maximumBaselineBytes = 1024 * 1024
 $maximumCandidateBytes = 1024 * 1024
 
 function Get-PropertyValue {
@@ -437,7 +438,8 @@ function Assert-BlockedEvidence {
     $actionId = Get-RequiredString -Object $Evidence -Name 'actionId' -Context 'Runner evidence'
     if ($actionId -notmatch '^[A-Za-z0-9_.-]{1,160}$') { throw 'Runner evidence actionId is unsafe.' }
     Assert-HexSha256 -Value (Get-RequiredString -Object $Evidence -Name 'actionRequestSha256' -Context 'Runner evidence') -Context 'Runner evidence actionRequestSha256'
-    if ((Get-RequiredString -Object $Evidence -Name 'actionKind' -Context 'Runner evidence') -notin @('inspect_and_build', 'verify_after_export_2')) {
+    $actionKind = Get-RequiredString -Object $Evidence -Name 'actionKind' -Context 'Runner evidence'
+    if ($actionKind -notin @('inspect_and_build', 'verify_after_export_2')) {
         throw 'Only read-only inspection evidence can produce a semantic baseline candidate.'
     }
 
@@ -453,10 +455,12 @@ function Assert-BlockedEvidence {
     if (-not [System.IO.File]::Exists($plcProject)) { throw 'Runner evidence PLC project no longer exists.' }
 
     $capabilities = Get-RequiredArray -Object $Evidence -Name 'capabilitiesInvoked' -Context 'Runner evidence'
-    if (($capabilities.Count -ne 3) -or
+    if (($capabilities.Count -lt 3) -or ($capabilities.Count -gt 4) -or
         (@($capabilities | Where-Object { [string]$_ -eq 'get_codesys_status' }).Count -ne 1) -or
         (@($capabilities | Where-Object { [string]$_ -eq 'clean_compile_project' }).Count -ne 1) -or
         (@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot' }).Count -ne 1) -or
+        (@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot_retry' }).Count -gt 1) -or
+        (@($capabilities | Where-Object { [string]$_ -notin @('get_codesys_status', 'clean_compile_project', 'get_ctrlx_semantic_snapshot', 'get_ctrlx_semantic_snapshot_retry') }).Count -ne 0) -or
         (@($capabilities | Where-Object { [string]$_ -match '(?i)(connect|download|start_stop|write_variable|force|online)' }).Count -ne 0)) {
         throw 'Runner evidence does not prove one offline Build plus one semantic snapshot.'
     }
@@ -485,10 +489,11 @@ function Assert-BlockedEvidence {
         'appliedChanges', 'semanticProofs', 'nextRoute', 'build', 'failureStage',
         'reasonCode'
     ) -Context 'Runner evidence result'
+    $reasonCode = Get-RequiredString -Object $result -Name 'reasonCode' -Context 'Runner evidence result'
     if ((Get-RequiredString -Object $result -Name 'status' -Context 'Runner evidence result') -ne 'blocked' -or
         (Get-RequiredString -Object $result -Name 'failureStage' -Context 'Runner evidence result') -ne 'semantic-acceptance' -or
-        (Get-RequiredString -Object $result -Name 'reasonCode' -Context 'Runner evidence result') -ne 'SEMANTIC_BASELINE_BOOTSTRAP_REQUIRED') {
-        throw 'Only semantic-baseline-bootstrap BLOCKED evidence can produce this candidate.'
+        $reasonCode -notin @('SEMANTIC_BASELINE_BOOTSTRAP_REQUIRED', 'SYMBOL_BASELINE_MISMATCH')) {
+        throw 'Only semantic baseline bootstrap or Symbol mismatch BLOCKED evidence can produce this candidate.'
     }
     if ((Get-RequiredBoolean -Object $result -Name 'verificationOk' -Context 'Runner evidence result') -or
         (Get-RequiredBoolean -Object $result -Name 'appliedReadbackOk' -Context 'Runner evidence result')) {
@@ -505,8 +510,13 @@ function Assert-BlockedEvidence {
     }
     $nextRoute = Get-RequiredObject -Object $result -Name 'nextRoute' -Context 'Runner evidence result'
     Assert-ExactPropertySet -Object $nextRoute -Allowed @('kind', 'reasonCode', 'automaticExecutionAllowed') -Context 'Runner evidence nextRoute'
-    if ((Get-RequiredString -Object $nextRoute -Name 'kind' -Context 'Runner evidence nextRoute') -ne 'review-engineering-semantic-baseline' -or
-        (Get-RequiredString -Object $nextRoute -Name 'reasonCode' -Context 'Runner evidence nextRoute') -ne 'SEMANTIC_BASELINE_BOOTSTRAP_REQUIRED' -or
+    $expectedRoute = if ($reasonCode -eq 'SEMANTIC_BASELINE_BOOTSTRAP_REQUIRED') {
+        'review-engineering-semantic-baseline'
+    }
+    elseif ($actionKind -eq 'inspect_and_build') { 'cpstudio-export-2-review' }
+    else { 'cpstudio-change-review' }
+    if ((Get-RequiredString -Object $nextRoute -Name 'kind' -Context 'Runner evidence nextRoute') -ne $expectedRoute -or
+        (Get-RequiredString -Object $nextRoute -Name 'reasonCode' -Context 'Runner evidence nextRoute') -ne $reasonCode -or
         (Get-RequiredBoolean -Object $nextRoute -Name 'automaticExecutionAllowed' -Context 'Runner evidence nextRoute')) {
         throw 'Runner evidence does not require a manual semantic baseline review.'
     }
@@ -567,9 +577,19 @@ function Assert-BlockedEvidence {
         }
     }
     $baselineProof = Get-RequiredObject -Object $proofs -Name 'semanticBaseline' -Context 'Runner semantic proofs'
-    if ((Get-RequiredBoolean -Object $baselineProof -Name 'verified' -Context 'Runner semantic baseline proof') -or
-        (Get-RequiredString -Object $baselineProof -Name 'reasonCode' -Context 'Runner semantic baseline proof') -ne 'SEMANTIC_BASELINE_BOOTSTRAP_REQUIRED') {
-        throw 'Runner evidence is not missing only the reviewed semantic baseline.'
+    if ($reasonCode -eq 'SEMANTIC_BASELINE_BOOTSTRAP_REQUIRED') {
+        if ((Get-RequiredBoolean -Object $baselineProof -Name 'verified' -Context 'Runner semantic baseline proof') -or
+            (Get-RequiredString -Object $baselineProof -Name 'reasonCode' -Context 'Runner semantic baseline proof') -ne $reasonCode) {
+            throw 'Runner evidence is not missing only the reviewed semantic baseline.'
+        }
+    }
+    else {
+        foreach ($proofName in @('warnings', 'semanticBaseline', 'mapping')) {
+            $proof = Get-RequiredObject -Object $proofs -Name $proofName -Context 'Runner semantic proofs'
+            if (-not (Get-RequiredBoolean -Object $proof -Name 'verified' -Context "Runner semantic proof '$proofName'")) {
+                throw "Runner semantic proof '$proofName' must remain verified for a Symbol-only refresh."
+            }
+        }
     }
 
     return [pscustomobject]@{
@@ -579,6 +599,7 @@ function Assert-BlockedEvidence {
         plcProject = $plcProject
         profile = $profile
         result = $result
+        reasonCode = $reasonCode
     }
 }
 
@@ -609,6 +630,102 @@ function Get-CandidateProof {
         throw "Runner semantic proof '$Name' hash does not match candidateCanonicalFacts."
     }
     return [pscustomobject]@{ facts = $facts; sha256 = $actualHash }
+}
+
+function Get-SymbolRefreshFacts {
+    param(
+        [Parameter(Mandatory = $true)][object]$BaselineDocument,
+        [Parameter(Mandatory = $true)][object]$Proofs,
+        [Parameter(Mandatory = $true)][string]$ScopeSha256,
+        [Parameter(Mandatory = $true)][string]$PlcRelativePath,
+        [Parameter(Mandatory = $true)][string]$Profile
+    )
+
+    $baseline = $BaselineDocument.payload
+    Assert-ExactPropertySet -Object $baseline -Allowed @('schemaVersion', 'kind', 'project', 'scopeSha256', 'canonicalFacts', 'hashes', 'review') -Context 'Reviewed engineering semantic baseline'
+    if ((Get-RequiredInt32 -Object $baseline -Name 'schemaVersion' -Context 'Reviewed engineering semantic baseline') -ne 1 -or
+        (Get-RequiredString -Object $baseline -Name 'kind' -Context 'Reviewed engineering semantic baseline') -ne 'ctrlx-opcon-engineering-semantic-baseline') {
+        throw 'Reviewed engineering semantic baseline identity is unsupported.'
+    }
+    $project = Get-RequiredObject -Object $baseline -Name 'project' -Context 'Reviewed engineering semantic baseline'
+    Assert-ExactPropertySet -Object $project -Allowed @('plcProjectRelativePath', 'profile') -Context 'Reviewed engineering semantic baseline project'
+    if ((Get-RequiredString -Object $project -Name 'plcProjectRelativePath' -Context 'Reviewed engineering semantic baseline project').Replace('\', '/') -ne $PlcRelativePath -or
+        (Get-RequiredString -Object $project -Name 'profile' -Context 'Reviewed engineering semantic baseline project') -ne $Profile -or
+        (-not (Get-RequiredString -Object $baseline -Name 'scopeSha256' -Context 'Reviewed engineering semantic baseline').Equals($ScopeSha256, [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw 'Reviewed engineering semantic baseline does not bind this project/profile/scope.'
+    }
+
+    $facts = Get-RequiredObject -Object $baseline -Name 'canonicalFacts' -Context 'Reviewed engineering semantic baseline'
+    Assert-ExactPropertySet -Object $facts -Allowed @('mapping', 'symbolConfig') -Context 'Reviewed engineering semantic baseline facts'
+    $mapping = Get-RequiredObject -Object $facts -Name 'mapping' -Context 'Reviewed engineering semantic baseline facts'
+    $oldSymbol = Get-RequiredObject -Object $facts -Name 'symbolConfig' -Context 'Reviewed engineering semantic baseline facts'
+    $hashes = Get-RequiredObject -Object $baseline -Name 'hashes' -Context 'Reviewed engineering semantic baseline'
+    Assert-ExactPropertySet -Object $hashes -Allowed @('algorithm', 'canonicalization', 'mappingSha256', 'symbolConfigSha256', 'snapshotSha256') -Context 'Reviewed engineering semantic baseline hashes'
+    if ((Get-RequiredString -Object $hashes -Name 'algorithm' -Context 'Reviewed engineering semantic baseline hashes') -ne 'SHA-256' -or
+        (Get-RequiredString -Object $hashes -Name 'canonicalization' -Context 'Reviewed engineering semantic baseline hashes') -ne $canonicalization) {
+        throw 'Reviewed engineering semantic baseline hash contract is unsupported.'
+    }
+    $computed = [ordered]@{
+        mappingSha256 = Get-Sha256ForText -Text (ConvertTo-CanonicalJson -Value $mapping)
+        symbolConfigSha256 = Get-Sha256ForText -Text (ConvertTo-CanonicalJson -Value $oldSymbol)
+        snapshotSha256 = Get-Sha256ForText -Text (ConvertTo-CanonicalJson -Value $facts)
+    }
+    foreach ($name in $computed.Keys) {
+        if (-not ([string]$computed[$name]).Equals((Get-RequiredString -Object $hashes -Name $name -Context 'Reviewed engineering semantic baseline hashes'), [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Reviewed engineering semantic baseline $name is invalid."
+        }
+    }
+    $review = Get-RequiredObject -Object $baseline -Name 'review' -Context 'Reviewed engineering semantic baseline'
+    if (-not (Get-RequiredBoolean -Object $review -Name 'confirmedByUser' -Context 'Reviewed engineering semantic baseline review')) {
+        throw 'Reviewed engineering semantic baseline is not user-confirmed.'
+    }
+
+    $baselineSha = Get-Sha256ForBytes -Bytes $BaselineDocument.bytes
+    $baselineProof = Get-RequiredObject -Object $Proofs -Name 'semanticBaseline' -Context 'Runner semantic proofs'
+    if ((Get-RequiredString -Object $baselineProof -Name 'producer' -Context 'Runner semantic baseline proof') -ne 'runner.reviewed-semantic-baseline' -or
+        (-not (Get-RequiredBoolean -Object $baselineProof -Name 'verified' -Context 'Runner semantic baseline proof')) -or
+        (Get-RequiredString -Object $baselineProof -Name 'artifactPath' -Context 'Runner semantic baseline proof').Replace('\', '/') -ne 'config/engineering-semantic-baseline.json' -or
+        (-not (Get-RequiredString -Object $baselineProof -Name 'artifactSha256' -Context 'Runner semantic baseline proof').Equals($baselineSha, [System.StringComparison]::OrdinalIgnoreCase)) -or
+        (-not (Get-RequiredString -Object $baselineProof -Name 'scopeSha256' -Context 'Runner semantic baseline proof').Equals($ScopeSha256, [System.StringComparison]::OrdinalIgnoreCase)) -or
+        (-not (Get-RequiredString -Object $baselineProof -Name 'expectedMappingSha256' -Context 'Runner semantic baseline proof').Equals([string]$computed.mappingSha256, [System.StringComparison]::OrdinalIgnoreCase)) -or
+        (-not (Get-RequiredString -Object $baselineProof -Name 'expectedSymbolConfigSha256' -Context 'Runner semantic baseline proof').Equals([string]$computed.symbolConfigSha256, [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw 'Runner evidence does not bind the current reviewed semantic baseline.'
+    }
+
+    $mappingProof = Get-RequiredObject -Object $Proofs -Name 'mapping' -Context 'Runner semantic proofs'
+    if ((Get-RequiredString -Object $mappingProof -Name 'producer' -Context 'Runner mapping proof') -ne $semanticProducer -or
+        (Get-RequiredString -Object $mappingProof -Name 'adapterPatchId' -Context 'Runner mapping proof') -ne $semanticPatchId -or
+        (-not (Get-RequiredBoolean -Object $mappingProof -Name 'verified' -Context 'Runner mapping proof')) -or
+        (Get-RequiredInt32 -Object $mappingProof -Name 'recordCount' -Context 'Runner mapping proof') -ne (Get-RequiredInt32 -Object $mapping -Name 'recordCount' -Context 'Reviewed mapping facts') -or
+        (-not (Get-RequiredString -Object $mappingProof -Name 'mappingSha256' -Context 'Runner mapping proof').Equals([string]$computed.mappingSha256, [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw 'Runner evidence mapping changed; a Symbol-only refresh is not allowed.'
+    }
+
+    $symbolProof = Get-RequiredObject -Object $Proofs -Name 'symbolPostProcessing' -Context 'Runner semantic proofs'
+    Assert-ExactPropertySet -Object $symbolProof -Allowed @('producer', 'contractVersion', 'verified', 'reasonCode', 'expectedSymbolConfigSha256', 'actualSymbolConfigSha256', 'actualCanonicalFacts') -Context 'Runner Symbol mismatch proof'
+    if ((Get-RequiredString -Object $symbolProof -Name 'producer' -Context 'Runner Symbol mismatch proof') -ne $semanticProducer -or
+        (Get-RequiredInt32 -Object $symbolProof -Name 'contractVersion' -Context 'Runner Symbol mismatch proof') -ne 1 -or
+        (Get-RequiredBoolean -Object $symbolProof -Name 'verified' -Context 'Runner Symbol mismatch proof') -or
+        (Get-RequiredString -Object $symbolProof -Name 'reasonCode' -Context 'Runner Symbol mismatch proof') -ne 'SYMBOL_BASELINE_MISMATCH' -or
+        (-not (Get-RequiredString -Object $symbolProof -Name 'expectedSymbolConfigSha256' -Context 'Runner Symbol mismatch proof').Equals([string]$computed.symbolConfigSha256, [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw 'Runner evidence is not a Symbol-only mismatch against the current baseline.'
+    }
+    $newSymbol = Get-RequiredObject -Object $symbolProof -Name 'actualCanonicalFacts' -Context 'Runner Symbol mismatch proof'
+    $newSymbolSha = Get-Sha256ForText -Text (ConvertTo-CanonicalJson -Value $newSymbol)
+    if (-not $newSymbolSha.Equals((Get-RequiredString -Object $symbolProof -Name 'actualSymbolConfigSha256' -Context 'Runner Symbol mismatch proof'), [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Runner Symbol mismatch actualCanonicalFacts hash is invalid.'
+    }
+
+    return [pscustomobject]@{
+        mapping = $mapping
+        mappingSha256 = [string]$computed.mappingSha256
+        symbol = $newSymbol
+        symbolSha256 = $newSymbolSha
+        previousBaseline = [ordered]@{
+            path = 'config/engineering-semantic-baseline.json'
+            sha256 = $baselineSha
+        }
+    }
 }
 
 function Assert-ScopeAndFacts {
@@ -775,14 +892,26 @@ Assert-NoSecrets -Value $scopeDocument.payload
 $validated = Assert-BlockedEvidence -Evidence $evidenceDocument.payload -ExpectedEngineeringRoot $resolvedEngineeringRoot
 
 $semanticProofs = Get-RequiredObject -Object $validated.result -Name 'semanticProofs' -Context 'Runner evidence result'
-$mappingProof = Get-CandidateProof -Proofs $semanticProofs -Name 'mapping' -HashField 'actualMappingSha256'
-$symbolProof = Get-CandidateProof -Proofs $semanticProofs -Name 'symbolPostProcessing' -HashField 'actualSymbolConfigSha256'
-$mappingRecordCount = Get-RequiredInt32 -Object (Get-RequiredObject -Object $semanticProofs -Name 'mapping' -Context 'Runner semantic proofs') -Name 'actualRecordCount' -Context 'Runner mapping proof'
-if ($mappingRecordCount -ne (Get-RequiredInt32 -Object $mappingProof.facts -Name 'recordCount' -Context 'Candidate mapping facts')) {
-    throw 'Runner mapping proof actualRecordCount does not match candidateCanonicalFacts.'
-}
-
 $plcRelativePath = Get-RelativePathInsideRoot -Root $validated.stationRoot -Path $validated.plcProject -Context 'Runner evidence PLC project'
+$scopeSha = Get-Sha256ForBytes -Bytes $scopeDocument.bytes
+$previousBaseline = $null
+if ($validated.reasonCode -eq 'SEMANTIC_BASELINE_BOOTSTRAP_REQUIRED') {
+    $mappingProof = Get-CandidateProof -Proofs $semanticProofs -Name 'mapping' -HashField 'actualMappingSha256'
+    $symbolProof = Get-CandidateProof -Proofs $semanticProofs -Name 'symbolPostProcessing' -HashField 'actualSymbolConfigSha256'
+    $mappingRecordCount = Get-RequiredInt32 -Object (Get-RequiredObject -Object $semanticProofs -Name 'mapping' -Context 'Runner semantic proofs') -Name 'actualRecordCount' -Context 'Runner mapping proof'
+    if ($mappingRecordCount -ne (Get-RequiredInt32 -Object $mappingProof.facts -Name 'recordCount' -Context 'Candidate mapping facts')) {
+        throw 'Runner mapping proof actualRecordCount does not match candidateCanonicalFacts.'
+    }
+}
+else {
+    $baselinePath = Join-Path $resolvedEngineeringRoot 'config\engineering-semantic-baseline.json'
+    $baselineDocument = Read-JsonDocumentExact -Path $baselinePath -Context 'Reviewed engineering semantic baseline' -MaximumBytes $maximumBaselineBytes
+    Assert-NoSecrets -Value $baselineDocument.payload
+    $refresh = Get-SymbolRefreshFacts -BaselineDocument $baselineDocument -Proofs $semanticProofs -ScopeSha256 $scopeSha -PlcRelativePath $plcRelativePath -Profile $validated.profile
+    $mappingProof = [pscustomobject]@{ facts = $refresh.mapping; sha256 = $refresh.mappingSha256 }
+    $symbolProof = [pscustomobject]@{ facts = $refresh.symbol; sha256 = $refresh.symbolSha256 }
+    $previousBaseline = $refresh.previousBaseline
+}
 Assert-ScopeAndFacts -Scope $scopeDocument.payload -Mapping $mappingProof.facts -Symbol $symbolProof.facts -PlcRelativePath $plcRelativePath -Profile $validated.profile
 
 $canonicalFacts = [ordered]@{
@@ -791,7 +920,6 @@ $canonicalFacts = [ordered]@{
 }
 $snapshotSha = Get-Sha256ForText -Text (ConvertTo-CanonicalJson -Value $canonicalFacts)
 $evidenceRelativePath = Get-RelativePathInsideRoot -Root $resolvedEngineeringRoot -Path $resolvedEvidencePath -Context 'Runner evidence input'
-$scopeSha = Get-Sha256ForBytes -Bytes $scopeDocument.bytes
 $evidenceSha = Get-Sha256ForBytes -Bytes $evidenceDocument.bytes
 $candidate = [ordered]@{
     schemaVersion = 1
@@ -824,6 +952,7 @@ $candidate = [ordered]@{
         targetBaselinePath = 'config/engineering-semantic-baseline.json'
     }
 }
+if ($null -ne $previousBaseline) { $candidate['previousBaseline'] = $previousBaseline }
 Assert-NoSecrets -Value $candidate
 
 $reviewRoot = Join-Path $resolvedEngineeringRoot 'docs\reviews'

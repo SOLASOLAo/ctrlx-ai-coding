@@ -165,6 +165,61 @@ internal static class RunnerSelfTest
                     File.WriteAllBytes(projectPackSourcePath, originalProjectPackSource);
                 }
 
+                var busConfigPath = Path.Combine(fixture.StationRoot, "PublicConfig", "BusConfig_Fixture.yaml");
+                var originalBusConfig = File.ReadAllBytes(busConfigPath);
+                try
+                {
+                    File.AppendAllText(busConfigPath, "drift", new UTF8Encoding(false));
+                    await ExpectGateAsync(
+                        () => executor.ExecuteAsync(fixture.Request(action)),
+                        "FINGERPRINT_DRIFT").ConfigureAwait(false);
+                    Check(broker.Calls == 0, "I/O designator BusConfig drift reached Broker.");
+                }
+                finally
+                {
+                    File.WriteAllBytes(busConfigPath, originalBusConfig);
+                }
+
+                var missingIoBinding = fixture.CreateAction("fixture-io-binding-missing", "inspect_and_build");
+                var missingIoDocument = ReadObject(missingIoBinding.Path);
+                var missingIoPreconditions = Object(missingIoDocument, "preconditions");
+                Object(missingIoPreconditions, "projectPack").Remove("ioDesignators");
+                missingIoPreconditions.Remove("ioDesignatorExport");
+                WriteJson(missingIoBinding.Path, missingIoDocument);
+                var missingIoSha = RunnerHash.Sha256File(missingIoBinding.Path);
+                var missingIoOperation = ReadObject(OperationLedgerPath(missingIoBinding));
+                Object(missingIoOperation, "currentAction")["sha256"] = missingIoSha;
+                WriteJson(OperationLedgerPath(missingIoBinding), missingIoOperation);
+                await ExpectGateAsync(
+                    () => executor.ExecuteAsync(fixture.Request(missingIoBinding with { Sha256 = missingIoSha })),
+                    "IO_DESIGNATOR_REFERENCE_INVALID").ConfigureAwait(false);
+                Check(broker.Calls == 0, "Missing plan-required I/O designator bindings reached Broker.");
+
+                var wrongIoSourcePath = Path.Combine(fixture.EngineeringRoot, "specs", "other-io-designators.csv");
+                File.WriteAllText(
+                    wrongIoSourcePath,
+                    "DeviceDesignator,Address,IoDesignator,Type,English,Chinese\n=Other+A1,%IX0.0,_000S999,DI,Other input,\u5176\u4ed6\u8f93\u5165\n",
+                    new UTF8Encoding(false));
+                var wrongIoBinding = fixture.CreateAction("fixture-io-binding-wrong-source", "inspect_and_build");
+                var wrongIoDocument = ReadObject(wrongIoBinding.Path);
+                var wrongIoPreconditions = Object(wrongIoDocument, "preconditions");
+                var wrongIoSha = RunnerHash.Sha256File(wrongIoSourcePath);
+                var wrongIoProjectPack = Object(Object(wrongIoPreconditions, "projectPack"), "ioDesignators");
+                wrongIoProjectPack["sourcePath"] = "specs/other-io-designators.csv";
+                wrongIoProjectPack["sourceSha256"] = wrongIoSha;
+                var wrongIoExport = Object(wrongIoPreconditions, "ioDesignatorExport");
+                wrongIoExport["sourcePath"] = "specs/other-io-designators.csv";
+                wrongIoExport["sourceSha256"] = wrongIoSha;
+                WriteJson(wrongIoBinding.Path, wrongIoDocument);
+                var wrongIoActionSha = RunnerHash.Sha256File(wrongIoBinding.Path);
+                var wrongIoOperation = ReadObject(OperationLedgerPath(wrongIoBinding));
+                Object(wrongIoOperation, "currentAction")["sha256"] = wrongIoActionSha;
+                WriteJson(OperationLedgerPath(wrongIoBinding), wrongIoOperation);
+                await ExpectGateAsync(
+                    () => executor.ExecuteAsync(fixture.Request(wrongIoBinding with { Sha256 = wrongIoActionSha })),
+                    "IO_DESIGNATOR_REFERENCE_INVALID").ConfigureAwait(false);
+                Check(broker.Calls == 0, "Non-plan I/O designator source bindings reached Broker.");
+
                 var legacy = fixture.CreateAction("fixture-legacy-action-schema", "inspect_and_build");
                 var legacyDocument = ReadObject(legacy.Path);
                 var legacyGuardrails = Object(legacyDocument, "guardrails");
@@ -465,6 +520,52 @@ internal static class RunnerSelfTest
                 var replay = await executor.ExecuteAsync(fixture.Request(action)).ConfigureAwait(false);
                 Check(replay.Replayed, "Completed idempotent action did not replay locally.");
                 Check(broker.Calls == 2, "Completed replay dispatched a duplicate Broker action.");
+            }).ConfigureAwait(false);
+
+            await CaseAsync("13a Semantic snapshot retry capability is optional and fail-closed", () =>
+            {
+                var validateCapabilities = typeof(NamedPipeSessionBrokerClient).GetMethod(
+                    "ValidateCapabilities",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+                    ?? throw new InvalidOperationException("Capability validator was not found.");
+
+                static JsonObject CapabilityObservation(params string[] values) => new()
+                {
+                    ["capabilitiesInvoked"] = new JsonArray(values.Select(value => JsonValue.Create(value)).ToArray())
+                };
+
+                validateCapabilities.Invoke(null, new object[]
+                {
+                    CapabilityObservation("get_codesys_status", "clean_compile_project", "get_ctrlx_semantic_snapshot"),
+                    true
+                });
+                validateCapabilities.Invoke(null, new object[]
+                {
+                    CapabilityObservation("get_codesys_status", "clean_compile_project", "get_ctrlx_semantic_snapshot", "get_ctrlx_semantic_snapshot_retry"),
+                    true
+                });
+
+                foreach (var invalid in new[]
+                {
+                    CapabilityObservation("get_codesys_status", "clean_compile_project", "get_ctrlx_semantic_snapshot_retry"),
+                    CapabilityObservation("get_codesys_status", "clean_compile_project", "get_ctrlx_semantic_snapshot", "get_ctrlx_semantic_snapshot_retry", "get_ctrlx_semantic_snapshot_retry"),
+                    CapabilityObservation("get_codesys_status", "clean_compile_project", "get_ctrlx_semantic_snapshot", "unknown_capability")
+                })
+                {
+                    try
+                    {
+                        validateCapabilities.Invoke(null, new object[] { invalid, true });
+                        Check(false, "Invalid semantic retry capability set was accepted.");
+                    }
+                    catch (System.Reflection.TargetInvocationException exception)
+                        when (exception.InnerException is RunnerGateException gate &&
+                              gate.ReasonCode == "BLOCKED_SESSION_PROTOCOL_INVALID")
+                    {
+                        // Expected fail-closed protocol rejection.
+                    }
+                }
+
+                return Task.CompletedTask;
             }).ConfigureAwait(false);
 
             await CaseAsync("14 Protocol v2 Pipe timeout preserves accepted operation as pending", async () =>
@@ -1999,6 +2100,16 @@ internal sealed class RunnerFixture : IDisposable
             ["requestId"] = "fixture-request"
         });
 
+        var ioDesignatorSourcePath = Path.Combine(EngineeringRoot, "specs", "io-designators.csv");
+        Directory.CreateDirectory(Path.GetDirectoryName(ioDesignatorSourcePath)!);
+        File.WriteAllText(
+            ioDesignatorSourcePath,
+            "DeviceDesignator,Address,IoDesignator,Type,English,Chinese\n=Fixture+A1,%IX0.0,_000S001,DI,Fixture input,\u6d4b\u8bd5\u8f93\u5165\n",
+            new UTF8Encoding(false));
+        var busConfigPath = Path.Combine(StationRoot, "PublicConfig", "BusConfig_Fixture.yaml");
+        Directory.CreateDirectory(Path.GetDirectoryName(busConfigPath)!);
+        File.WriteAllText(busConfigPath, "fixture: true\n", new UTF8Encoding(false));
+
         var projectPackPath = Path.Combine(EngineeringRoot, "project-pack.json");
         WriteJson(projectPackPath, new JsonObject
         {
@@ -2019,7 +2130,13 @@ internal sealed class RunnerFixture : IDisposable
             ["readyForEngineering"] = true,
             ["sources"] = new JsonArray(
                 SourceRecord(EngineeringRoot, "project-pack.json"),
-                SourceRecord(EngineeringRoot, "specs/fixture.yaml"))
+                SourceRecord(EngineeringRoot, "specs/fixture.yaml"),
+                SourceRecord(EngineeringRoot, "specs/io-designators.csv")),
+            ["ioDesignators"] = new JsonObject
+            {
+                ["sourcePath"] = "specs/io-designators.csv",
+                ["sourceSha256"] = RunnerHash.Sha256File(ioDesignatorSourcePath)
+            }
         });
 
         var producerSource = Path.Combine(
@@ -2087,6 +2204,7 @@ internal sealed class RunnerFixture : IDisposable
                     Fingerprint(EngineeringRoot, Path.Combine("ai", "hooks.yaml")),
                     Fingerprint(EngineeringRoot, Path.Combine("ai", "graphical.yaml"))),
                 ["projectPack"] = ProjectPackReference(),
+                ["ioDesignatorExport"] = IoDesignatorExportReference(),
                 ["fingerprints"] = new JsonArray(
                     Fingerprint(StationRoot, Path.Combine("Engineering", "Engineering_Data.xml")),
                     Fingerprint(StationRoot, Path.Combine("Plc", "Fixture PLC.project")),
@@ -2246,9 +2364,23 @@ internal sealed class RunnerFixture : IDisposable
             ["projectPackPath"] = "project-pack.json",
             ["projectPackSha256"] = RunnerHash.Sha256File(projectPackPath),
             ["engineeringPlanPath"] = "generated/engineering-plan.json",
-            ["engineeringPlanSha256"] = RunnerHash.Sha256File(engineeringPlanPath)
+            ["engineeringPlanSha256"] = RunnerHash.Sha256File(engineeringPlanPath),
+            ["ioDesignators"] = new JsonObject
+            {
+                ["sourcePath"] = "specs/io-designators.csv",
+                ["sourceSha256"] = RunnerHash.Sha256File(Path.Combine(EngineeringRoot, "specs", "io-designators.csv"))
+            }
         };
     }
+
+    private JsonObject IoDesignatorExportReference() => new()
+    {
+        ["state"] = "MATCHED",
+        ["sourcePath"] = "specs/io-designators.csv",
+        ["sourceSha256"] = RunnerHash.Sha256File(Path.Combine(EngineeringRoot, "specs", "io-designators.csv")),
+        ["busConfigPath"] = "PublicConfig/BusConfig_Fixture.yaml",
+        ["busConfigSha256"] = RunnerHash.Sha256File(Path.Combine(StationRoot, "PublicConfig", "BusConfig_Fixture.yaml"))
+    };
 
     private static JsonObject Object(JsonObject value, string property) =>
         value[property] as JsonObject

@@ -302,6 +302,22 @@ public sealed class BrokerEngineeringSession : IBrokerEngineeringSession
                         options.StatusTimeout + TimeSpan.FromMinutes(2),
                         cancellationToken).ConfigureAwait(false);
                     capabilities.Add("get_ctrlx_semantic_snapshot");
+                    if (semanticSnapshot.IsError &&
+                        BrokerSemanticAcceptance.IsRetryableSnapshotFailure(
+                            JoinText(semanticSnapshot.TextContent),
+                            action.PlcProject))
+                    {
+                        // Clean Build completes before PLE finishes rebuilding its
+                        // Symbol Configuration. Retry the read only; never repeat
+                        // the Build or alter the project in this action.
+                        await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+                        semanticSnapshot = await mcp.CallToolAsync(
+                            "get_ctrlx_semantic_snapshot",
+                            semanticPlan.Arguments,
+                            options.StatusTimeout + TimeSpan.FromMinutes(2),
+                            cancellationToken).ConfigureAwait(false);
+                        capabilities.Add("get_ctrlx_semantic_snapshot_retry");
+                    }
                 }
             }
         }

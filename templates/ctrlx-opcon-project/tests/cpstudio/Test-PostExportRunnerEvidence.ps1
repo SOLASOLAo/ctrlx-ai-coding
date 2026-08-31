@@ -411,6 +411,38 @@ try {
     )
     Assert-True -Condition (($stationBefore -join '|') -eq ($stationAfter -join '|')) -Message 'Evidence producer changed Station files.'
 
+    $retryObservation = Copy-JsonValue -Value $observation
+    $retryObservation.capabilitiesInvoked = @(
+        'get_codesys_status',
+        'clean_compile_project',
+        'get_ctrlx_semantic_snapshot',
+        'get_ctrlx_semantic_snapshot_retry'
+    )
+    $retryObservationPath = Join-Path $engineeringRoot 'data\observations\success-semantic-retry.json'
+    Write-Utf8Json -Path $retryObservationPath -Value $retryObservation
+    $retryEvidencePath = Join-Path $outputRoot 'success-semantic-retry.json'
+    $null = Invoke-Producer -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $retryObservationPath -OutputPath $retryEvidencePath
+    $retryEvidence = Read-Utf8Json -Path $retryEvidencePath
+    Assert-True -Condition (@($retryEvidence.capabilitiesInvoked).Count -eq 4) -Message 'One read-only semantic retry was not preserved.'
+
+    $orphanRetry = Copy-JsonValue -Value $retryObservation
+    $orphanRetry.capabilitiesInvoked = @('get_codesys_status', 'clean_compile_project', 'get_ctrlx_semantic_snapshot_retry')
+    $orphanRetryPath = Join-Path $engineeringRoot 'data\observations\orphan-semantic-retry.json'
+    Write-Utf8Json -Path $orphanRetryPath -Value $orphanRetry
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $orphanRetryPath -OutputPath (Join-Path $outputRoot 'orphan-semantic-retry.json') -Description 'Semantic retry without an initial snapshot'
+
+    $duplicateRetry = Copy-JsonValue -Value $retryObservation
+    $duplicateRetry.capabilitiesInvoked = @(
+        'get_codesys_status',
+        'clean_compile_project',
+        'get_ctrlx_semantic_snapshot',
+        'get_ctrlx_semantic_snapshot_retry',
+        'get_ctrlx_semantic_snapshot_retry'
+    )
+    $duplicateRetryPath = Join-Path $engineeringRoot 'data\observations\duplicate-semantic-retry.json'
+    Write-Utf8Json -Path $duplicateRetryPath -Value $duplicateRetry
+    $null = Assert-ProducerRejected -Producer $producer -ActionPath $actionPath -ActionSha $actionSha -ObservationPath $duplicateRetryPath -OutputPath (Join-Path $outputRoot 'duplicate-semantic-retry.json') -Description 'Duplicate semantic retry'
+
     $missingSemanticProofs = Copy-JsonValue -Value $observation
     $missingSemanticProofs.result.PSObject.Properties.Remove('semanticProofs')
     $missingSemanticProofsPath = Join-Path $engineeringRoot 'data\observations\missing-semantic-proofs.json'

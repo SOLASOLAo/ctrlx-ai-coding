@@ -68,7 +68,7 @@ function Assert-SecretScanRejectsWithoutEcho {
 
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $producer = Join-Path $repositoryRoot 'scripts\cpstudio\New-EngineeringSemanticBaselineCandidate.ps1'
-foreach ($name in @('Get-PropertyValue', 'Get-PropertyNames', 'Test-ClearlyRedactedSensitiveValue', 'Test-StringContainsSecretLikeValue', 'Assert-NoSecrets')) {
+foreach ($name in @('Get-PropertyValue', 'Get-PropertyNames', 'Add-CanonicalJsonString', 'Add-CanonicalJsonValue', 'ConvertTo-CanonicalJson', 'Test-ClearlyRedactedSensitiveValue', 'Test-StringContainsSecretLikeValue', 'Assert-NoSecrets')) {
     Import-FunctionFromScript -Path $producer -Name $name
 }
 $safeSensitiveScanVector = [pscustomobject]@{
@@ -302,6 +302,99 @@ try {
     Assert-True ($preview.status -eq 'WHATIF') 'Candidate -WhatIf did not return a preview.'
     Assert-True (-not [System.IO.File]::Exists($whatIfPath)) 'Candidate -WhatIf wrote an artifact.'
 
+    $scopeSha = (Get-FileHash -LiteralPath $scopePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $formalFacts = [ordered]@{ mapping = $mapping; symbolConfig = $symbol }
+    $formalBaselinePath = Join-Path $engineeringRoot 'config\engineering-semantic-baseline.json'
+    $formalBaseline = [ordered]@{
+        schemaVersion = 1
+        kind = 'ctrlx-opcon-engineering-semantic-baseline'
+        project = $scope.project
+        scopeSha256 = $scopeSha
+        canonicalFacts = $formalFacts
+        hashes = [ordered]@{
+            algorithm = 'SHA-256'
+            canonicalization = 'ctrlx-semantic-canonical-json-v1'
+            mappingSha256 = $mappingSha
+            symbolConfigSha256 = $symbolSha
+            snapshotSha256 = Get-TextSha256 -Text (ConvertTo-CanonicalJson -Value $formalFacts)
+        }
+        review = [ordered]@{ confirmedByUser = $true }
+    }
+    Write-Utf8Json -Path $formalBaselinePath -Value $formalBaseline
+    $formalBaselineSha = (Get-FileHash -LiteralPath $formalBaselinePath -Algorithm SHA256).Hash.ToLowerInvariant()
+
+    $newSymbol = $symbol | ConvertTo-Json -Depth 64 | ConvertFrom-Json
+    $newSymbol.canonicalPayloadByteCount = 321
+    $newSymbol.payloadSha256 = ('e' * 64)
+    $newSymbol.shapeSummary.nodeCount = 4
+    $newSymbol.shapeSummary.scalarCount = 2
+    $newSymbolSha = Get-TextSha256 -Text (ConvertTo-CanonicalJson -Value $newSymbol)
+    $refreshEvidence = $evidence | ConvertTo-Json -Depth 64 | ConvertFrom-Json
+    $refreshEvidence.actionId = 'op-refresh-0001'
+    $refreshEvidence.result.reasonCode = 'SYMBOL_BASELINE_MISMATCH'
+    $refreshEvidence.result.nextRoute.kind = 'cpstudio-export-2-review'
+    $refreshEvidence.result.nextRoute.reasonCode = 'SYMBOL_BASELINE_MISMATCH'
+    $refreshEvidence.result.semanticProofs.warnings = [ordered]@{ producer = 'runner.warning-baseline-comparison'; contractVersion = 1; verified = $true }
+    $refreshEvidence.result.semanticProofs.semanticBaseline = [ordered]@{
+        producer = 'runner.reviewed-semantic-baseline'
+        contractVersion = 1
+        verified = $true
+        artifactPath = 'config/engineering-semantic-baseline.json'
+        artifactSha256 = $formalBaselineSha
+        scopeSha256 = $scopeSha
+        expectedMappingSha256 = $mappingSha
+        expectedSymbolConfigSha256 = $symbolSha
+    }
+    $refreshEvidence.result.semanticProofs.mapping = [ordered]@{
+        producer = 'codesys-persistent.get_ctrlx_semantic_snapshot'
+        contractVersion = 1
+        adapterPatchId = 'ctrlx-semantic-snapshot-v1'
+        verified = $true
+        recordCount = 1
+        mappingSha256 = $mappingSha
+    }
+    $refreshEvidence.result.semanticProofs.symbolPostProcessing = [ordered]@{
+        producer = 'codesys-persistent.get_ctrlx_semantic_snapshot'
+        contractVersion = 1
+        verified = $false
+        reasonCode = 'SYMBOL_BASELINE_MISMATCH'
+        expectedSymbolConfigSha256 = $symbolSha
+        actualSymbolConfigSha256 = $newSymbolSha
+        actualCanonicalFacts = $newSymbol
+    }
+    $refreshPath = Join-Path $evidenceRoot 'symbol-refresh.json'
+    $refreshOutput = Join-Path $engineeringRoot 'docs\reviews\symbol-refresh-candidate.json'
+    Write-Utf8Json -Path $refreshPath -Value $refreshEvidence
+    $refreshResult = & $producer -EvidencePath $refreshPath -EngineeringRoot $engineeringRoot -OutputPath $refreshOutput
+    Assert-True ($refreshResult.status -eq 'WRITTEN') 'Symbol refresh candidate was not generated.'
+    $refreshCandidate = Get-Content -LiteralPath $refreshOutput -Raw | ConvertFrom-Json -Depth 64
+    Assert-True ($refreshCandidate.previousBaseline.path -eq 'config/engineering-semantic-baseline.json') 'Refresh candidate baseline path is not fixed.'
+    Assert-True ($refreshCandidate.previousBaseline.sha256 -eq $formalBaselineSha) 'Refresh candidate did not bind the exact prior baseline bytes.'
+    Assert-True ($refreshCandidate.hashes.mappingSha256 -eq $mappingSha) 'Refresh candidate changed the reviewed mapping.'
+    Assert-True ($refreshCandidate.hashes.symbolConfigSha256 -eq $newSymbolSha) 'Refresh candidate did not use actual Symbol facts.'
+    Assert-True (((Get-FileHash -LiteralPath $formalBaselinePath -Algorithm SHA256).Hash.ToLowerInvariant()) -eq $formalBaselineSha) 'Candidate generation modified the formal baseline.'
+
+    $export2Evidence = $refreshEvidence | ConvertTo-Json -Depth 64 | ConvertFrom-Json
+    $export2Evidence.actionId = 'op-refresh-0002'
+    $export2Evidence.actionKind = 'verify_after_export_2'
+    $export2Evidence.result.nextRoute.kind = 'cpstudio-change-review'
+    $export2Path = Join-Path $evidenceRoot 'symbol-refresh-export2.json'
+    Write-Utf8Json -Path $export2Path -Value $export2Evidence
+    $export2Result = & $producer -EvidencePath $export2Path -EngineeringRoot $engineeringRoot -OutputPath (Join-Path $engineeringRoot 'docs\reviews\symbol-refresh-export2-candidate.json')
+    Assert-True ($export2Result.status -eq 'WRITTEN') 'Export #2 Symbol refresh route was rejected.'
+
+    $wrongRefreshRoute = $export2Evidence | ConvertTo-Json -Depth 64 | ConvertFrom-Json
+    $wrongRefreshRoute.result.nextRoute.kind = 'cpstudio-export-2-review'
+    $wrongRefreshRoutePath = Join-Path $evidenceRoot 'symbol-refresh-wrong-route.json'
+    Write-Utf8Json -Path $wrongRefreshRoutePath -Value $wrongRefreshRoute
+    Assert-Throws { & $producer -EvidencePath $wrongRefreshRoutePath -EngineeringRoot $engineeringRoot -OutputPath (Join-Path $engineeringRoot 'docs\reviews\symbol-refresh-wrong-route.json') } 'manual semantic baseline review' 'Wrong action-kind refresh route was accepted.'
+
+    $driftedRefresh = $refreshEvidence | ConvertTo-Json -Depth 64 | ConvertFrom-Json
+    $driftedRefresh.result.semanticProofs.mapping.mappingSha256 = ('f' * 64)
+    $driftedRefreshPath = Join-Path $evidenceRoot 'symbol-refresh-mapping-drift.json'
+    Write-Utf8Json -Path $driftedRefreshPath -Value $driftedRefresh
+    Assert-Throws { & $producer -EvidencePath $driftedRefreshPath -EngineeringRoot $engineeringRoot -OutputPath (Join-Path $engineeringRoot 'docs\reviews\symbol-refresh-mapping-drift.json') } 'mapping changed' 'Symbol-only refresh accepted mapping drift.'
+
     $ordinaryBuildEvidence = $evidence | ConvertTo-Json -Depth 64 | ConvertFrom-Json
     $ordinaryBuildEvidence.capabilitiesInvoked = @('get_codesys_status', 'compile_project', 'get_ctrlx_semantic_snapshot')
     $ordinaryBuildEvidence.result.build.summarySource = 'codesys-persistent.compile_project'
@@ -325,7 +418,7 @@ try {
     $wrongStatusEvidence.result.status = 'succeeded'
     $wrongStatusPath = Join-Path $evidenceRoot 'wrong-status.json'
     Write-Utf8Json -Path $wrongStatusPath -Value $wrongStatusEvidence
-    Assert-Throws { & $producer -EvidencePath $wrongStatusPath -EngineeringRoot $engineeringRoot -OutputPath (Join-Path $engineeringRoot 'docs\reviews\status.json') } 'Only semantic-baseline-bootstrap BLOCKED' 'Succeeded evidence was accepted.'
+    Assert-Throws { & $producer -EvidencePath $wrongStatusPath -EngineeringRoot $engineeringRoot -OutputPath (Join-Path $engineeringRoot 'docs\reviews\status.json') } 'Only semantic baseline bootstrap or Symbol mismatch BLOCKED' 'Succeeded evidence was accepted.'
 
     $missingBuildIdEvidence = $evidence | ConvertTo-Json -Depth 64 | ConvertFrom-Json
     $missingBuildIdEvidence.result.build.PSObject.Properties.Remove('buildId')

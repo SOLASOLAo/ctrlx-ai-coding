@@ -133,7 +133,8 @@ public sealed class RunnerActionValidator
             "warningBaseline",
             "semanticBaseline",
             "semanticSnapshotRequest",
-            "projectPack");
+            "projectPack",
+            "ioDesignatorExport");
         _ = RunnerValidation.RequiredString(preconditions, "workflowRevision", "Runner action preconditions");
         var idempotencyKey = RunnerValidation.RequiredString(preconditions, "idempotencyKey", "Runner action preconditions");
         if (!RunnerValidation.IsSha256(idempotencyKey))
@@ -158,7 +159,14 @@ public sealed class RunnerActionValidator
             "config/engineering-semantic-baseline.json",
             "semanticBaseline");
         ValidateSnapshotScopeReference(root, preconditions["semanticSnapshotRequest"]);
-        ValidateProjectPackReference(root, preconditions["projectPack"]);
+        var projectPack = RunnerValidation.RequiredObject(preconditions, "projectPack", "Runner action preconditions");
+        var plannedIoDesignators = ValidateProjectPackReference(root, projectPack);
+        ValidateIoDesignatorReference(
+            root,
+            stationRoot,
+            plannedIoDesignators,
+            projectPack["ioDesignators"],
+            preconditions["ioDesignatorExport"]);
 
         var fingerprints = RunnerValidation.RequiredArray(preconditions, "fingerprints", "Runner action preconditions");
         if (actionKind == "verify_after_export_2")
@@ -514,7 +522,7 @@ public sealed class RunnerActionValidator
             "Engineering semantic snapshot scope");
     }
 
-    private static void ValidateProjectPackReference(string engineeringRoot, JsonNode? referenceNode)
+    private static JsonObject? ValidateProjectPackReference(string engineeringRoot, JsonNode? referenceNode)
     {
         if (referenceNode is not JsonObject reference)
         {
@@ -530,7 +538,8 @@ public sealed class RunnerActionValidator
             "projectPackPath",
             "projectPackSha256",
             "engineeringPlanPath",
-            "engineeringPlanSha256");
+            "engineeringPlanSha256",
+            "ioDesignators");
         var contentId = RunnerValidation.RequiredString(reference, "contentId", "Runner Project Pack precondition");
         var projectPackSha256 = RunnerValidation.RequiredString(reference, "projectPackSha256", "Runner Project Pack precondition");
         var engineeringPlanSha256 = RunnerValidation.RequiredString(reference, "engineeringPlanSha256", "Runner Project Pack precondition");
@@ -628,6 +637,103 @@ public sealed class RunnerActionValidator
         {
             throw new RunnerGateException("PROJECT_PACK_SOURCE_DRIFT", "Runner engineering plan does not bind project-pack.json as a source.");
         }
+
+        if (plan["ioDesignators"] is null)
+        {
+            return null;
+        }
+        if (plan["ioDesignators"] is not JsonObject ioDesignators)
+        {
+            throw new RunnerGateException(
+                "PROJECT_PACK_REFERENCE_INVALID",
+                "Runner engineering plan ioDesignators must be an object.");
+        }
+
+        var ioSourcePath = RunnerValidation.RequiredString(ioDesignators, "sourcePath", "Runner engineering plan I/O designators")
+            .Replace('\\', '/');
+        var ioSourceSha256 = RunnerValidation.RequiredString(ioDesignators, "sourceSha256", "Runner engineering plan I/O designators");
+        if (!seenPaths.Contains(ioSourcePath) || !RunnerValidation.IsSha256(ioSourceSha256))
+        {
+            throw new RunnerGateException(
+                "PROJECT_PACK_REFERENCE_INVALID",
+                "Runner engineering plan I/O designators do not bind a validated Project Pack source.");
+        }
+        ValidateFileHash(
+            RunnerValidation.EnsureInside(
+                engineeringRoot,
+                Path.Combine(engineeringRoot, ioSourcePath),
+                "Runner engineering plan I/O designator source"),
+            ioSourceSha256,
+            "Runner engineering plan I/O designator source");
+        return ioDesignators;
+    }
+
+    private static void ValidateIoDesignatorReference(
+        string engineeringRoot,
+        string stationRoot,
+        JsonNode? planNode,
+        JsonNode? projectPackNode,
+        JsonNode? exportNode)
+    {
+        if (planNode is null && projectPackNode is null && exportNode is null)
+        {
+            return;
+        }
+        if (planNode is not JsonObject plan ||
+            projectPackNode is not JsonObject projectPack ||
+            exportNode is not JsonObject export)
+        {
+            throw new RunnerGateException(
+                "IO_DESIGNATOR_REFERENCE_INVALID",
+                "Runner action must bind the engineering plan, Project Pack, and matched CpStudio I/O designator export together.");
+        }
+
+        RunnerValidation.RequireOnly(projectPack, "Runner Project Pack I/O designators", "sourcePath", "sourceSha256");
+        RunnerValidation.RequireOnly(
+            export,
+            "Runner I/O designator export",
+            "state",
+            "sourcePath",
+            "sourceSha256",
+            "busConfigPath",
+            "busConfigSha256");
+
+        var sourcePath = RunnerValidation.RequiredString(export, "sourcePath", "Runner I/O designator export")
+            .Replace('\\', '/');
+        var sourceSha256 = RunnerValidation.RequiredString(export, "sourceSha256", "Runner I/O designator export");
+        var projectPackSourcePath = RunnerValidation.RequiredString(projectPack, "sourcePath", "Runner Project Pack I/O designators")
+            .Replace('\\', '/');
+        var projectPackSourceSha256 = RunnerValidation.RequiredString(projectPack, "sourceSha256", "Runner Project Pack I/O designators");
+        var planSourcePath = RunnerValidation.RequiredString(plan, "sourcePath", "Runner engineering plan I/O designators")
+            .Replace('\\', '/');
+        var planSourceSha256 = RunnerValidation.RequiredString(plan, "sourceSha256", "Runner engineering plan I/O designators");
+        if (RunnerValidation.RequiredString(export, "state", "Runner I/O designator export") != "MATCHED" ||
+            sourcePath != planSourcePath ||
+            sourcePath != projectPackSourcePath ||
+            !sourceSha256.Equals(planSourceSha256, StringComparison.OrdinalIgnoreCase) ||
+            !sourceSha256.Equals(projectPackSourceSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new RunnerGateException(
+                "IO_DESIGNATOR_REFERENCE_INVALID",
+                "Runner I/O designator export does not match the validated engineering plan and action Project Pack reference.");
+        }
+
+        var busConfigPath = RunnerValidation.RequiredString(export, "busConfigPath", "Runner I/O designator export")
+            .Replace('\\', '/');
+        ValidateFileHash(
+            RunnerValidation.EnsureInside(
+                engineeringRoot,
+                Path.Combine(engineeringRoot, sourcePath),
+                "Runner I/O designator source"),
+            sourceSha256,
+            "Runner I/O designator source");
+        ValidateFileHash(
+            RunnerValidation.EnsureInside(
+                stationRoot,
+                Path.Combine(stationRoot, busConfigPath),
+                "Runner CpStudio BusConfig"),
+            RunnerValidation.RequiredString(export, "busConfigSha256", "Runner I/O designator export"),
+            "Runner CpStudio BusConfig");
     }
 
     private static void ValidateRequiredFingerprint(JsonArray fingerprints, string root, string requiredPath)

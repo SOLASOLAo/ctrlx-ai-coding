@@ -413,12 +413,15 @@ function Get-ValidatedWarningReview {
     if (-not [System.IO.File]::Exists($plcProject)) { throw 'Runner evidence PLC project no longer exists.' }
 
     $capabilities = Get-RequiredArray -Object $Evidence -Name 'capabilitiesInvoked' -Context 'Runner evidence'
-    $allowedCapabilities = @('get_codesys_status', 'clean_compile_project', 'get_ctrlx_semantic_snapshot')
-    if (($capabilities.Count -lt 2) -or ($capabilities.Count -gt 3) -or
+    $allowedCapabilities = @('get_codesys_status', 'clean_compile_project', 'get_ctrlx_semantic_snapshot', 'get_ctrlx_semantic_snapshot_retry')
+    if (($capabilities.Count -lt 2) -or ($capabilities.Count -gt 4) -or
         (@($capabilities | Where-Object { $_ -isnot [string] -or $allowedCapabilities -notcontains [string]$_ }).Count -ne 0) -or
         (@($capabilities | Where-Object { [string]$_ -eq 'get_codesys_status' }).Count -ne 1) -or
         (@($capabilities | Where-Object { [string]$_ -eq 'clean_compile_project' }).Count -ne 1) -or
-        (@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot' }).Count -gt 1)) {
+        (@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot' }).Count -gt 1) -or
+        (@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot_retry' }).Count -gt 1) -or
+        ((@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot_retry' }).Count -gt 0) -and
+         (@($capabilities | Where-Object { [string]$_ -eq 'get_ctrlx_semantic_snapshot' }).Count -ne 1))) {
         throw 'Runner evidence does not prove one approved offline fresh Build.'
     }
 

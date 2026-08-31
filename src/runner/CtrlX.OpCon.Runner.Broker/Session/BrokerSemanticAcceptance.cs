@@ -1185,6 +1185,18 @@ internal static class BrokerSemanticAcceptance
             captured);
     }
 
+    internal static bool IsRetryableSnapshotFailure(string text, string expectedProject)
+    {
+        try
+        {
+            return ParseAdapterFailure(text, expectedProject).ReasonCode == "SEMANTIC_SNAPSHOT_FAILED";
+        }
+        catch (SemanticProofException)
+        {
+            return false;
+        }
+    }
+
     private static AdapterFailure ParseAdapterFailure(string text, string expectedProject)
     {
         if (Encoding.UTF8.GetByteCount(text) > 16 * 1024)
@@ -1488,8 +1500,12 @@ internal static class BrokerSemanticAcceptance
             var routeKind = actionKind == "inspect_and_build"
                 ? "cpstudio-export-2-review"
                 : "cpstudio-change-review";
+            var proof = UnverifiedProof(SemanticProducer, exception.ReasonCode);
+            proof["expectedSymbolConfigSha256"] = baseline.ExpectedSymbolConfigSha256;
+            proof["actualSymbolConfigSha256"] = adapter.SymbolConfigSha256;
+            proof["actualCanonicalFacts"] = adapter.CanonicalSymbolConfig.DeepClone();
             return (
-                UnverifiedProof(SemanticProducer, exception.ReasonCode),
+                proof,
                 new JsonObject
                 {
                     ["kind"] = routeKind,

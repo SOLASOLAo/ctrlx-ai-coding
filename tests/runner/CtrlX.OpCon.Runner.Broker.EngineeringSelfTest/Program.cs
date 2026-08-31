@@ -51,6 +51,8 @@ internal static class Program
             ("maximum combined terminal observation fails closed within Broker wire frame", MaximumCombinedObservationFailsClosedAsync),
             ("semantic response over 480 KiB is rejected before parsing", OversizedSemanticSnapshotBlocksAsync),
             ("semantic snapshot captured before Build completion is rejected", StaleSemanticSnapshotBlocksAsync),
+            ("transient Symbol rebuild retries snapshot without rebuilding", TransientSemanticSnapshotRetriesReadOnlyAsync),
+            ("repeated Symbol rebuild failure remains blocked", RepeatedSemanticSnapshotFailureBlocksAsync),
             ("adapter semantic source contract drift is rejected", SemanticSourceContractDriftBlocksAsync),
             ("unknown mapping record field is rejected", UnknownMappingFieldBlocksAsync),
             ("root connector parameter with empty device index is valid", RootConnectorParameterIsValidAsync),
@@ -729,8 +731,13 @@ internal static class Program
 
         Require(outcome.TerminalState == "BLOCKED" && outcome.ReasonCode == "SYMBOL_BASELINE_MISMATCH",
             "Symbol mismatch must block with a stable reason.");
-        Require(outcome.Observation["result"]?["semanticProofs"]?["symbolPostProcessing"]?["verified"]?.GetValue<bool>() == false,
+        var symbolProof = outcome.Observation["result"]?["semanticProofs"]?["symbolPostProcessing"] as JsonObject;
+        Require(symbolProof?["verified"]?.GetValue<bool>() == false,
             "Symbol mismatch must not be accepted.");
+        Require(symbolProof?["expectedSymbolConfigSha256"] is JsonValue &&
+                symbolProof["actualSymbolConfigSha256"] is JsonValue &&
+                symbolProof["actualCanonicalFacts"] is JsonObject,
+            "Symbol mismatch must retain bounded actual-versus-expected review facts.");
         Require(outcome.Observation["result"]?["nextRoute"]?["kind"]?.GetValue<string>() == "cpstudio-change-review",
             "verify_after_export_2 Symbol mismatch must route to CpStudio change review.");
     }
@@ -767,6 +774,50 @@ internal static class Program
 
         Require(outcome.TerminalState == "BLOCKED" && outcome.ReasonCode == "SEMANTIC_ADAPTER_CORRELATION_INVALID",
             "A pre-Build semantic snapshot must not be accepted by the same-call Build gate.");
+    }
+
+    private static async Task TransientSemanticSnapshotRetriesReadOnlyAsync()
+    {
+        using var fixture = new Fixture();
+        var rpc = ExecutionRpc(fixture, "semantic-transient-retry");
+        rpc.CompileResponseFactory = () => FreshCompile(fixture.ProjectPath);
+        var semanticResponse = 0;
+        rpc.SemanticResponseFactory = () => semanticResponse++ == 0
+            ? SemanticFailure(fixture.ProjectPath, "Symbol Configuration is still rebuilding")
+            : fixture.CreateSemanticSnapshot();
+        rpc.SemanticIsErrorResponses.Enqueue(true);
+        rpc.SemanticIsErrorResponses.Enqueue(false);
+        await using var session = new BrokerEngineeringSession(rpc, fixture.Options);
+        var runtime = await session.StartAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var outcome = await session.ExecuteAsync(
+            fixture.CreateAction("verify_after_export_2"), runtime, CancellationToken.None).ConfigureAwait(false);
+
+        Require(outcome.TerminalState == "SUCCEEDED" && outcome.ReasonCode == "BUILD_AND_SEMANTICS_VERIFIED" &&
+                rpc.Count("clean_compile_project") == 1 &&
+                rpc.Count("get_ctrlx_semantic_snapshot") == 2,
+            "A transient Symbol rebuild must retry only the read and keep exactly one Clean Build.");
+    }
+
+    private static async Task RepeatedSemanticSnapshotFailureBlocksAsync()
+    {
+        using var fixture = new Fixture();
+        var rpc = ExecutionRpc(fixture, "semantic-repeated-failure");
+        rpc.CompileResponseFactory = () => FreshCompile(fixture.ProjectPath);
+        rpc.SemanticResponseFactory = () =>
+            SemanticFailure(fixture.ProjectPath, "Symbol Configuration is still rebuilding");
+        rpc.SemanticIsErrorResponses.Enqueue(true);
+        rpc.SemanticIsErrorResponses.Enqueue(true);
+        await using var session = new BrokerEngineeringSession(rpc, fixture.Options);
+        var runtime = await session.StartAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var outcome = await session.ExecuteAsync(
+            fixture.CreateAction("verify_after_export_2"), runtime, CancellationToken.None).ConfigureAwait(false);
+
+        Require(outcome.TerminalState == "BLOCKED" && outcome.ReasonCode == "SEMANTIC_ADAPTER_RETURNED_ERROR" &&
+                rpc.Count("clean_compile_project") == 1 &&
+                rpc.Count("get_ctrlx_semantic_snapshot") == 2,
+            "Two failed Symbol reads must stay blocked without repeating Clean Build.");
     }
 
     private static async Task SemanticSourceContractDriftBlocksAsync()
@@ -1218,6 +1269,20 @@ internal static class Program
         };
         return $"### CLEAN_COMPILE_SUMMARY_START ###\n{summary.ToJsonString()}\n### CLEAN_COMPILE_SUMMARY_END ###";
     }
+
+    private static string SemanticFailure(string projectPath, string reason) => JsonSerializer.Serialize(new
+    {
+        contractVersion = 1,
+        contractId = "ctrlx-semantic-snapshot-v1",
+        producer = "codesys-persistent.get_ctrlx_semantic_snapshot",
+        adapterPatchId = "ctrlx-semantic-snapshot-v1",
+        capturedAtUtc = DateTimeOffset.UtcNow.ToString("O"),
+        projectFilePath = projectPath,
+        recordsComplete = false,
+        stableAcrossRead = false,
+        reasonCode = "SEMANTIC_SNAPSHOT_FAILED",
+        reason
+    });
 
     private static string FailedFreshCompile(string projectPath, params string[] diagnosticRows)
     {
@@ -2000,6 +2065,8 @@ internal sealed class FakeRpc : IMcpRpcClient
 
     public Func<string>? SemanticResponseFactory { get; set; }
 
+    public Queue<bool> SemanticIsErrorResponses { get; } = new();
+
     public int ProjectStructureFailuresRemaining { get; set; }
 
     public int ProjectStructureReadCalls { get; private set; }
@@ -2028,7 +2095,10 @@ internal sealed class FakeRpc : IMcpRpcClient
         calls.Add(toolName);
         var isError = (toolName == "clean_compile_project" && CompileIsError) ||
             (toolName == "shutdown_codesys" && ShutdownFails) ||
-            (toolName == "get_ctrlx_semantic_snapshot" && SemanticResponseFactory is null);
+            (toolName == "get_ctrlx_semantic_snapshot" &&
+                (SemanticIsErrorResponses.Count > 0
+                    ? SemanticIsErrorResponses.Dequeue()
+                    : SemanticResponseFactory is null));
         var text = toolName switch
         {
             "get_codesys_status" when statuses.Count > 0 => statuses.Dequeue(),
