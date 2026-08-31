@@ -63,7 +63,7 @@ AI 可以创建标准化的 AI 旁车目录，但不伪造 CpStudio 供应商模
 - 提交信息风格:`docs:` / `patches:` / `scripts:` / `config:` / `hmi:` 前缀 + 简述;中文正文可
 - 日期一律 ISO 格式(YYYY-MM-DD);新增决策追加到 SESSION_LOG 决策清单与基线红线章节
 
-## 7. 当前状态快照(2026-08-29)
+## 7. 当前状态快照(2026-08-31)
 
 - [x] 阶段 0:环境基线 + persistent 上线验证 + ctrlX 兼容补丁产品化（含编译超时修复）
 - [x] 通用 AI 旁车初始化器 + Post-export 离线审计队列 + `ctrlx-opcon-engineering` Skill
@@ -78,6 +78,7 @@ AI 可以创建标准化的 AI 旁车目录，但不伪造 CpStudio 供应商模
 - [x] Controlled Runner P1.4a：精简团队离线包可在接收工位用 PowerShell 7 完成完整性校验、安装/升级、精确回滚、安全卸载与状态查询；Host 仍需 .NET 8 runtime，但不依赖 Git、源码、SDK 或本机 build；fresh `Install` 默认不启动 Host，升级保留原 running/stopped 状态
 - [ ] Controlled Runner P1.4 后续：独立 AtLogOn 五文件 prelaunch bootstrap 按用户决定延期到商业化/无人值守部署阶段，不阻塞当前开发；兼容矩阵与新团队工作站验收在有团队工位时再做。默认沿用当前用户权限、不自定义 ACL，数字签名延期到商业发行或公司 IT 明确要求
 - [x] Phase 2 Project Pack：通用 JSON schema、PowerShell 7 Build/Check、draft initializer，以及 Host/ExecuteAction 共用的 contentId/plan-source 漂移门禁已完成离线回归（2026-08-29）
+- [x] 可选 ePLAN DIDO Project Pack：本工位完整 CSV 确定性生成 ASC；Post-export Stage 1 核对 BusConfig，Stage 2 将匹配哈希绑定进 immutable action；模板不携带任何工位点位（2026-08-31）
 - [ ] 阶段 A(进行中):用户 CpStudio 骨架 → AI 填充逻辑(阶段 3)→ 仿真 → 真机
 - [ ] 阶段 B:路线② HMI 原型(OPC UA demo → hmi-framework,主画面 Avalonia 原生壳,Web 版远程备选)
 - [ ] 阶段 C:路线③ 标准 CODESYS + MCP 实测(先验证后买授权)

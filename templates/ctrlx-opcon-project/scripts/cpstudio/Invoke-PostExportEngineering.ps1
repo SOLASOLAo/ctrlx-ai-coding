@@ -174,7 +174,10 @@ function Get-ProjectPackReference {
         }
     }
 
-    $checkOutput = @(& $builderPath -Command Check -EngineeringRoot $ResolvedEngineeringRoot -RequireReady -Json)
+    $checkOutput = @(& {
+        $WhatIfPreference = $false
+        & $builderPath -Command Check -EngineeringRoot $ResolvedEngineeringRoot -RequireReady -Json
+    })
     if ($checkOutput.Count -ne 1) {
         throw 'Project Pack action precondition did not return exactly one JSON result.'
     }
@@ -199,13 +202,20 @@ function Get-ProjectPackReference {
         throw 'Generated engineering plan identity does not match the current ready Project Pack.'
     }
 
-    return [ordered]@{
+    $reference = [ordered]@{
         contentId = ([string]$check.contentId).ToLowerInvariant()
         projectPackPath = 'project-pack.json'
         projectPackSha256 = ([string]$packDocument.sha256).ToLowerInvariant()
         engineeringPlanPath = 'generated/engineering-plan.json'
         engineeringPlanSha256 = ([string]$planDocument.sha256).ToLowerInvariant()
     }
+    $ioDesignators = Get-IoDesignatorPlanReference `
+        -Plan $planDocument.payload `
+        -Context 'Generated engineering plan I/O designators'
+    if ($null -ne $ioDesignators) {
+        $reference.ioDesignators = $ioDesignators
+    }
+    return $reference
 }
 
 function Assert-ProjectPackReferenceCurrent {
@@ -238,11 +248,28 @@ function Assert-ProjectPackReferenceCurrent {
         throw "$Context no longer matches its action-creation Project Pack identity."
     }
 
+    $currentIoDesignators = Get-IoDesignatorPlanReference `
+        -Plan $plan.payload `
+        -Context "$Context current engineering plan I/O designators"
+    $boundIoDesignators = Get-PropertyValue -Object $Reference -Name 'ioDesignators'
+    if (($null -eq $currentIoDesignators) -ne ($null -eq $boundIoDesignators)) {
+        throw "$Context I/O designator binding no longer matches the current engineering plan."
+    }
+    if (($null -ne $currentIoDesignators) -and
+        (-not (Get-JsonTextSha256 -Value $currentIoDesignators).Equals(
+            (Get-JsonTextSha256 -Value $boundIoDesignators),
+            [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw "$Context I/O designator binding no longer matches the current engineering plan."
+    }
+
     $builderPath = Join-Path $ResolvedEngineeringRoot 'scripts\project\Build-CtrlXOpconProjectPack.ps1'
     if (-not [System.IO.File]::Exists($builderPath)) {
         throw "$Context Project Pack builder is missing."
     }
-    $checkOutput = @(& $builderPath -Command Check -EngineeringRoot $ResolvedEngineeringRoot -RequireReady -Json)
+    $checkOutput = @(& {
+        $WhatIfPreference = $false
+        & $builderPath -Command Check -EngineeringRoot $ResolvedEngineeringRoot -RequireReady -Json
+    })
     if ($checkOutput.Count -ne 1) {
         throw "$Context Project Pack source check returned unexpected output."
     }
@@ -493,6 +520,29 @@ function Test-HexSha256 {
     param([Parameter(Mandatory = $false)][string]$Value)
 
     return (-not [string]::IsNullOrWhiteSpace($Value)) -and ($Value -match '^[A-Fa-f0-9]{64}$')
+}
+
+function Get-IoDesignatorPlanReference {
+    param(
+        [Parameter(Mandatory = $true)][object]$Plan,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $ioDesignators = Get-PropertyValue -Object $Plan -Name 'ioDesignators'
+    if ($null -eq $ioDesignators) {
+        return $null
+    }
+
+    $sourcePath = Get-RequiredString -Object $ioDesignators -Name 'sourcePath' -Context $Context
+    $sourceSha256 = Get-RequiredString -Object $ioDesignators -Name 'sourceSha256' -Context $Context
+    if (-not (Test-HexSha256 -Value $sourceSha256)) {
+        throw "$Context contains an invalid SHA-256."
+    }
+
+    return [ordered]@{
+        sourcePath = $sourcePath.Replace('\', '/')
+        sourceSha256 = $sourceSha256.ToLowerInvariant()
+    }
 }
 
 function Assert-IndependentHumanReviewEvidence {
@@ -902,6 +952,106 @@ function Assert-FingerprintRecordsCurrent {
             (-not (Get-BooleanValue -Object $recordMap[$normalizedRequired] -Name 'exists' -Required -Context $Context))) {
             throw "$Context is missing a required file fingerprint: $normalizedRequired"
         }
+    }
+}
+
+function Assert-IoDesignatorBindingsEqual {
+    param(
+        [Parameter(Mandatory = $false)][AllowNull()][object]$Expected,
+        [Parameter(Mandatory = $false)][AllowNull()][object]$Actual,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    if (($null -eq $Expected) -ne ($null -eq $Actual)) {
+        throw "$Context I/O designator binding is missing or unexpected."
+    }
+    if (($null -ne $Expected) -and
+        (-not (Get-JsonTextSha256 -Value $Expected).Equals(
+            (Get-JsonTextSha256 -Value $Actual),
+            [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw "$Context I/O designator binding changed."
+    }
+}
+
+function Assert-Stage1IoDesignatorBinding {
+    param(
+        [Parameter(Mandatory = $true)][object]$Report,
+        [Parameter(Mandatory = $true)][object]$ProjectPackReference,
+        [Parameter(Mandatory = $true)][string]$EngineeringRoot,
+        [Parameter(Mandatory = $true)][string]$StationRoot,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $planBinding = Get-PropertyValue -Object $ProjectPackReference -Name 'ioDesignators'
+    if ($null -eq $planBinding) {
+        return $null
+    }
+
+    $auditBinding = Get-PropertyValue -Object $Report -Name 'ioDesignatorExport'
+    if ($null -eq $auditBinding) {
+        throw "$Context is missing ioDesignatorExport while the Project Pack contains I/O designators."
+    }
+    if ((Get-RequiredString -Object $auditBinding -Name 'state' -Context $Context) -cne 'MATCHED') {
+        throw "$Context ioDesignatorExport must have state MATCHED."
+    }
+    if (-not (Get-BooleanValue -Object $auditBinding -Name 'passed' -Required -Context $Context)) {
+        throw "$Context ioDesignatorExport must have passed=true."
+    }
+
+    $source = Get-PropertyValue -Object $auditBinding -Name 'source'
+    if ($null -eq $source) {
+        throw "$Context ioDesignatorExport has no source binding."
+    }
+    $sourcePath = Get-RequiredString -Object $source -Name 'path' -Context "$Context source"
+    $sourceSha256 = Get-RequiredString -Object $source -Name 'sha256' -Context "$Context source"
+    if ((-not (Test-HexSha256 -Value $sourceSha256)) -or
+        (-not $sourceSha256.Equals([string]$planBinding.sourceSha256, [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw "$Context source SHA-256 does not match the current Project Pack I/O designator source."
+    }
+    $expectedSourcePath = Assert-PathInsideRoot `
+        -Root $EngineeringRoot `
+        -Path (Join-Path $EngineeringRoot ([string]$planBinding.sourcePath).Replace('/', [System.IO.Path]::DirectorySeparatorChar)) `
+        -Description "$Context Project Pack I/O designator source"
+    Assert-SamePath -Expected $expectedSourcePath -Actual $sourcePath -Description "$Context I/O designator source"
+
+    $busConfig = Get-PropertyValue -Object $auditBinding -Name 'busConfig'
+    if ($null -eq $busConfig) {
+        throw "$Context ioDesignatorExport has no BusConfig binding."
+    }
+    $busConfigPath = Get-RequiredString -Object $busConfig -Name 'path' -Context "$Context BusConfig"
+    $busConfigSha256 = Get-RequiredString -Object $busConfig -Name 'sha256' -Context "$Context BusConfig"
+    if (-not (Test-HexSha256 -Value $busConfigSha256)) {
+        throw "$Context BusConfig SHA-256 is invalid."
+    }
+    $busConfigRelativePath = Get-RelativePathInsideRoot `
+        -Root $StationRoot `
+        -Path $busConfigPath `
+        -Description "$Context BusConfig"
+
+    $matchingFingerprints = @(@(Get-PropertyValue -Object $Report -Name 'fingerprints' -DefaultValue @()) | Where-Object {
+        ([string](Get-PropertyValue -Object $_ -Name 'path')).Replace('\', '/').Equals(
+            $busConfigRelativePath,
+            [System.StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($matchingFingerprints.Count -ne 1) {
+        throw "$Context BusConfig must have exactly one matching Stage1 Station fingerprint."
+    }
+    $fingerprint = $matchingFingerprints[0]
+    if (-not (Get-BooleanValue -Object $fingerprint -Name 'exists' -Required -Context "$Context BusConfig fingerprint")) {
+        throw "$Context BusConfig fingerprint reports that the file is absent."
+    }
+    $fingerprintSha256 = Get-RequiredString -Object $fingerprint -Name 'sha256' -Context "$Context BusConfig fingerprint"
+    if ((-not (Test-HexSha256 -Value $fingerprintSha256)) -or
+        (-not $fingerprintSha256.Equals($busConfigSha256, [System.StringComparison]::OrdinalIgnoreCase))) {
+        throw "$Context BusConfig SHA-256 does not match its Stage1 Station fingerprint."
+    }
+
+    return [ordered]@{
+        state = 'MATCHED'
+        sourcePath = ([string]$planBinding.sourcePath).Replace('\', '/')
+        sourceSha256 = $sourceSha256.ToLowerInvariant()
+        busConfigPath = $busConfigRelativePath
+        busConfigSha256 = $busConfigSha256.ToLowerInvariant()
     }
 }
 
@@ -1554,6 +1704,17 @@ function Assert-OperationSourcesCurrent {
         if (-not $actualSha.Equals([string]$source.sha256, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "A bound Stage1 audit report changed after it entered the operation: $($source.path)"
         }
+        $boundReport = (Read-JsonDocument -Path ([string]$source.path) -Description 'Bound Stage1 audit report').payload
+        $ioDesignatorBinding = Assert-Stage1IoDesignatorBinding `
+            -Report $boundReport `
+            -ProjectPackReference $Operation.baseline.projectPack `
+            -EngineeringRoot ([string]$Operation.identity.engineeringRoot) `
+            -StationRoot ([string]$Operation.identity.stationRoot) `
+            -Context 'Bound Stage1 audit report'
+        Assert-IoDesignatorBindingsEqual `
+            -Expected (Get-PropertyValue -Object $Operation.baseline -Name 'ioDesignatorExport') `
+            -Actual $ioDesignatorBinding `
+            -Context 'Bound Stage1 audit report'
     }
 
     foreach ($manifest in @($Operation.baseline.manifests)) {
@@ -1607,6 +1768,13 @@ function Assert-OperationSourcesCurrent {
             -Path ([string]$Operation.identity.plcProject) `
             -Description 'Operation PLC project'
         $requiredFingerprints = @('Engineering/Engineering_Data.xml')
+        $ioDesignatorBinding = Get-PropertyValue -Object $Operation.baseline -Name 'ioDesignatorExport'
+        if ($null -ne $ioDesignatorBinding) {
+            $requiredFingerprints += (Get-RequiredString `
+                -Object $ioDesignatorBinding `
+                -Name 'busConfigPath' `
+                -Context 'Operation I/O designator binding')
+        }
         if (($Operation.currentAction) -and ([string]$Operation.currentAction.kind -in @('inspect_and_build', 'verify_after_export_2'))) {
             $requiredFingerprints += $plcRelativePath
         }
@@ -1738,6 +1906,14 @@ function Assert-OperationLedgerIntegrity {
                 throw "Runner action Project Pack precondition '$name' does not match the operation ledger."
             }
         }
+        Assert-IoDesignatorBindingsEqual `
+            -Expected (Get-PropertyValue -Object $Operation.baseline.projectPack -Name 'ioDesignators') `
+            -Actual (Get-PropertyValue -Object $action.preconditions.projectPack -Name 'ioDesignators') `
+            -Context 'Runner action Project Pack'
+        Assert-IoDesignatorBindingsEqual `
+            -Expected (Get-PropertyValue -Object $Operation.baseline -Name 'ioDesignatorExport') `
+            -Actual (Get-PropertyValue -Object $action.preconditions -Name 'ioDesignatorExport') `
+            -Context 'Runner action'
     }
 
     $seenEvidenceActions = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
@@ -1888,6 +2064,7 @@ function New-RunnerAction {
             semanticSnapshotRequest = $Operation.baseline.semanticSnapshotRequest
             semanticBaseline = $Operation.baseline.semanticBaseline
             projectPack      = $Operation.baseline.projectPack
+            ioDesignatorExport = (Get-PropertyValue -Object $Operation.baseline -Name 'ioDesignatorExport')
             fingerprints     = $Operation.baseline.fingerprints
         }
         guardrails    = [ordered]@{
@@ -3030,6 +3207,12 @@ function Start-NewOperation {
     $operationDirectory = Get-OperationDirectory -Root $ResolvedOperationRoot -Id $newOperationId
     $operationPath = Join-Path $operationDirectory 'operation.json'
     $projectPackReference = Get-ProjectPackReference -ResolvedEngineeringRoot $ResolvedEngineeringRoot
+    $ioDesignatorBinding = Assert-Stage1IoDesignatorBinding `
+        -Report $Audit.report `
+        -ProjectPackReference $projectPackReference `
+        -EngineeringRoot $ResolvedEngineeringRoot `
+        -StationRoot $ResolvedStationRoot `
+        -Context 'Initial Stage1 audit report'
     $idempotencyText = $workflowRevision + '|' + $Audit.requestId + '|' + $Audit.document.sha256 + '|' + $ResolvedPlcProject.ToLowerInvariant() + '|' + $Profile + '|' + $projectPackReference.contentId
     $idempotencyKey = Get-Sha256ForText -Text $idempotencyText
 
@@ -3094,6 +3277,7 @@ function Start-NewOperation {
             warningBaseline = $Audit.report.warningBaseline
             semanticSnapshotRequest = $Audit.report.semanticSnapshotRequest
             semanticBaseline = $Audit.report.semanticBaseline
+            ioDesignatorExport = $ioDesignatorBinding
             fingerprints    = @($Audit.report.fingerprints)
         }
         guardrails       = [ordered]@{
@@ -3412,6 +3596,16 @@ function Bind-SecondExport {
         -Expected $Operation.baseline.semanticBaseline `
         -Actual $Audit.report.semanticBaseline `
         -Context 'Export #2 semanticBaseline'
+    $ioDesignatorBinding = Assert-Stage1IoDesignatorBinding `
+        -Report $Audit.report `
+        -ProjectPackReference $Operation.baseline.projectPack `
+        -EngineeringRoot ([string]$Operation.identity.engineeringRoot) `
+        -StationRoot ([string]$Operation.identity.stationRoot) `
+        -Context 'Export #2 Stage1 report'
+    Assert-IoDesignatorBindingsEqual `
+        -Expected (Get-PropertyValue -Object $Operation.baseline -Name 'ioDesignatorExport') `
+        -Actual $ioDesignatorBinding `
+        -Context 'Export #2 Stage1 report'
     if ($Audit.requestId -eq $Operation.source.initialAudit.requestId) {
         throw 'Export #2 must have a new Stage1 requestId.'
     }

@@ -35,6 +35,8 @@ $requiredFiles = @(
     'scripts/cpstudio/Run-OfflinePostExportCheck.cmd',
     'scripts/git/Get-ReadOnlyGitAudit.ps1',
     'scripts/project/Build-CtrlXOpconProjectPack.ps1',
+    'scripts/ioe/New-CpStudioEplanIoAsc.ps1',
+    'scripts/ioe/Test-CpStudioEplanIoExport.ps1',
     'tests/cpstudio/Test-PostExportQueue.ps1',
     'tests/cpstudio/Test-PostExportEngineering.ps1',
     'tests/cpstudio/Test-PostExportRunnerEvidence.ps1',

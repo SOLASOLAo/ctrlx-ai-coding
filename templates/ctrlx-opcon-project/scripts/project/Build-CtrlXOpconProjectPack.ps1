@@ -455,6 +455,67 @@ function Write-AtomicUtf8Text {
     }
 }
 
+function Write-AtomicBytes {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+
+    $parent = [System.IO.Path]::GetDirectoryName($Path)
+    $rootPrefix = $Root + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $parent.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Generated output escapes EngineeringRoot: $Path"
+    }
+    if ([System.IO.Directory]::Exists($parent)) {
+        $item = Get-Item -LiteralPath $parent -Force
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Generated output directory must not be a reparse point: $parent"
+        }
+    }
+    else {
+        [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+    }
+
+    $temporaryPath = $Path + '.tmp-' + [guid]::NewGuid().ToString('N')
+    try {
+        [System.IO.File]::WriteAllBytes($temporaryPath, $Bytes)
+        [System.IO.File]::Move($temporaryPath, $Path, $true)
+    }
+    finally {
+        if ([System.IO.File]::Exists($temporaryPath)) {
+            [System.IO.File]::Delete($temporaryPath)
+        }
+    }
+}
+
+function Invoke-IoDesignatorGenerator {
+    param(
+        [Parameter(Mandatory = $true)][string]$GeneratorPath,
+        [Parameter(Mandatory = $true)][string]$InputCsvPath
+    )
+
+    $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('ctrlx-project-pack-io-' + [guid]::NewGuid().ToString('N'))
+    $temporaryAsc = Join-Path $temporaryRoot 'cpstudio-io-designators.asc'
+    try {
+        [System.IO.Directory]::CreateDirectory($temporaryRoot) | Out-Null
+        $statistics = & $GeneratorPath -InputCsv $InputCsvPath -OutputAsc $temporaryAsc
+        if (-not [System.IO.File]::Exists($temporaryAsc)) {
+            throw 'I/O designator generator did not create its ASC output.'
+        }
+        $bytes = Read-BoundedBytes -Path $temporaryAsc -MaximumBytes $maximumSourceBytes -Description 'Generated I/O designator ASC'
+        return [pscustomobject]@{
+            Statistics = $statistics
+            Bytes = [byte[]]$bytes
+        }
+    }
+    finally {
+        if ([System.IO.Directory]::Exists($temporaryRoot)) {
+            [System.IO.Directory]::Delete($temporaryRoot, $true)
+        }
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($EngineeringRoot)) {
     $EngineeringRoot = Join-Path $PSScriptRoot '..\..'
 }
@@ -463,6 +524,9 @@ $packRelativePath = 'project-pack.json'
 $packSchemaRelativePath = 'schemas/project-pack.schema.json'
 $processSchemaRelativePath = 'schemas/process.schema.json'
 $outputRelativePath = 'generated/engineering-plan.json'
+$ioDesignatorGeneratorRelativePath = 'scripts/ioe/New-CpStudioEplanIoAsc.ps1'
+$ioDesignatorCheckerRelativePath = 'scripts/ioe/Test-CpStudioEplanIoExport.ps1'
+$ioDesignatorOutputRelativePath = 'generated/cpstudio-io-designators.asc'
 
 $packPath = (Resolve-ProjectFile -Root $root -RelativePath $packRelativePath -Description 'Project Pack').FullPath
 $packSchemaPath = (Resolve-ProjectFile -Root $root -RelativePath $packSchemaRelativePath -Description 'Project Pack schema').FullPath
@@ -480,11 +544,19 @@ $categoryPaths = [ordered]@{
     catalog = @($pack.sources.catalog | ForEach-Object { [string]$_ })
     manifests = @($pack.sources.manifests | ForEach-Object { [string]$_ })
 }
+$ioDesignatorProperty = $pack.sources.PSObject.Properties['ioDesignators']
+if (($null -ne $ioDesignatorProperty) -and
+    (-not [string]::IsNullOrWhiteSpace([string]$ioDesignatorProperty.Value))) {
+    $categoryPaths.ioDesignators = @([string]$ioDesignatorProperty.Value)
+}
 
 $allReferencedPaths = @($categoryPaths.Values | ForEach-Object { @($_) })
 Assert-UniqueStrings -Values $allReferencedPaths -Description 'Project Pack source paths'
 
 $sourcePaths = @($packRelativePath, $packSchemaRelativePath, $processSchemaRelativePath) + $allReferencedPaths
+if ($categoryPaths.Contains('ioDesignators')) {
+    $sourcePaths += @($ioDesignatorGeneratorRelativePath, $ioDesignatorCheckerRelativePath)
+}
 $sourceRecords = @(Sort-OrdinalObjects -Values @($sourcePaths | ForEach-Object {
     New-SourceRecord -Root $root -RelativePath $_ -Description "Project Pack source '$_'"
 }) -Key { param($item) $item.path })
@@ -502,6 +574,35 @@ foreach ($processRelativePath in @(Sort-OrdinalStrings -Values @($categoryPaths.
 Assert-UniqueStrings -Values @($processPlans | ForEach-Object { [string]$_.processId }) -Description 'Project Pack process IDs'
 Assert-UniqueStrings -Values @($processPlans | ForEach-Object { [string]$_.chain.name }) -Description 'Project Pack Chain names'
 Assert-UniqueStrings -Values @($processPlans | ForEach-Object { [string]$_.chain.plcPath }) -Description 'Project Pack Chain PLC paths'
+
+$ioDesignatorArtifact = $null
+$ioDesignatorBytes = $null
+if ($categoryPaths.Contains('ioDesignators')) {
+    $ioDesignatorSourceRelativePath = [string]$categoryPaths.ioDesignators[0]
+    $ioDesignatorSourcePath = (Resolve-ProjectFile -Root $root -RelativePath $ioDesignatorSourceRelativePath -Description 'I/O designator source').FullPath
+    $ioDesignatorGeneratorPath = (Resolve-ProjectFile -Root $root -RelativePath $ioDesignatorGeneratorRelativePath -Description 'I/O designator generator').FullPath
+    $generatedIoDesignators = Invoke-IoDesignatorGenerator -GeneratorPath $ioDesignatorGeneratorPath -InputCsvPath $ioDesignatorSourcePath
+    $ioDesignatorBytes = [byte[]]$generatedIoDesignators.Bytes
+    $ioDesignatorStatistics = $generatedIoDesignators.Statistics
+    $ioDesignatorArtifact = [ordered]@{
+        sourcePath = $ioDesignatorSourceRelativePath
+        sourceSha256 = [string](@($sourceRecords | Where-Object path -eq $ioDesignatorSourceRelativePath)[0].sha256)
+        generatorPath = $ioDesignatorGeneratorRelativePath
+        generatorSha256 = [string](@($sourceRecords | Where-Object path -eq $ioDesignatorGeneratorRelativePath)[0].sha256)
+        checkerPath = $ioDesignatorCheckerRelativePath
+        checkerSha256 = [string](@($sourceRecords | Where-Object path -eq $ioDesignatorCheckerRelativePath)[0].sha256)
+        artifactPath = $ioDesignatorOutputRelativePath
+        artifactLength = $ioDesignatorBytes.Length
+        artifactSha256 = Get-Sha256Hex -Bytes $ioDesignatorBytes
+        rowCount = [int]$ioDesignatorStatistics.RowCount
+        digitalInputs = [int]$ioDesignatorStatistics.DigitalInputs
+        digitalOutputs = [int]$ioDesignatorStatistics.DigitalOutputs
+        activeChannels = [int]$ioDesignatorStatistics.ActiveChannels
+        inactiveChannels = [int]$ioDesignatorStatistics.InactiveChannels
+        encoding = [string]$ioDesignatorStatistics.Encoding
+        languageColumns = [string]$ioDesignatorStatistics.LanguageColumns
+    }
+}
 
 $readyForEngineering = ([string]$pack.status -eq 'ready') -and
     ($processPlans.Count -gt 0) -and
@@ -540,7 +641,7 @@ $sfcPlans = @(Sort-OrdinalObjects -Values @($processPlans.ToArray()) -Key { para
 $plan = [ordered]@{
     schemaVersion = 1
     kind = 'ctrlx-opcon-engineering-plan'
-    builderVersion = '1.0.0'
+    builderVersion = '1.1.0'
     contentId = $contentId
     projectPackSha256 = [string](@($sourceRecords | Where-Object path -eq $packRelativePath)[0].sha256)
     readyForEngineering = $readyForEngineering
@@ -550,18 +651,36 @@ $plan = [ordered]@{
     testCases = $testCases
     traceability = $traceability
 }
+if ($null -ne $ioDesignatorArtifact) {
+    $plan.ioDesignators = $ioDesignatorArtifact
+}
 $expectedText = ConvertTo-CanonicalJsonText -Value $plan
 $outputPath = [System.IO.Path]::GetFullPath((Join-Path $root ($outputRelativePath -replace '/', [System.IO.Path]::DirectorySeparatorChar)))
+$ioDesignatorOutputPath = [System.IO.Path]::GetFullPath((Join-Path $root ($ioDesignatorOutputRelativePath -replace '/', [System.IO.Path]::DirectorySeparatorChar)))
 
 if ($RequireReady -and (-not $readyForEngineering)) {
     throw 'Project Pack is valid but not ready for engineering. Set the pack and every process to status=ready and include at least one process.'
 }
 
 if ($Command -eq 'Build') {
+    if ($null -ne $ioDesignatorArtifact) {
+        Write-AtomicBytes -Path $ioDesignatorOutputPath -Bytes $ioDesignatorBytes -Root $root
+    }
     Write-AtomicUtf8Text -Path $outputPath -Text $expectedText -Root $root
     $status = 'BUILT'
 }
 else {
+    if ($null -ne $ioDesignatorArtifact) {
+        if (-not [System.IO.File]::Exists($ioDesignatorOutputPath)) {
+            throw "Generated I/O designator ASC is missing. Run Build first: $ioDesignatorOutputRelativePath"
+        }
+        $actualIoDesignatorBytes = Read-BoundedBytes -Path $ioDesignatorOutputPath -MaximumBytes $maximumSourceBytes -Description 'Generated I/O designator ASC'
+        if (-not [System.Collections.StructuralComparisons]::StructuralEqualityComparer.Equals(
+                [byte[]]$actualIoDesignatorBytes,
+                [byte[]]$ioDesignatorBytes)) {
+            throw 'Generated I/O designator ASC is stale or was edited. Run Build and review the source changes.'
+        }
+    }
     if (-not [System.IO.File]::Exists($outputPath)) {
         throw "Generated engineering plan is missing. Run Build first: $outputRelativePath"
     }
@@ -583,6 +702,7 @@ $result = [ordered]@{
     promptCount = $operatorPrompts.Count
     testCount = $testCases.Count
     requirementCount = $traceability.Count
+    ioDesignators = $ioDesignatorArtifact
 }
 if ($Json) {
     $result | ConvertTo-Json -Compress

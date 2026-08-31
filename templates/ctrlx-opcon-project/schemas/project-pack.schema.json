@@ -44,6 +44,9 @@
         "io": {
           "$ref": "#/definitions/relativePath"
         },
+        "ioDesignators": {
+          "$ref": "#/definitions/relativePath"
+        },
         "events": {
           "$ref": "#/definitions/relativePath"
         },

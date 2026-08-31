@@ -1013,6 +1013,34 @@ function Get-SafeRelativePath {
     return $resolvedPath.Substring($prefix.Length).Replace('\', '/')
 }
 
+function Assert-NoReparsePointInPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $relativePath = Get-SafeRelativePath -Root $Root -Path $Path
+    if ($null -eq $relativePath) {
+        throw "$Description escapes its configured root."
+    }
+
+    $currentPath = [System.IO.Path]::GetFullPath($Root)
+    foreach ($segment in @('.') + @($relativePath -split '[\\/]')) {
+        if ($segment -cne '.') {
+            $currentPath = Join-Path $currentPath $segment
+        }
+        if ((-not [System.IO.File]::Exists($currentPath)) -and
+            (-not [System.IO.Directory]::Exists($currentPath))) {
+            break
+        }
+        $item = Get-Item -LiteralPath $currentPath -Force
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Description must not traverse a reparse point: $currentPath"
+        }
+    }
+}
+
 function ConvertTo-NormalizedRequest {
     param(
         [Parameter(Mandatory = $true)]
@@ -1279,7 +1307,11 @@ function Get-StationFingerprints {
         [string]$PlcProject,
 
         [Parameter(Mandatory = $true)]
-        [object]$GitAudit
+        [object]$GitAudit,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string]$BusConfigPath
     )
 
     $relativePaths = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
@@ -1291,8 +1323,12 @@ function Get-StationFingerprints {
 
     foreach ($criticalPath in @(
         (Join-Path $StationRoot 'Engineering\Engineering_Data.xml'),
-        $PlcProject
+        $PlcProject,
+        $BusConfigPath
     )) {
+        if ([string]::IsNullOrWhiteSpace([string]$criticalPath)) {
+            continue
+        }
         $relativePath = Get-SafeRelativePath -Root $StationRoot -Path $criticalPath
         if ($relativePath) {
             $null = $relativePaths.Add($relativePath)
@@ -1395,6 +1431,17 @@ function Convert-AuditToMarkdown {
         $null = $builder.AppendLine('- The Runner must still collect a fresh mapping/Symbol snapshot, but Stage2 will block for review instead of reaching DONE.')
     }
     $null = $builder.AppendLine()
+    if ($null -ne $Report.ioDesignatorExport) {
+        $null = $builder.AppendLine('## I/O designator export')
+        $null = $builder.AppendLine()
+        $null = $builder.AppendLine("- State: ``$($Report.ioDesignatorExport.state)``")
+        $null = $builder.AppendLine("- Matched channels: $($Report.ioDesignatorExport.matchedChannels) / $($Report.ioDesignatorExport.expected.rowCount)")
+        $null = $builder.AppendLine("- Active / inactive: $($Report.ioDesignatorExport.actual.activeChannels) / $($Report.ioDesignatorExport.actual.inactiveChannels)")
+        $null = $builder.AppendLine("- Mismatches: $($Report.ioDesignatorExport.mismatchCount)")
+        $null = $builder.AppendLine("- Source SHA-256: ``$($Report.ioDesignatorExport.source.sha256)``")
+        $null = $builder.AppendLine("- BusConfig SHA-256: ``$($Report.ioDesignatorExport.busConfig.sha256)``")
+        $null = $builder.AppendLine()
+    }
     $null = $builder.AppendLine("## Findings")
     $null = $builder.AppendLine()
     if (@($Report.findings).Count -eq 0) {
@@ -1527,7 +1574,15 @@ function Invoke-OneRequestAudit {
         [string]$ExpectedPlcProject,
 
         [Parameter(Mandatory = $false)]
-        [string]$ExpectedProfile
+        [string]$ExpectedProfile,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string]$IoDesignatorSource,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string]$BusConfigPath
     )
 
     $processingDirectory = Join-Path $ActiveQueueRoot 'processing'
@@ -1605,9 +1660,24 @@ function Invoke-OneRequestAudit {
         $fingerprints = Get-StationFingerprints `
             -StationRoot $normalizedRequest.stationRoot `
             -PlcProject $normalizedRequest.plcProject `
-            -GitAudit $gitAudit
+            -GitAudit $gitAudit `
+            -BusConfigPath $BusConfigPath
 
         $findings = New-Object System.Collections.Generic.List[object]
+        $ioDesignatorExport = $null
+        if (-not [string]::IsNullOrWhiteSpace($IoDesignatorSource)) {
+            $ioDesignatorChecker = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\ioe\Test-CpStudioEplanIoExport.ps1'))
+            $ioDesignatorExport = & $ioDesignatorChecker `
+                -InputCsv $IoDesignatorSource `
+                -BusConfigPath $BusConfigPath
+            if (-not $ioDesignatorExport.passed) {
+                $findings.Add([pscustomobject]@{
+                    severity = 'error'
+                    code = 'IO_DESIGNATOR_EXPORT_MISMATCH'
+                    message = "$($ioDesignatorExport.mismatchCount) I/O designator channel mismatch(es) remain between the reviewed source and CpStudio BusConfig."
+                })
+            }
+        }
         foreach ($manifest in $manifestAudit) {
             if (-not $manifest.exists) {
                 $findings.Add([pscustomobject]@{
@@ -1686,6 +1756,9 @@ function Invoke-OneRequestAudit {
             findings       = $findings.ToArray()
             nextStage      = 'A live Codex session may review this report and explicitly run controlled snapshot, ownership merge, I/O/Symbol audit and offline compile.'
         }
+        if ($null -ne $ioDesignatorExport) {
+            $report.ioDesignatorExport = $ioDesignatorExport
+        }
 
         [System.IO.Directory]::CreateDirectory($ActiveReportRoot) | Out-Null
         $safeRequestId = ([string]$normalizedRequest.requestId) -replace '[^A-Za-z0-9_.-]', '_'
@@ -1744,6 +1817,8 @@ $configurationPath = Join-Path $resolvedEngineeringRoot 'config\project.yaml'
 $expectedStationRoot = $null
 $expectedPlcProject = $null
 $expectedProfile = $null
+$expectedBusConfig = $null
+$ioDesignatorSource = $null
 if ([System.IO.File]::Exists($configurationPath)) {
     $configuredStationRoot = Get-ConfiguredRelativePath -ConfigurationPath $configurationPath -FieldName 'station_root'
     if ($configuredStationRoot -and ($configuredStationRoot -ne 'null')) {
@@ -1757,9 +1832,46 @@ if ([System.IO.File]::Exists($configurationPath)) {
     if ($configuredProfile -and ($configuredProfile -ne 'null')) {
         $expectedProfile = $configuredProfile
     }
+    $configuredBusConfig = Get-ConfiguredRelativePath -ConfigurationPath $configurationPath -FieldName 'bus_config'
+    if ($configuredBusConfig -and ($configuredBusConfig -ne 'null')) {
+        $expectedBusConfig = Resolve-ProjectPath -BasePath $resolvedEngineeringRoot -ConfiguredPath $configuredBusConfig
+    }
 }
 if ([string]::IsNullOrWhiteSpace($expectedProfile)) {
     throw 'config/project.yaml must define tools.plc_engineering_profile before warning-baseline audit can run.'
+}
+
+$projectPackPath = Join-Path $resolvedEngineeringRoot 'project-pack.json'
+if ([System.IO.File]::Exists($projectPackPath)) {
+    $projectPackItem = Get-Item -LiteralPath $projectPackPath -Force
+    if ($projectPackItem.Length -gt $maximumRequestBytes) {
+        throw "project-pack.json exceeds the $maximumRequestBytes byte input limit."
+    }
+    $projectPack = ConvertFrom-JsonPreservingStrings -Json ([System.IO.File]::ReadAllText($projectPackPath))
+    $ioDesignatorProperty = $projectPack.sources.PSObject.Properties['ioDesignators']
+    if (($null -ne $ioDesignatorProperty) -and (-not [string]::IsNullOrWhiteSpace([string]$ioDesignatorProperty.Value))) {
+        $ioDesignatorSource = [System.IO.Path]::GetFullPath((Join-Path $resolvedEngineeringRoot ([string]$ioDesignatorProperty.Value)))
+        if ($null -eq (Get-SafeRelativePath -Root $resolvedEngineeringRoot -Path $ioDesignatorSource)) {
+            throw 'Project Pack I/O designator source escapes EngineeringRoot.'
+        }
+        Assert-NoReparsePointInPath `
+            -Root $resolvedEngineeringRoot `
+            -Path $ioDesignatorSource `
+            -Description 'Project Pack I/O designator source'
+        if ([string]::IsNullOrWhiteSpace($expectedBusConfig)) {
+            throw 'config/project.yaml must define paths.bus_config when Project Pack sources.ioDesignators is configured.'
+        }
+        if ([string]::IsNullOrWhiteSpace($expectedStationRoot)) {
+            throw 'config/project.yaml must define paths.station_root when Project Pack sources.ioDesignators is configured.'
+        }
+        if ($null -eq (Get-SafeRelativePath -Root $expectedStationRoot -Path $expectedBusConfig)) {
+            throw 'Configured BusConfig must remain inside station_root.'
+        }
+        Assert-NoReparsePointInPath `
+            -Root $expectedStationRoot `
+            -Path $expectedBusConfig `
+            -Description 'Configured BusConfig'
+    }
 }
 
 if (-not $QueueRoot) {
@@ -1852,12 +1964,14 @@ try {
             try {
                 $result = Invoke-OneRequestAudit `
                     -Candidate $candidate `
-                -ActiveEngineeringRoot $resolvedEngineeringRoot `
-                -ActiveQueueRoot $resolvedQueueRoot `
-                 -ActiveReportRoot $resolvedReportRoot `
-                 -ExpectedStationRoot $expectedStationRoot `
-                 -ExpectedPlcProject $expectedPlcProject `
-                 -ExpectedProfile $expectedProfile
+                    -ActiveEngineeringRoot $resolvedEngineeringRoot `
+                    -ActiveQueueRoot $resolvedQueueRoot `
+                    -ActiveReportRoot $resolvedReportRoot `
+                    -ExpectedStationRoot $expectedStationRoot `
+                    -ExpectedPlcProject $expectedPlcProject `
+                    -ExpectedProfile $expectedProfile `
+                    -IoDesignatorSource $ioDesignatorSource `
+                    -BusConfigPath $expectedBusConfig
                 $results.Add($result)
             }
             catch {

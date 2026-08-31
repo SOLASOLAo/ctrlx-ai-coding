@@ -170,6 +170,8 @@ try {
             'scripts\runner\RunnerHostDeployment.psm1',
             'scripts\runner\README.md',
             'scripts\project\Build-CtrlXOpconProjectPack.ps1',
+            'scripts\ioe\New-CpStudioEplanIoAsc.ps1',
+            'scripts\ioe\Test-CpStudioEplanIoExport.ps1',
             'tools\runner\CtrlX.OpCon.Runner.Core\CtrlX.OpCon.Runner.Core.csproj',
             'tools\runner\CtrlX.OpCon.Runner.Core\RunnerExecutor.cs',
             'tools\runner\CtrlX.OpCon.Runner.Core\NamedPipeSessionBrokerClient.cs',

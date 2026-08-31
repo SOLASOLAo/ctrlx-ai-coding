@@ -429,6 +429,7 @@
 | D34 | **recoverable baseline 使用 Build 前本机内容寻址 checkpoint**；范围是当前用户/本机，同 SHA 复用、损坏不覆盖、源漂移在 Build 前失败关闭，不再要求 Git HEAD 包含 `.project` | 08-28 |
 | D35 | **Host 自动 evidence 摄取和部署都必须保持可验证边界**；terminal result 绑定 evidence SHA/只读锁，合法无 evidence 只等待人工复核；runtime 以五文件 immutable release 安装，task action 指向 exact release exe、description 记录 manifest；P1.3c 只在 durable journal/reconcile、production ingestor E2E 和真实强杀恢复通过后关闭 | 08-28 |
 | D36 | **P1.3c 技术实现与参考工作站验收完成不等于团队发行完成**；签名/ACL、受控安装和 AtLogOn 启动前五文件 bootstrap 统一进入 P1.4。显式 lifecycle 的 manifest/self-check 不能冒充 AtLogOn 自身的预检 | 08-28 |
+| D39 | **DIDO 自动化是可选 Project Pack 能力**；每个工位提供自己的完整 CSV，Build/Check 生成并校验 ASC，Stage 1 对比 CpStudio BusConfig，Stage 2 绑定匹配哈希；模板不复制工位点位，Import/Save/Write/Export/Link I/O 仍走官方工具 | 08-31 |
 
 ## 待办 / 下一步
 
@@ -492,3 +493,14 @@
 - Bootstrap 只在进入商业化或明确需要无人值守登录自启时恢复；兼容矩阵和新团队工作站验收在有
   工位时执行。两项不阻塞项目目录/流程生成和后续通用开发能力。
 - P1.4a 离线包、fresh Install 默认停止、当前用户默认权限和签名延期边界均保持不变。
+
+## D39(2026-08-31)可选 ePLAN DIDO Project Pack
+
+- 通用模板新增零依赖 CSV→CpStudio/ePLAN ASC 生成器和 BusConfig 只读核对器，但模板
+  `project-pack.json` 不默认启用，也不携带任何工位 CSV/ASC。
+- 项目显式配置 `sources.ioDesignators` 后，Project Pack `Build/Check` 将 CSV、生成器、核对器和
+  ASC 绑定进内容寻址计划；Post-export Stage 1 逐通道比较名称、Active 状态及中英文描述。
+- Stage 2 只接受 `MATCHED`，校验 CSV SHA 与当前 plan、BusConfig SHA 与 Stage 1 fingerprint，
+  并将二者绑定到 operation/action；后续漂移失败关闭。Runner/Broker capability 未扩大。
+- CpStudio Import、Save、Write designators、Export 及 PLE Link I/O 继续使用官方工具；没有脚本
+  修改 CpStudio 模型、`.project` 或在线 PLC。

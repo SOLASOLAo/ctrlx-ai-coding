@@ -208,8 +208,10 @@ try {
         (Join-Path $engineeringRoot 'ai'),
         (Join-Path $engineeringRoot 'config'),
         (Join-Path $engineeringRoot 'data'),
+        (Join-Path $engineeringRoot 'specs'),
         (Join-Path $stationRoot 'Engineering'),
-        (Join-Path $stationRoot 'Plc')
+        (Join-Path $stationRoot 'Plc'),
+        (Join-Path $stationRoot 'PublicConfig')
     )) {
         [System.IO.Directory]::CreateDirectory($path) | Out-Null
     }
@@ -221,10 +223,43 @@ try {
     Write-Utf8NoBom -Path (Join-Path $stationRoot 'Engineering\Demo.cpsp') -Text "<Project />`n"
     Write-Utf8NoBom -Path $plcProject -Text "encrypted-plc-placeholder`n"
     Write-Utf8NoBom -Path (Join-Path $stationRoot 'Plc\Demo_IO.project') -Text "encrypted-io-placeholder`n"
+    $ioDesignatorSourcePath = Join-Path $engineeringRoot 'specs\io-designators.csv'
+    Write-Utf8NoBom -Path $ioDesignatorSourcePath -Text @'
+DeviceDesignator,Address,IoDesignator,Type,English,Chinese
+=000+S-K010A1,1,_000S901,1,Control On,控制上电
+=000+S-K010A1,2,,1,,
+'@
+    Write-Utf8NoBom -Path (Join-Path $engineeringRoot 'project-pack.json') -Text @'
+{
+  "sources": {
+    "ioDesignators": "specs/io-designators.csv"
+  }
+}
+'@
+    $busConfigPath = Join-Path $stationRoot 'PublicConfig\BusConfig_Demo.yaml'
+    $busConfigText = @'
+- name: =000+S-K010A1
+  items: []
+  ioVariables:
+  - amlChannelNumber: 1
+    isInput: true
+    name: _000S901
+    description:
+      en: Control On
+      zh: 控制上电
+  - amlChannelNumber: 2
+    isInput: true
+    name: ''
+    description:
+      en: ''
+      zh: ''
+'@
+    Write-Utf8NoBom -Path $busConfigPath -Text $busConfigText
     Write-Utf8NoBom -Path (Join-Path $engineeringRoot 'config\project.yaml') -Text @"
 paths:
   station_root: '../StationDemo'
   plc_project: '../StationDemo/Plc/Demo_PLC.project'
+  bus_config: '../StationDemo/PublicConfig/BusConfig_Demo.yaml'
   export_request: 'data/requests'
 tools:
   plc_engineering_profile: 'ctrlX PLC 2.6.8'
@@ -301,11 +336,82 @@ tools:
     Assert-True -Condition ([string]$report.semanticSnapshotRequest.sha256 -eq (Get-FileHash -LiteralPath $semanticScopePath -Algorithm SHA256).Hash) -Message 'Required semantic scope SHA-256 was not bound.'
     Assert-True -Condition ([string]$report.semanticBaseline.state -eq 'missing-bootstrap') -Message 'Absent semantic baseline was not reported as missing-bootstrap.'
     Assert-True -Condition (@($report.fingerprints | Where-Object { $_.path -eq 'Plc/Demo_PLC.project' -and $_.exists }).Count -eq 1) -Message 'PLC project fingerprint is missing.'
+    Assert-True -Condition (@($report.fingerprints | Where-Object { $_.path -eq 'PublicConfig/BusConfig_Demo.yaml' -and $_.exists }).Count -eq 1) `
+        -Message 'Configured BusConfig fingerprint is missing.'
+    Assert-True -Condition ($report.ioDesignatorExport.state -ceq 'MATCHED') -Message 'Matching BusConfig did not pass the I/O designator export check.'
+    Assert-True -Condition ($report.ioDesignatorExport.matchedChannels -eq 2) -Message 'I/O designator export check did not match both fixture channels.'
     Assert-True -Condition ([System.IO.File]::Exists($firstResult.markdownReport)) -Message 'Markdown audit report is missing.'
 
     Assert-FingerprintMapsEqual -Expected $stationBeforeAudit -Actual (Get-ContentFingerprintMap -StationRoot $stationRoot)
     $gitStatusAfterAudit = @(Invoke-GitForFixture -Repository $stationRoot -Arguments @('status', '--porcelain=v1'))
     Assert-True -Condition (($gitStatusBeforeAudit -join "`n") -eq ($gitStatusAfterAudit -join "`n")) -Message 'Git working-tree status changed during audit.'
+
+    $pendingBeforeMismatch = @(Get-ChildItem -LiteralPath (Join-Path $queueRoot 'pending') -File -Filter '*.json' | ForEach-Object Name)
+    Write-Utf8NoBom -Path $busConfigPath -Text $busConfigText.Replace('zh: 控制上电', 'zh: 错误文本')
+    $null = & $writer `
+        -EngineeringRoot $engineeringRoot `
+        -StationRoot $stationRoot `
+        -QueueRoot $queueRoot `
+        -PlcProject $plcProject `
+        -ExportMode full
+    $mismatchRequestFiles = @(Get-ChildItem -LiteralPath (Join-Path $queueRoot 'pending') -File -Filter '*.json' |
+        Where-Object { $pendingBeforeMismatch -notcontains $_.Name })
+    Assert-True -Condition ($mismatchRequestFiles.Count -eq 1) -Message 'Mismatch fixture did not create exactly one new request.'
+    $mismatchRequestFile = $mismatchRequestFiles[0]
+    $mismatchRequest = [System.IO.File]::ReadAllText($mismatchRequestFile.FullName) | ConvertFrom-Json
+    $mismatchResult = & $consumer `
+        -EngineeringRoot $engineeringRoot `
+        -QueueRoot $queueRoot `
+        -ReportRoot $reportRoot `
+        -RequestId $mismatchRequest.requestId
+    $mismatchReport = [System.IO.File]::ReadAllText($mismatchResult.jsonReport) | ConvertFrom-Json
+    Assert-True -Condition ($mismatchResult.auditStatus -ceq 'needs-attention') -Message 'I/O designator export mismatch did not block Stage1.'
+    Assert-True -Condition ($mismatchReport.ioDesignatorExport.state -ceq 'MISMATCH') -Message 'Drifted BusConfig did not report MISMATCH.'
+    Assert-True -Condition (@($mismatchReport.findings | Where-Object code -ceq 'IO_DESIGNATOR_EXPORT_MISMATCH').Count -eq 1) `
+        -Message 'I/O designator export mismatch finding is missing.'
+    Write-Utf8NoBom -Path $busConfigPath -Text $busConfigText
+
+    $pendingBeforeCheckerError = @(Get-ChildItem -LiteralPath (Join-Path $queueRoot 'pending') -File -Filter '*.json' | ForEach-Object Name)
+    Write-Utf8NoBom -Path $busConfigPath -Text @'
+- name: =000+S-K010A1
+  ioVariables:
+  - amlChannelNumber: 1
+    isInput: invalid
+    name: _000S901
+    description:
+      en: Control On
+      zh: 控制上电
+'@
+    $null = & $writer `
+        -EngineeringRoot $engineeringRoot `
+        -StationRoot $stationRoot `
+        -QueueRoot $queueRoot `
+        -PlcProject $plcProject `
+        -ExportMode full
+    $checkerErrorRequestFiles = @(Get-ChildItem -LiteralPath (Join-Path $queueRoot 'pending') -File -Filter '*.json' |
+        Where-Object { $pendingBeforeCheckerError -notcontains $_.Name })
+    Assert-True -Condition ($checkerErrorRequestFiles.Count -eq 1) -Message 'Checker-error fixture did not create exactly one new request.'
+    $checkerErrorRequestFile = $checkerErrorRequestFiles[0]
+    $checkerErrorRequest = [System.IO.File]::ReadAllText($checkerErrorRequestFile.FullName) | ConvertFrom-Json
+    $failedBeforeCheckerError = @(Get-ChildItem -LiteralPath (Join-Path $queueRoot 'failed') -File -Filter '*.json').Count
+    $failureReportsBeforeCheckerError = @(Get-ChildItem -LiteralPath $reportRoot -File -Filter '*.failed.json').Count
+    $checkerErrorRejected = $false
+    try {
+        $null = & $consumer `
+            -EngineeringRoot $engineeringRoot `
+            -QueueRoot $queueRoot `
+            -ReportRoot $reportRoot `
+            -RequestId $checkerErrorRequest.requestId
+    }
+    catch {
+        $checkerErrorRejected = $true
+    }
+    Assert-True -Condition $checkerErrorRejected -Message 'Malformed BusConfig did not fail the Stage1 request.'
+    Assert-True -Condition (@(Get-ChildItem -LiteralPath (Join-Path $queueRoot 'failed') -File -Filter '*.json').Count -eq ($failedBeforeCheckerError + 1)) `
+        -Message 'Malformed BusConfig request was not retained in failed state.'
+    Assert-True -Condition (@(Get-ChildItem -LiteralPath $reportRoot -File -Filter '*.failed.json').Count -eq ($failureReportsBeforeCheckerError + 1)) `
+        -Message 'Malformed BusConfig request has no failure report.'
+    Write-Utf8NoBom -Path $busConfigPath -Text $busConfigText
 
     $remainingRequest = Get-ChildItem -LiteralPath (Join-Path $queueRoot 'pending') -File -Filter '*.json' |
         ForEach-Object { [System.IO.File]::ReadAllText($_.FullName) | ConvertFrom-Json } |

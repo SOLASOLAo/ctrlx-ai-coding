@@ -250,6 +250,8 @@ function New-Stage1AuditReport {
 
     $engineeringData = Join-Path $StationRoot 'Engineering\Engineering_Data.xml'
     $ioProject = Join-Path $StationRoot 'Plc\Demo_IO.project'
+    $ioDesignatorSource = Join-Path $EngineeringRoot 'specs\io-designators.csv'
+    $busConfig = Join-Path $StationRoot 'PublicConfig\BusConfig_Demo.yaml'
     $manifests = @(
         Get-FileFingerprint -Path (Join-Path $EngineeringRoot 'ai\ownership.yaml') -DisplayPath 'ai/ownership.yaml'
         Get-FileFingerprint -Path (Join-Path $EngineeringRoot 'ai\hooks.yaml') -DisplayPath 'ai/hooks.yaml'
@@ -259,7 +261,11 @@ function New-Stage1AuditReport {
         Get-FileFingerprint -Path $engineeringData -DisplayPath 'Engineering/Engineering_Data.xml'
         Get-FileFingerprint -Path $PlcProject -DisplayPath 'Plc/Demo_PLC.project'
         Get-FileFingerprint -Path $ioProject -DisplayPath 'Plc/Demo_IO.project'
+        Get-FileFingerprint -Path $busConfig -DisplayPath 'PublicConfig/BusConfig_Demo.yaml'
     )
+    $ioDesignatorExport = & (Join-Path $EngineeringRoot 'scripts\ioe\Test-CpStudioEplanIoExport.ps1') `
+        -InputCsv $ioDesignatorSource `
+        -BusConfigPath $busConfig
     $warningBaselinePath = Join-Path $EngineeringRoot 'config\warning-signature-baseline.json'
     $warningBaseline = if ([System.IO.File]::Exists($warningBaselinePath)) {
         $baselineDocument = Read-JsonFile -Path $warningBaselinePath
@@ -336,6 +342,7 @@ function New-Stage1AuditReport {
         warningBaseline = $warningBaseline
         semanticSnapshotRequest = $semanticSnapshotRequest
         semanticBaseline = $semanticBaseline
+        ioDesignatorExport = $ioDesignatorExport
         fingerprints   = $fingerprints
         findings       = @()
         nextStage      = 'controlled post-export engineering'
@@ -784,7 +791,8 @@ try {
         $evidenceRoot,
         $directEvidenceRoot,
         (Join-Path $stationRoot 'Engineering'),
-        (Join-Path $stationRoot 'Plc')
+        (Join-Path $stationRoot 'Plc'),
+        (Join-Path $stationRoot 'PublicConfig')
     )) {
         [System.IO.Directory]::CreateDirectory($path) | Out-Null
     }
@@ -810,11 +818,34 @@ hooks:
     Write-Utf8NoBom -Path (Join-Path $stationRoot 'Engineering\Demo.cpsp') -Text "<Project />`n"
     Write-Utf8NoBom -Path $plcProject -Text "encrypted-plc-placeholder`n"
     Write-Utf8NoBom -Path (Join-Path $stationRoot 'Plc\Demo_IO.project') -Text "encrypted-io-placeholder`n"
+    Write-Utf8NoBom -Path (Join-Path $engineeringRoot 'specs\io-designators.csv') -Text @'
+DeviceDesignator,Address,IoDesignator,Type,English,Chinese
+=000+S-K010A1,1,_000S901,1,Control On,控制上电
+=000+S-K010A1,2,,1,,
+'@
+    Write-Utf8NoBom -Path (Join-Path $stationRoot 'PublicConfig\BusConfig_Demo.yaml') -Text @'
+- name: =000+S-K010A1
+  items: []
+  ioVariables:
+  - amlChannelNumber: 1
+    isInput: true
+    name: _000S901
+    description:
+      en: Control On
+      zh: 控制上电
+  - amlChannelNumber: 2
+    isInput: true
+    name: ''
+    description:
+      en: ''
+      zh: ''
+'@
     Write-Utf8NoBom -Path (Join-Path $engineeringRoot 'config\project.yaml') -Text @"
 schema_version: 1
 paths:
   station_root: '../StationDemo'
   plc_project: '../StationDemo/Plc/Demo_PLC.project'
+  bus_config: '../StationDemo/PublicConfig/BusConfig_Demo.yaml'
   export_request: 'data/requests'
 tools:
   plc_engineering_profile: 'ctrlX PLC 2.6.8'
@@ -822,6 +853,8 @@ tools:
 
     foreach ($relativePath in @(
         'scripts\project\Build-CtrlXOpconProjectPack.ps1',
+        'scripts\ioe\New-CpStudioEplanIoAsc.ps1',
+        'scripts\ioe\Test-CpStudioEplanIoExport.ps1',
         'schemas\project-pack.schema.json',
         'schemas\process.schema.json'
     )) {
@@ -847,6 +880,7 @@ tools:
             station = 'specs/station.yaml'; io = 'specs/io.yaml'; events = 'specs/events.yaml'; units = @()
             processes = @('specs/processes/fixture.process.json'); hmi = @(); catalog = @()
             manifests = @('ai/ownership.yaml', 'ai/hooks.yaml', 'ai/graphical.yaml')
+            ioDesignators = 'specs/io-designators.csv'
         }
     })
     $packBuilderPath = Join-Path $engineeringRoot 'scripts\project\Build-CtrlXOpconProjectPack.ps1'
@@ -955,6 +989,54 @@ tools:
     }
     Assert-True -Condition (-not [string]::IsNullOrWhiteSpace([string]$whatIfResult.operationId)) -Message 'WhatIf did not compute an operationId.'
     Assert-True -Condition ((Get-FileFingerprintMap -Root $operationRoot).Count -eq 0) -Message 'WhatIf wrote an operation file.'
+
+    $missingIoAudit = Join-Path $reportRoot 'missing-io-designator-binding.json'
+    $missingIoReport = New-Stage1AuditReport `
+        -Path $missingIoAudit `
+        -RequestId ('missing-io-designator-' + [guid]::NewGuid().ToString('N')) `
+        -RequestedAtUtc $baseTime.AddSeconds(-3) `
+        -EngineeringRoot $engineeringRoot `
+        -StationRoot $stationRoot `
+        -PlcProject $plcProject
+    $missingIoReport.Remove('ioDesignatorExport')
+    Write-JsonFile -Path $missingIoAudit -Value $missingIoReport
+    $missingIoRejected = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        AuditReport = $missingIoAudit; EngineeringRoot = $engineeringRoot; OperationRoot = $operationRoot
+    }
+    Assert-True -Condition ($missingIoRejected.rejected -and ([string]$missingIoRejected.message).Contains('missing ioDesignatorExport')) `
+        -Message 'Stage2 accepted a Stage1 report without the required I/O designator binding.'
+
+    $sourceDriftAudit = Join-Path $reportRoot 'io-designator-source-drift.json'
+    $sourceDriftReport = New-Stage1AuditReport `
+        -Path $sourceDriftAudit `
+        -RequestId ('io-designator-source-drift-' + [guid]::NewGuid().ToString('N')) `
+        -RequestedAtUtc $baseTime.AddSeconds(-2) `
+        -EngineeringRoot $engineeringRoot `
+        -StationRoot $stationRoot `
+        -PlcProject $plcProject
+    $sourceDriftReport.ioDesignatorExport.source.sha256 = ('A' * 64)
+    Write-JsonFile -Path $sourceDriftAudit -Value $sourceDriftReport
+    $sourceDriftRejected = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        AuditReport = $sourceDriftAudit; EngineeringRoot = $engineeringRoot; OperationRoot = $operationRoot
+    }
+    Assert-True -Condition ($sourceDriftRejected.rejected -and ([string]$sourceDriftRejected.message).Contains('source SHA-256')) `
+        -Message 'Stage2 accepted an I/O designator source SHA-256 drift.'
+
+    $busDriftAudit = Join-Path $reportRoot 'io-designator-bus-config-drift.json'
+    $busDriftReport = New-Stage1AuditReport `
+        -Path $busDriftAudit `
+        -RequestId ('io-designator-bus-drift-' + [guid]::NewGuid().ToString('N')) `
+        -RequestedAtUtc $baseTime.AddSeconds(-1) `
+        -EngineeringRoot $engineeringRoot `
+        -StationRoot $stationRoot `
+        -PlcProject $plcProject
+    $busDriftReport.ioDesignatorExport.busConfig.sha256 = ('B' * 64)
+    Write-JsonFile -Path $busDriftAudit -Value $busDriftReport
+    $busDriftRejected = Invoke-Stage2Rejected -ScriptPath $consumer -Arguments @{
+        AuditReport = $busDriftAudit; EngineeringRoot = $engineeringRoot; OperationRoot = $operationRoot
+    }
+    Assert-True -Condition ($busDriftRejected.rejected -and ([string]$busDriftRejected.message).Contains('BusConfig SHA-256 does not match its Stage1 Station fingerprint')) `
+        -Message 'Stage2 accepted a BusConfig SHA-256 that did not match the Stage1 fingerprint.'
 
     $warningBaselineDocument.review.confirmedByUser = $false
     Write-JsonFile -Path $warningBaselinePath -Value $warningBaselineDocument
@@ -1085,6 +1167,10 @@ tools:
     Assert-True -Condition ([string]$idempotentAction.payload.preconditions.semanticBaseline.state -eq 'reviewed') -Message 'Initial action did not bind the reviewed semantic baseline state.'
     Assert-True -Condition ([string]$idempotentAction.payload.preconditions.semanticBaseline.sha256 -eq (Get-Sha256 -Path $semanticBaselinePath)) -Message 'Initial action did not bind the semantic baseline SHA-256.'
     Assert-True -Condition ([string]$idempotentAction.payload.preconditions.semanticBaseline.reviewEvidence.sha256 -eq (Get-Sha256 -Path $semanticReviewPath)) -Message 'Initial action did not bind semantic review evidence SHA-256.'
+    Assert-True -Condition ([string]$idempotentAction.payload.preconditions.ioDesignatorExport.state -ceq 'MATCHED') -Message 'Initial action did not bind the matched I/O designator export.'
+    Assert-True -Condition ([string]$idempotentAction.payload.preconditions.ioDesignatorExport.sourceSha256 -eq (Get-Sha256 -Path (Join-Path $engineeringRoot 'specs\io-designators.csv')).ToLowerInvariant()) -Message 'Initial action did not bind the I/O designator source SHA-256.'
+    Assert-True -Condition ([string]$idempotentAction.payload.preconditions.ioDesignatorExport.busConfigSha256 -eq (Get-Sha256 -Path (Join-Path $stationRoot 'PublicConfig\BusConfig_Demo.yaml')).ToLowerInvariant()) -Message 'Initial action did not bind the BusConfig SHA-256.'
+    Assert-True -Condition ([string]$idempotentAction.payload.preconditions.projectPack.ioDesignators.sourceSha256 -eq [string]$idempotentAction.payload.preconditions.ioDesignatorExport.sourceSha256) -Message 'Action Project Pack and Stage1 I/O source bindings disagree.'
     Assert-True -Condition ($idempotentAction.payload.guardrails.prohibitPleOrMcpStartByAction) -Message 'Action omitted the action-scoped PLE/MCP start prohibition.'
     Assert-True -Condition ($idempotentAction.payload.guardrails.actionProjectGateRequired) -Message 'Action omitted the Broker serialization gate requirement.'
     Assert-True -Condition ($idempotentAction.payload.guardrails.releaseActionProjectGateBeforeTerminalDelivery) -Message 'Action omitted the gate release-before-terminal contract.'
