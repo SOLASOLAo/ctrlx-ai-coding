@@ -46,7 +46,7 @@ function Invoke-TestRunner {
     param(
         [Parameter(Mandatory = $true)][string]$RunnerPath,
         [Parameter(Mandatory = $true)][string]$Root,
-        [Parameter(Mandatory = $true)][ValidateSet('Status', 'ProcessOne')][string]$Command,
+        [Parameter(Mandatory = $true)][ValidateSet('Run', 'Status', 'ProcessOne')][string]$Command,
         [Parameter(Mandatory = $false)][switch]$WhatIf
     )
 
@@ -228,17 +228,64 @@ $reportPath = Join-Path $EngineeringRoot 'data\reports\cpstudio\stub-request.jso
 Write-Output ([pscustomobject]@{ status = 'done'; requestId = 'stub-request'; jsonReport = $reportPath })
 '@
     Write-TestText -Path $coordinatorScriptPath -Content @'
-param([string]$EngineeringRoot, [string]$AuditReport, [int]$LockWaitMilliseconds = 0)
+param(
+    [string]$EngineeringRoot,
+    [string]$AuditReport,
+    [string]$OperationId,
+    [string]$SecondExportAuditReport,
+    [int]$LockWaitMilliseconds = 0
+)
+$operationDirectory = Join-Path $EngineeringRoot 'data\operations\cpstudio-stage2\stub-operation'
+$operationPath = Join-Path $operationDirectory 'operation.json'
+
+if ($OperationId) {
+    if ($OperationId -ne 'stub-operation') { throw 'unexpected operation id' }
+    $operation = [System.IO.File]::ReadAllText($operationPath) | ConvertFrom-Json
+    if ($SecondExportAuditReport) {
+        if ((-not [System.IO.File]::Exists($SecondExportAuditReport)) -or ($operation.status -ne 'WAITING_FOR_EXPORT_2')) {
+            throw 'invalid Export #2 binding'
+        }
+        $actionPath = Join-Path $operationDirectory 'actions\0002-verify_after_export_2.json'
+        [System.IO.File]::WriteAllText($actionPath, '{"schemaVersion":1,"operationId":"stub-operation","actionId":"stub-operation-0002"}')
+        $operation.status = 'WAITING_FOR_RUNNER'
+        $operation.updatedAtUtc = [DateTime]::UtcNow.ToString('o')
+        $operation.currentAction = [pscustomobject]@{
+            actionId = 'stub-operation-0002'
+            path = $actionPath
+            sha256 = (Get-FileHash -LiteralPath $actionPath -Algorithm SHA256).Hash
+        }
+        [System.IO.File]::WriteAllText($operationPath, (($operation | ConvertTo-Json -Depth 8) + "`n"))
+        [System.IO.File]::WriteAllText((Join-Path $EngineeringRoot 'data\test-stub\export2-bound.flag'), 'bound')
+    }
+    $operation = [System.IO.File]::ReadAllText($operationPath) | ConvertFrom-Json
+    Write-Output ([pscustomobject]@{
+        status = [string]$operation.status
+        operationId = 'stub-operation'
+        actionId = if ($operation.currentAction) { [string]$operation.currentAction.actionId } else { $null }
+        actionRequestPath = if ($operation.currentAction) { [string]$operation.currentAction.path } else { $null }
+        actionRequestSha256 = if ($operation.currentAction) { [string]$operation.currentAction.sha256 } else { $null }
+        nextUserAction = if ($operation.status -eq 'DONE') { 'No further action.' } else { 'Continue the existing operation.' }
+    })
+    return
+}
+
 if (-not [System.IO.File]::Exists($AuditReport)) { throw 'audit report missing' }
 $countPath = Join-Path $EngineeringRoot 'data\test-stub\stage2-count.txt'
 $count = if ([System.IO.File]::Exists($countPath)) { [int][System.IO.File]::ReadAllText($countPath) } else { 0 }
 [System.IO.File]::WriteAllText($countPath, [string]($count + 1))
-$actionPath = Join-Path $EngineeringRoot 'data\operations\cpstudio-stage2\stub-operation\actions\0001-inspect_and_build.json'
+$actionPath = Join-Path $operationDirectory 'actions\0001-inspect_and_build.json'
 [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($actionPath)) | Out-Null
 if (-not [System.IO.File]::Exists($actionPath)) {
     [System.IO.File]::WriteAllText($actionPath, '{"schemaVersion":1,"operationId":"stub-operation","actionId":"stub-operation-0001"}')
 }
 $sha = (Get-FileHash -LiteralPath $actionPath -Algorithm SHA256).Hash
+$operation = [ordered]@{
+    operationId = 'stub-operation'
+    status = 'WAITING_FOR_RUNNER'
+    updatedAtUtc = [DateTime]::UtcNow.ToString('o')
+    currentAction = [ordered]@{ actionId = 'stub-operation-0001'; path = $actionPath; sha256 = $sha }
+}
+[System.IO.File]::WriteAllText($operationPath, (($operation | ConvertTo-Json -Depth 8) + "`n"))
 Write-Output ([pscustomobject]@{
     status = 'WAITING_FOR_RUNNER'
     operationId = 'stub-operation'
@@ -250,7 +297,7 @@ Write-Output ([pscustomobject]@{
 '@
 
     $whatIfCountBefore = @(Get-RunManifests -Root $testRoot).Count
-    $whatIfResult = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'ProcessOne' -WhatIf
+    $whatIfResult = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'Run' -WhatIf
     Assert-True -Condition ($whatIfResult.ExitCode -eq 0) -Message 'WhatIf should exit successfully.'
     Assert-True -Condition (($whatIfResult.Output -join ' ') -match 'WHATIF') -Message 'WhatIf did not return a structured preview.'
     Assert-True -Condition (@(Get-RunManifests -Root $testRoot).Count -eq $whatIfCountBefore) -Message 'WhatIf wrote a run manifest.'
@@ -276,8 +323,8 @@ Write-Output ([pscustomobject]@{
     Assert-True -Condition ($draftStatusResult.ExitCode -eq 0) -Message 'Draft Project Pack Status should return structured NOT_READY.'
     $draftStatusManifest = Read-LatestManifest -Root $testRoot
     Assert-True -Condition ([string]$draftStatusManifest.result.status -eq 'NOT_READY') -Message 'Draft Project Pack Status was not NOT_READY.'
-    $draftProcessResult = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'ProcessOne'
-    Assert-True -Condition ($draftProcessResult.ExitCode -eq 50) -Message 'ProcessOne accepted a draft Project Pack.'
+    $draftProcessResult = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'Run'
+    Assert-True -Condition ($draftProcessResult.ExitCode -eq 50) -Message 'Run accepted a draft Project Pack.'
     $draftPack.status = 'ready'
     Write-TestText -Path $projectPackPath -Content (($draftPack | ConvertTo-Json -Depth 64) + "`n")
     $null = & $projectPackBuilder -Command Build -EngineeringRoot $testRoot -RequireReady -Json
@@ -313,23 +360,78 @@ Write-Output ([pscustomobject]@{
         }
     }
 
-    $firstProcess = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'ProcessOne'
-    Assert-True -Condition ($firstProcess.ExitCode -eq 0) -Message ('First ProcessOne failed: ' + ($firstProcess.Output -join ' '))
+    $legacyOperationDirectory = Join-Path $testRoot 'data\operations\cpstudio-stage2\legacy-open-operation'
+    Write-TestText -Path (Join-Path $legacyOperationDirectory 'operation.json') -Content (([ordered]@{
+        operationId = 'legacy-open-operation'
+        status = 'WAITING_FOR_RUNNER'
+        updatedAtUtc = '2026-01-01T00:00:00Z'
+        currentAction = $null
+    } | ConvertTo-Json -Depth 8) + "`n")
+
+    $firstProcess = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'Run'
+    Assert-True -Condition ($firstProcess.ExitCode -eq 0) -Message ('First Run failed: ' + ($firstProcess.Output -join ' '))
     $actionManifest = Read-LatestManifest -Root $testRoot
-    Assert-True -Condition ([string]$actionManifest.result.status -eq 'ACTION_READY') -Message 'ProcessOne did not produce ACTION_READY.'
+    Assert-True -Condition ([string]$actionManifest.command -eq 'Run') -Message 'Run manifest did not retain the unified command.'
+    Assert-True -Condition ([string]$actionManifest.result.status -eq 'ACTION_READY') -Message 'Run did not produce ACTION_READY.'
     Assert-True -Condition ([string]$actionManifest.result.operationId -eq 'stub-operation') -Message 'Operation identity was not recorded.'
+    Assert-True -Condition ([string]$actionManifest.result.operationId -ne 'legacy-open-operation') -Message 'Run silently adopted an untracked legacy operation.'
     Assert-True -Condition ([string]$actionManifest.result.actionId -eq 'stub-operation-0001') -Message 'Action identity was not recorded.'
     Assert-True -Condition ([string]$actionManifest.result.actionRequestSha256 -match '^[0-9A-Fa-f]{64}$') -Message 'Action SHA-256 was not recorded.'
     Assert-True -Condition (@($actionManifest.capabilitiesInvoked).Count -eq 2) -Message 'ProcessOne capability ledger is incomplete.'
     Assert-True -Condition (-not $actionManifest.guardrails.onlineOperationsUsed) -Message 'ProcessOne used an online capability.'
     Assert-True -Condition (-not $actionManifest.guardrails.pleOrMcpStartedByAction) -Message 'P1.1 action started PLE/MCP.'
 
-    $secondProcess = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'ProcessOne'
-    Assert-True -Condition ($secondProcess.ExitCode -eq 0) -Message ('Second ProcessOne failed: ' + ($secondProcess.Output -join ' '))
-    $idleManifest = Read-LatestManifest -Root $testRoot
-    Assert-True -Condition ([string]$idleManifest.result.status -eq 'IDLE') -Message 'Consumed request was processed twice.'
+    $stage1Flag = Join-Path $testRoot 'data\test-stub\stage1-consumed.flag'
+    [System.IO.File]::Delete($stage1Flag)
+    $transientFailureManifest = Join-Path $testRoot 'data\runs\runner\transient-failure\run-manifest.json'
+    Write-TestText -Path $transientFailureManifest -Content '{"command":"Run","result":{"status":"FAILED"}}'
+    [System.IO.File]::SetLastWriteTimeUtc($transientFailureManifest, [DateTime]::UtcNow)
+    $secondProcess = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'Run'
+    Assert-True -Condition ($secondProcess.ExitCode -eq 0) -Message ('Second Run failed: ' + ($secondProcess.Output -join ' '))
+    $resumedManifest = Read-LatestManifest -Root $testRoot
+    Assert-True -Condition ([string]$resumedManifest.result.status -eq 'ACTION_READY') -Message ('Run did not resume the existing open operation: status={0}; output={1}' -f $resumedManifest.result.status, ($secondProcess.Output -join ' '))
+    Assert-True -Condition ([string]$resumedManifest.result.operationId -eq 'stub-operation') -Message 'Run resumed the wrong operation.'
+    Assert-True -Condition ([string]$resumedManifest.result.operationId -eq 'stub-operation') -Message 'A transient failed Run cleared the tracked operation.'
+    Assert-True -Condition (@($resumedManifest.capabilitiesInvoked) -contains 'post_export_stage2_query') -Message 'Run did not record its Stage 2 query.'
+    Assert-True -Condition (-not ([System.IO.File]::Exists($stage1Flag))) -Message 'Run consumed a pending request while the current action was still waiting.'
     $stage2Count = [System.IO.File]::ReadAllText((Join-Path $testRoot 'data\test-stub\stage2-count.txt'))
     Assert-True -Condition ($stage2Count -eq '1') -Message 'Stage 2 coordinator ran more than once for one request.'
+
+    $operationPath = Join-Path $testRoot 'data\operations\cpstudio-stage2\stub-operation\operation.json'
+    $operation = [System.IO.File]::ReadAllText($operationPath) | ConvertFrom-Json
+    $operation.currentAction = $null
+    Write-TestText -Path $stage1Flag -Content 'consumed'
+    $operation.status = 'WAITING_FOR_CPSTUDIO'
+    $operation.updatedAtUtc = [DateTime]::UtcNow.ToString('o')
+    Write-TestText -Path $operationPath -Content (($operation | ConvertTo-Json -Depth 8) + "`n")
+    $cpStudioWait = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'Run'
+    Assert-True -Condition ($cpStudioWait.ExitCode -eq 0) -Message ('WAITING_FOR_CPSTUDIO Run failed: ' + ($cpStudioWait.Output -join ' '))
+    $cpStudioWaitManifest = Read-LatestManifest -Root $testRoot
+    Assert-True -Condition ([string]$cpStudioWaitManifest.result.status -eq 'WAITING_FOR_CPSTUDIO') -Message 'Run did not preserve WAITING_FOR_CPSTUDIO without a pending export.'
+
+    $operation.status = 'WAITING_FOR_EXPORT_2'
+    $operation.updatedAtUtc = [DateTime]::UtcNow.ToString('o')
+    Write-TestText -Path $operationPath -Content (($operation | ConvertTo-Json -Depth 8) + "`n")
+    [System.IO.File]::Delete($stage1Flag)
+    $export2Process = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'Run'
+    Assert-True -Condition ($export2Process.ExitCode -eq 0) -Message ('Export #2 Run failed: ' + ($export2Process.Output -join ' '))
+    $export2Manifest = Read-LatestManifest -Root $testRoot
+    Assert-True -Condition ([string]$export2Manifest.result.status -eq 'ACTION_READY') -Message 'Run did not bind Export #2 to the waiting operation.'
+    Assert-True -Condition ([string]$export2Manifest.result.actionId -eq 'stub-operation-0002') -Message 'Run did not return the Export #2 verification action.'
+    Assert-True -Condition (@($export2Manifest.capabilitiesInvoked) -contains 'post_export_stage2_bind_export_2') -Message 'Run did not record the Export #2 binding capability.'
+    Assert-True -Condition ([System.IO.File]::Exists((Join-Path $testRoot 'data\test-stub\export2-bound.flag'))) -Message 'Export #2 audit was not bound through the existing coordinator.'
+
+    $operation = [System.IO.File]::ReadAllText($operationPath) | ConvertFrom-Json
+    $operation.status = 'DONE'
+    $operation.updatedAtUtc = [DateTime]::UtcNow.ToString('o')
+    $operation.currentAction = $null
+    Write-TestText -Path $operationPath -Content (($operation | ConvertTo-Json -Depth 8) + "`n")
+    Write-TestText -Path $stage1Flag -Content 'consumed'
+    $thirdProcess = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'Run'
+    Assert-True -Condition ($thirdProcess.ExitCode -eq 0) -Message ('Idle Run failed: ' + ($thirdProcess.Output -join ' '))
+    $idleManifest = Read-LatestManifest -Root $testRoot
+    Assert-True -Condition ([string]$idleManifest.result.status -eq 'IDLE') -Message 'Run did not reach IDLE after the operation became terminal.'
+    Assert-True -Condition ([string]$idleManifest.result.reasonCode -eq 'NO_PENDING') -Message 'Idle Run did not return reasonCode=NO_PENDING.'
 
     $leaseProbe = [System.IO.File]::Open(
         (Join-Path $leaseRoot 'runner.lock'),
@@ -340,7 +442,6 @@ Write-Output ([pscustomobject]@{
     $leaseProbe.Dispose()
     Assert-True -Condition (-not [System.IO.File]::Exists((Join-Path $leaseRoot 'owner.json'))) -Message 'Runner left stale owner metadata after success.'
 
-    $stage1Flag = Join-Path $testRoot 'data\test-stub\stage1-consumed.flag'
     [System.IO.File]::Delete($stage1Flag)
     Write-TestText -Path $auditScriptPath -Content "param([string]`$EngineeringRoot, [int]`$LockWaitMilliseconds = 0)`nthrow 'fixture audit failure'`n"
     $failureResult = Invoke-TestRunner -RunnerPath $runnerPath -Root $testRoot -Command 'ProcessOne'

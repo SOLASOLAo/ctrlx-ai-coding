@@ -4,18 +4,27 @@
 
 ## P1.1 control plane
 
+- `Run` (recommended): safely advance one offline orchestration step. It consumes at most one pending CpStudio Post-export request, runs Stage 1 and creates/resumes the immutable Stage 2 action; with no request it returns `IDLE` and the next step;
 - `Status`: validate project paths, profile, quality gates and ownership manifests;
-- `ProcessOne`: consume at most one pending CpStudio Post-export request, run Stage 1 audit and create/resume the immutable Stage 2 action.
+- `ProcessOne`: compatibility name for the same Stage 1/Stage 2 step used by `Run`.
 
 ```powershell
 .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Status
+.\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Run
+.\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Run -WhatIf
 .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command ProcessOne
-.\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command ProcessOne -WhatIf
 ```
 
 Every P1.1 invocation takes an OS-enforced exclusive file lease under
 `data/runner/` and writes `data/runs/runner/<run-id>/run-manifest.json`.
 Concurrent invocations return exit code `20`.
+
+`Run` resumes only the `operationId` recorded by the most recent earlier
+`Run` manifest. It never adopts legacy open ledgers by directory order. A
+tracked `WAITING_FOR_RUNNER` action is reported before any new request is
+consumed; a tracked `WAITING_FOR_EXPORT_2` operation binds the next audit
+through the existing coordinator. With neither a tracked operation nor a
+request it returns `IDLE` with `reasonCode=NO_PENDING`.
 
 ## P1.2 action client and Broker discovery
 

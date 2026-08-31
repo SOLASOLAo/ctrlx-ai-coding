@@ -34,6 +34,7 @@
 
    ```powershell
    .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Status
+   .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Run -WhatIf
    .\scripts\runner\Invoke-CtrlXOpconRunner.ps1 -Command Doctor
    pwsh -File '<runner-host-package>\Install.ps1' `
      -Command Install -EngineeringRoot '<absolute-ai-root>' -WhatIf

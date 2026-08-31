@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet('Status', 'ProcessOne', 'Doctor', 'ExecuteAction', 'ActionStatus', 'ActionVerify')]
+    [ValidateSet('Run', 'Status', 'ProcessOne', 'Doctor', 'ExecuteAction', 'ActionStatus', 'ActionVerify')]
     [string]$Command = 'Status',
 
     [Parameter(Mandatory = $false)]
@@ -316,6 +316,9 @@ function Get-Preflight {
     if ($RequireReady) {
         $projectPackParameters.RequireReady = $true
     }
+    # Project Pack Check writes only disposable temp artifacts; do not leak the
+    # wrapper's preview preference into its deterministic validation.
+    $WhatIfPreference = $false
     $projectPackCheckOutput = @(& $projectPackBuilder @projectPackParameters)
     if ($projectPackCheckOutput.Count -ne 1) {
         throw 'Project Pack preflight did not return exactly one JSON result.'
@@ -373,6 +376,75 @@ function Get-ResultObject {
         throw "$Description did not return exactly one structured status result."
     }
     return $candidate[0]
+}
+
+function Read-Stage2OperationSummary {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$OperationId
+    )
+
+    if ($OperationId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$') {
+        throw 'Tracked Stage 2 operationId is malformed.'
+    }
+    $operationDirectory = Assert-PathInsideRoot -Root $Root -Path (Join-Path $Root $OperationId) -Description 'Tracked Stage 2 operation'
+    $operationPath = Join-Path $operationDirectory 'operation.json'
+    if ((-not [System.IO.File]::Exists($operationPath)) -or ((Get-Item -LiteralPath $operationPath).Length -gt 8MB)) {
+        throw "Tracked Stage 2 operation is missing or too large: $operationPath"
+    }
+    try {
+        $operation = [System.IO.File]::ReadAllText($operationPath) | ConvertFrom-Json
+    }
+    catch {
+        throw "Tracked Stage 2 operation is unreadable: $operationPath"
+    }
+    if ([string]$operation.operationId -ne $OperationId) {
+        throw 'Tracked Stage 2 operation identity does not match its ledger.'
+    }
+    $allowedStates = @('WAITING_FOR_RUNNER', 'WAITING_FOR_CPSTUDIO', 'WAITING_FOR_EXPORT_2', 'DONE', 'BLOCKED', 'FAILED')
+    if ($allowedStates -notcontains [string]$operation.status) {
+        throw "Tracked Stage 2 operation has an unsupported status: $($operation.status)"
+    }
+    return [pscustomobject]@{
+        operationId = [string]$operation.operationId
+        status = [string]$operation.status
+    }
+}
+
+function Get-TrackedStage2Operation {
+    param(
+        [Parameter(Mandatory = $true)][string]$RunRoot,
+        [Parameter(Mandatory = $true)][string]$OperationRoot
+    )
+
+    if (-not [System.IO.Directory]::Exists($RunRoot)) {
+        return $null
+    }
+    foreach ($manifestFile in @(Get-ChildItem -LiteralPath $RunRoot -Recurse -File -Filter 'run-manifest.json' |
+            Sort-Object -Property @{ Expression = 'LastWriteTimeUtc'; Descending = $true }, @{ Expression = 'FullName'; Descending = $true })) {
+        if ($manifestFile.Length -gt 8MB) {
+            throw "Runner manifest is too large to inspect: $($manifestFile.FullName)"
+        }
+        try {
+            $previousRun = [System.IO.File]::ReadAllText($manifestFile.FullName) | ConvertFrom-Json
+        }
+        catch {
+            throw "Runner manifest is unreadable: $($manifestFile.FullName)"
+        }
+        if ([string]$previousRun.command -ne 'Run') {
+            continue
+        }
+        $operationId = [string]$previousRun.result.operationId
+        if ([string]::IsNullOrWhiteSpace($operationId)) {
+            if (([string]$previousRun.result.status -eq 'IDLE') -and
+                ([string]$previousRun.result.reasonCode -eq 'NO_PENDING')) {
+                return $null
+            }
+            continue
+        }
+        return Read-Stage2OperationSummary -Root $OperationRoot -OperationId $operationId
+    }
+    return $null
 }
 
 function Get-RunnerCliAssembly {
@@ -481,7 +553,7 @@ if ($WhatIfPreference) {
         profile = $preflight.profile
         wouldAcquireExclusiveLease = $true
         wouldStartPleOrMcp = $false
-        allowedCapabilities = @('post_export_stage1_audit', 'post_export_stage2_plan')
+        allowedCapabilities = @('post_export_stage1_audit', 'post_export_stage2_plan', 'post_export_stage2_query', 'post_export_stage2_bind_export_2')
     })
     return
 }
@@ -543,7 +615,7 @@ try {
             generatedProjectBytesWritten = $false
             deploymentAllowed = $false
         }
-        allowedCapabilities = @('post_export_stage1_audit', 'post_export_stage2_plan')
+        allowedCapabilities = @('post_export_stage1_audit', 'post_export_stage2_plan', 'post_export_stage2_query', 'post_export_stage2_bind_export_2')
         capabilitiesInvoked = @()
         steps = @()
         result = [ordered]@{
@@ -558,7 +630,7 @@ try {
         $manifest.result.status = if ($preflight.readyForEngineering) { 'READY' } else { 'NOT_READY' }
         $manifest.result.exitCode = 0
         $manifest.result.nextAction = if ($preflight.readyForEngineering) {
-            'Use ProcessOne after a CpStudio export request is pending.'
+            'Use Run after a CpStudio export request is pending.'
         }
         else {
             'Complete the Project Pack and set the pack and every process to status=ready before ProcessOne.'
@@ -566,48 +638,119 @@ try {
         $exitCode = 0
     }
     else {
-        $auditStarted = [DateTime]::UtcNow
-        $auditOutput = @(& $preflight.files.auditScript.path `
-            -EngineeringRoot $engineeringRootResolved `
-            -LockWaitMilliseconds $LockWaitMilliseconds)
-        $auditResult = Get-ResultObject -Output $auditOutput -Description 'Post-export Stage 1 audit'
-        $capabilities.Add('post_export_stage1_audit')
-        $steps.Add([ordered]@{
-            name = 'POST_EXPORT_STAGE1'
-            startedAtUtc = $auditStarted.ToString('o')
-            completedAtUtc = [DateTime]::UtcNow.ToString('o')
-            status = [string]$auditResult.status
-            requestId = if ($auditResult.PSObject.Properties['requestId']) { [string]$auditResult.requestId } else { $null }
-        })
-
-        if ([string]$auditResult.status -eq 'idle') {
-            $manifest.result.status = 'IDLE'
-            $manifest.result.exitCode = 0
-            $manifest.result.nextAction = 'Wait for the next CpStudio Post-export request.'
-            $exitCode = 0
-        }
-        elseif ([string]$auditResult.status -eq 'done') {
-            $auditReport = [System.IO.Path]::GetFullPath([string]$auditResult.jsonReport)
-            $auditReport = Assert-PathInsideRoot -Root (Join-Path $engineeringRootResolved 'data\reports') -Path $auditReport -Description 'Stage 1 audit report'
-            if (-not [System.IO.File]::Exists($auditReport)) {
-                throw "Stage 1 report does not exist: $auditReport"
+        $stage2Result = $null
+        $auditResult = $null
+        $operationRoot = Join-Path $engineeringRootResolved 'data\operations\cpstudio-stage2'
+        $currentOperation = $null
+        if ($Command -eq 'Run') {
+            $currentOperation = Get-TrackedStage2Operation -RunRoot $runRootResolved -OperationRoot $operationRoot
+            if (($null -ne $currentOperation) -and
+                ([string]$currentOperation.status -in @('DONE', 'BLOCKED', 'FAILED'))) {
+                $currentOperation = $null
             }
+        }
 
+        if (($Command -eq 'Run') -and
+            ($null -ne $currentOperation) -and
+            ([string]$currentOperation.status -eq 'WAITING_FOR_RUNNER')) {
             $stage2Started = [DateTime]::UtcNow
             $stage2Output = @(& $preflight.files.coordinatorScript.path `
                 -EngineeringRoot $engineeringRootResolved `
-                -AuditReport $auditReport `
+                -OperationId $currentOperation.operationId `
                 -LockWaitMilliseconds $LockWaitMilliseconds)
-            $stage2Result = Get-ResultObject -Output $stage2Output -Description 'Post-export Stage 2 coordinator'
-            $capabilities.Add('post_export_stage2_plan')
+            $stage2Result = Get-ResultObject -Output $stage2Output -Description 'Post-export Stage 2 query'
+            $capabilities.Add('post_export_stage2_query')
             $steps.Add([ordered]@{
-                name = 'POST_EXPORT_STAGE2_PLAN'
+                name = 'POST_EXPORT_STAGE2_QUERY'
                 startedAtUtc = $stage2Started.ToString('o')
                 completedAtUtc = [DateTime]::UtcNow.ToString('o')
                 status = [string]$stage2Result.status
-                operationId = if ($stage2Result.PSObject.Properties['operationId']) { [string]$stage2Result.operationId } else { $null }
+                operationId = [string]$currentOperation.operationId
+            })
+        }
+        else {
+            $auditStarted = [DateTime]::UtcNow
+            $auditOutput = @(& $preflight.files.auditScript.path `
+                -EngineeringRoot $engineeringRootResolved `
+                -LockWaitMilliseconds $LockWaitMilliseconds)
+            $auditResult = Get-ResultObject -Output $auditOutput -Description 'Post-export Stage 1 audit'
+            $capabilities.Add('post_export_stage1_audit')
+            $steps.Add([ordered]@{
+                name = 'POST_EXPORT_STAGE1'
+                startedAtUtc = $auditStarted.ToString('o')
+                completedAtUtc = [DateTime]::UtcNow.ToString('o')
+                status = [string]$auditResult.status
+                requestId = if ($auditResult.PSObject.Properties['requestId']) { [string]$auditResult.requestId } else { $null }
             })
 
+            if ([string]$auditResult.status -eq 'idle') {
+                if (($Command -eq 'Run') -and ($null -ne $currentOperation)) {
+                    $stage2Started = [DateTime]::UtcNow
+                    $stage2Output = @(& $preflight.files.coordinatorScript.path `
+                        -EngineeringRoot $engineeringRootResolved `
+                        -OperationId $currentOperation.operationId `
+                        -LockWaitMilliseconds $LockWaitMilliseconds)
+                    $stage2Result = Get-ResultObject -Output $stage2Output -Description 'Post-export Stage 2 query'
+                    $capabilities.Add('post_export_stage2_query')
+                    $steps.Add([ordered]@{
+                        name = 'POST_EXPORT_STAGE2_QUERY'
+                        startedAtUtc = $stage2Started.ToString('o')
+                        completedAtUtc = [DateTime]::UtcNow.ToString('o')
+                        status = [string]$stage2Result.status
+                        operationId = [string]$currentOperation.operationId
+                    })
+                }
+                else {
+                    $manifest.result.status = 'IDLE'
+                    $manifest.result.exitCode = 0
+                    $manifest.result['reasonCode'] = 'NO_PENDING'
+                    $manifest.result.nextAction = 'No pending CpStudio Post-export request or open Stage 2 operation. Run again after the next export.'
+                    $exitCode = 0
+                }
+            }
+            elseif ([string]$auditResult.status -eq 'done') {
+                $auditReport = [System.IO.Path]::GetFullPath([string]$auditResult.jsonReport)
+                $auditReport = Assert-PathInsideRoot -Root (Join-Path $engineeringRootResolved 'data\reports') -Path $auditReport -Description 'Stage 1 audit report'
+                if (-not [System.IO.File]::Exists($auditReport)) {
+                    throw "Stage 1 report does not exist: $auditReport"
+                }
+
+                $stage2Parameters = @{
+                    EngineeringRoot = $engineeringRootResolved
+                    LockWaitMilliseconds = $LockWaitMilliseconds
+                }
+                $stage2Capability = 'post_export_stage2_plan'
+                $stage2StepName = 'POST_EXPORT_STAGE2_PLAN'
+                if (($Command -eq 'Run') -and
+                    ($null -ne $currentOperation) -and
+                    ([string]$currentOperation.status -eq 'WAITING_FOR_EXPORT_2')) {
+                    $stage2Parameters.OperationId = $currentOperation.operationId
+                    $stage2Parameters.SecondExportAuditReport = $auditReport
+                    $stage2Capability = 'post_export_stage2_bind_export_2'
+                    $stage2StepName = 'POST_EXPORT_STAGE2_BIND_EXPORT_2'
+                }
+                else {
+                    $stage2Parameters.AuditReport = $auditReport
+                }
+
+                $stage2Started = [DateTime]::UtcNow
+                $stage2Output = @(& $preflight.files.coordinatorScript.path @stage2Parameters)
+                $stage2Result = Get-ResultObject -Output $stage2Output -Description 'Post-export Stage 2 coordinator'
+                $capabilities.Add($stage2Capability)
+                $steps.Add([ordered]@{
+                    name = $stage2StepName
+                    startedAtUtc = $stage2Started.ToString('o')
+                    completedAtUtc = [DateTime]::UtcNow.ToString('o')
+                    status = [string]$stage2Result.status
+                    operationId = if ($stage2Result.PSObject.Properties['operationId']) { [string]$stage2Result.operationId } else { $null }
+                })
+            }
+            else {
+                throw "Unsupported Stage 1 state: $($auditResult.status)"
+            }
+        }
+
+        if ($null -ne $stage2Result) {
             $allowedStage2States = @('WAITING_FOR_RUNNER', 'WAITING_FOR_CPSTUDIO', 'WAITING_FOR_EXPORT_2', 'DONE', 'BLOCKED', 'FAILED')
             if ($allowedStage2States -notcontains [string]$stage2Result.status) {
                 throw "Unsupported Stage 2 state: $($stage2Result.status)"
@@ -649,9 +792,6 @@ try {
             $manifest.result['actionRequestSha256'] = if ($stage2Result.PSObject.Properties['actionRequestSha256']) { [string]$stage2Result.actionRequestSha256 } else { $null }
             $exitCode = [int]$manifest.result.exitCode
         }
-        else {
-            throw "Unsupported Stage 1 state: $($auditResult.status)"
-        }
     }
 }
 catch {
@@ -667,7 +807,7 @@ catch {
             project = [ordered]@{ engineeringRoot = $engineeringRootResolved }
             lease = [ordered]@{ scope = 'os-file-exclusive'; leaseId = if ($lease) { $lease.LeaseId } else { $null }; acquired = ($null -ne $lease); released = $false }
             guardrails = [ordered]@{ onlineOperationsUsed = $false; pleOrMcpStartedByAction = $false; secondPleStarted = $false; generatedProjectBytesWritten = $false; deploymentAllowed = $false }
-            allowedCapabilities = @('post_export_stage1_audit', 'post_export_stage2_plan')
+            allowedCapabilities = @('post_export_stage1_audit', 'post_export_stage2_plan', 'post_export_stage2_query', 'post_export_stage2_bind_export_2')
             capabilitiesInvoked = @()
             steps = @()
             result = [ordered]@{ status = 'FAILED'; exitCode = 50; nextAction = 'Review the run manifest and correct the failed gate.' }

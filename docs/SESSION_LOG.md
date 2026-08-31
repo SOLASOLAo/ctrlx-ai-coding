@@ -430,6 +430,7 @@
 | D35 | **Host 自动 evidence 摄取和部署都必须保持可验证边界**；terminal result 绑定 evidence SHA/只读锁，合法无 evidence 只等待人工复核；runtime 以五文件 immutable release 安装，task action 指向 exact release exe、description 记录 manifest；P1.3c 只在 durable journal/reconcile、production ingestor E2E 和真实强杀恢复通过后关闭 | 08-28 |
 | D36 | **P1.3c 技术实现与参考工作站验收完成不等于团队发行完成**；签名/ACL、受控安装和 AtLogOn 启动前五文件 bootstrap 统一进入 P1.4。显式 lifecycle 的 manifest/self-check 不能冒充 AtLogOn 自身的预检 | 08-28 |
 | D39 | **DIDO 自动化是可选 Project Pack 能力**；每个工位提供自己的完整 CSV，Build/Check 生成并校验 ASC，Stage 1 对比 CpStudio BusConfig，Stage 2 绑定匹配哈希；模板不复制工位点位，Import/Save/Write/Export/Link I/O 仍走官方工具 | 08-31 |
+| D40 | **外部电气交换统一为 ASC，日常编排统一为 `Runner -Command Run`**；ASC intake 生成内部 canonical CSV 并阻断占位名/部分拓扑，Run 只续跑其上一轮记录的 operation，不认领历史 ledger，不扩大 PLE/在线能力 | 08-31 |
 
 ## 待办 / 下一步
 
@@ -504,3 +505,14 @@
   并将二者绑定到 operation/action；后续漂移失败关闭。Runner/Broker capability 未扩大。
 - CpStudio Import、Save、Write designators、Export 及 PLE Link I/O 继续使用官方工具；没有脚本
   修改 CpStudio 模型、`.project` 或在线 PLC。
+
+## D40(2026-08-31)统一 Run 入口与 ASC-only intake
+
+- `Invoke-CtrlXOpconRunner.ps1 -Command Run` 复用既有 Stage 1/2，并从最近一次早先的 Run
+  manifest 精确恢复 operation；未跟踪的历史 ledger 不认领。ACTION_READY 时不消费新请求，
+  Export #2 仅绑定已跟踪的 `WAITING_FOR_EXPORT_2`，无工作时返回 `IDLE/NO_PENDING`。
+- 外部电气输入只接受已验证的 UTF-16LE-BOM、CRLF、15 列 ASC；内部仍使用可 diff 的 canonical
+  CSV。精确且无描述的 `_..._Channel_N` 自动名归一为空，错位或带描述占位名失败关闭。
+- 覆盖已有 CSV 时，模块/地址/DI-DO 类型 key 集必须相同，部分文件和拓扑漂移不会覆盖旧源。
+  ASC 不包含可靠的 EtherCAT 模块 BOM；硬件拓扑后续仍须独立 manifest + IOE 官方接口。
+- 根项目与模板 Runner/ASC 脚本和测试同步；完整离线回归未启动 PLE/MCP/Broker 或在线操作。
