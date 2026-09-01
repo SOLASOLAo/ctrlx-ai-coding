@@ -32,18 +32,28 @@ non-visual smoke check is also available:
 pwsh -NoProfile -File .\scripts\workbench\Start-CtrlXOpconWorkbench.ps1 -SmokeTest
 ```
 
-## V1 surface
+## Compact surface
 
-The first version has three pages:
+The compact v0.2 surface keeps three pages:
 
-1. **Workbench** shows the engineering phases declared by the project TODO
-   (Station010 uses P0-P4), Runner/Host state, the next action and the complete
-   CpStudio to PLE workflow.
-2. **Plan / Review** exposes Project Pack validation and read-only plan facts.
-   P2 IOE Apply remains disabled until the formal
-   `Plan -> checkpoint -> Apply -> reopen/readback` contract is complete.
+1. **Workbench** has one state, one next action and one primary **Run next**
+   button. Progress and the full workflow are reduced to two compact cards;
+   secondary tools stay in one bottom row.
+2. **Plan / P2** exposes Project Pack validation and the four-step IOE contract.
+   P2 Apply remains disabled until all four steps pass regression.
 3. **Evidence** opens the latest immutable Runner manifest and engineering
    folders and shows captured command output.
+
+The P2 contract means:
+
+1. **Plan** reads the current IOE topology and calculates the exact requested
+   changes without modifying the project.
+2. **Checkpoint** preserves the exact recoverable starting `.project` bytes.
+3. **Apply** uses the matching IOE official scripting surface after approval;
+   it never edits encrypted project bytes directly.
+4. **Reopen/readback** closes and reopens the IOE project, then compares module
+   order, hardware type and names with the approved plan before reporting
+   success.
 
 The daily primary action is **Run next safe step**. Each click advances at most
 one step through the existing Runner. When a CpStudio or PLE action is needed,

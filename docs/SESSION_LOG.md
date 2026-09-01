@@ -528,3 +528,12 @@
   `tools/workbench`，排除 `bin/obj`，并校验数量、SHA、生成工程 Build 和 smoke。
 - Release Build 0 errors / 0 warnings，Workbench 84 项断言、初始化器 278 项断言和当前/
   通用模板 smoke 均通过；没有启动 PLE/MCP/IOE 或执行在线操作。
+
+## D42(2026-09-01)Engineering Console v0.2 compact UI
+
+- 只调整 WPF XAML：主页合并为一个状态、一个下一步、一个主按钮；7 行重复流程压缩为
+  4 段，Host/CpStudio/目录/证据入口收拢到底部工具栏。
+- Plan 页直接显示 P2 的 Plan、checkpoint、Apply、readback 四步；Apply 继续禁用，未改
+  Runner、Host、Project Pack、PLE/IOE/CpStudio 或任何在线门禁。
+- Release Build 0 errors / 0 warnings，Workbench 84 项断言、Station010 smoke 通过；真实
+  Workbench/Plan 窗口完成可视化检查。

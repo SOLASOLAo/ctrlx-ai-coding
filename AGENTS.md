@@ -79,7 +79,7 @@ AI 可以创建标准化的 AI 旁车目录，但不伪造 CpStudio 供应商模
 - [ ] Controlled Runner P1.4 后续：独立 AtLogOn 五文件 prelaunch bootstrap 按用户决定延期到商业化/无人值守部署阶段，不阻塞当前开发；兼容矩阵与新团队工作站验收在有团队工位时再做。默认沿用当前用户权限、不自定义 ACL，数字签名延期到商业发行或公司 IT 明确要求
 - [x] Phase 2 Project Pack：通用 JSON schema、PowerShell 7 Build/Check、draft initializer，以及 Host/ExecuteAction 共用的 contentId/plan-source 漂移门禁已完成离线回归（2026-08-29）
 - [x] 可选 ePLAN DIDO Project Pack：本工位完整 CSV 确定性生成 ASC；Post-export Stage 1 核对 BusConfig，Stage 2 将匹配哈希绑定进 immutable action；模板不携带任何工位点位（2026-08-31）
-- [x] Engineering Console v0.1：通用 .NET 8 WPF 薄壳、模板启动器和初始化器复制已落地；只调用 Runner/Host/Project Pack 固定白名单，P2 Apply 与全部在线 PLC 操作禁用（2026-09-01）
+- [x] Engineering Console v0.2：通用 .NET 8 WPF 薄壳、模板启动器和初始化器复制已落地；界面已精简为状态/下一步/主按钮与 P2 四步页，只调用 Runner/Host/Project Pack 固定白名单，P2 Apply 与全部在线 PLC 操作禁用（2026-09-01）
 - [ ] 阶段 A(进行中):用户 CpStudio 骨架 → AI 填充逻辑(阶段 3)→ 仿真 → 真机
 - [ ] 阶段 B:路线② HMI 原型(OPC UA demo → hmi-framework,主画面 Avalonia 原生壳,Web 版远程备选)
 - [ ] 阶段 C:路线③ 标准 CODESYS + MCP 实测(先验证后买授权)
