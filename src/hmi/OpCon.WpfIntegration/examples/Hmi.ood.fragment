@@ -1,0 +1,11 @@
+<!-- Merge this into the owned component's Content/Hmi, not into vendor Std. -->
+<!-- Place IntegrationPage.sfc in Views/ and Texts.osd in Texts/ of that component. -->
+<Hmi>
+  <View name="WpfIntegration" refId="F08DCE71-B572-45CD-96FC-44E0222D6D5D" file="Views\IntegrationPage.sfc" selectable="True">
+    <Description>
+      <Text lcid="1033" value="Native operation integration probe"/>
+      <Text lcid="2052" value="原生操作集成探针"/>
+    </Description>
+  </View>
+  <HmiText name="Integration demo texts" refId="399CB129-0FA3-4EF9-B7CD-87D038B8461C" link="Texts\Texts.osd"/>
+</Hmi>

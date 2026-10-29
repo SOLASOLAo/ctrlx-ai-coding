@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "workspaceRoot": "..",
+  "hmiRoot": "OwnedSample/Station/Hmi",
+  "runtimeRoot": "Runtime"
+}

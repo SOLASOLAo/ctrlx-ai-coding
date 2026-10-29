@@ -1,209 +1,96 @@
 # ctrlX AI Coding
 
-**用 MCP + AI 驱动 Bosch ctrlX PLC 编程** —— CpStudio 持续维护 OpCon 模型、标准对象与 HMI，
-AI 依据可读规格经受控 MCP/REST 开发 PLC 应用逻辑并完成离线验证。
+CpStudio / OpCon / ctrlX 工程开发工具与 `ctrlx-opcon-engineering` skill 的维护仓库。
+CpStudio 持续维护模型、生成结构与 HMI；AI 通过明确的对象归属和原生接口修改工程。
 
-> AI-driven PLC programming for Bosch ctrlX via persistent MCP.
-> CpStudio remains the model/HMI source; AI owns declared PLC application logic.
+**当前工具基线：2026-10-29。** 本仓库保存现有工具；新的统一 MCP 在独立的
+[ctrlx-engineering-mcp](https://github.com/SOLASOLAo/ctrlx-engineering-mcp) 私有仓库研发。
+该仓库仅对获授权的账号可见，初始内容为方案与开发记录，不代表新 MCP 已可使用。
 
-## 这个项目解决什么问题
+## 当前能力与验证边界
 
-ctrlX 工程的传统流程依赖 Nexeed CpStudio 低代码平台生成 OpCon 框架代码,但该平台:
+| 能力 | 当前状态 | 使用入口 |
+| --- | --- | --- |
+| PLE 持久 MCP | 基于 `codesys-mcp-persistent 0.6.3`，维护 ctrlX 行尾、编译、Symbol/I/O 和原生状态回读补丁 | [补丁与离线检查](patches/codesys-mcp-persistent-crlf/README.md) |
+| PLE 原生脚本 | 复用已有唯一会话，执行固定的预检、构建及组件库阶段；不通过菜单加载脚本 | [原生脚本入口](skills/ctrlx-opcon-engineering/references/ple-native-script.md) |
+| CpStudio 原生桥接 | 面向 **5.11.0.169** 的实验性进程内适配；有隔离样例及驻留连接证据，其他版本与正式工程需分别验收 | [桥接范围与安装](skills/ctrlx-opcon-engineering/references/cpstudio-native-automation.md) |
+| 库更新 | 精确 OOID/OOD 版本计划，Reload → Apply → Parse → Save All → Export，返回各阶段回执；PLC 库安装及消费工程编译另行衔接 | [库更新流程](skills/ctrlx-opcon-engineering/references/cpstudio-library-update.md) |
+| CORE 只读诊断 | 认证后仅 Data Layer GET；读取、浏览、元数据和有界 SSE；不占用 PLE/CpStudio，不自动重连 | [读取与订阅](skills/ctrlx-opcon-engineering/references/core-datalayer-readonly.md) |
+| 工程 skill 与库样例 | 模型/代码归属、原生优先、桌面不干扰、OpCon ST/SFC 风格检查及 MachineCommon/IND360/INNTAI 样例 | [Skill](skills/ctrlx-opcon-engineering/SKILL.md)、[库样例](skills/ctrlx-opcon-engineering/assets/library-examples/README.md) |
+| Runner / Broker / Host | 已有排他租约、执行记录、离线检查编排和参考工作站验收；它们尚不是覆盖五个工具的统一 MCP | [Runner](src/runner/README.md)、[路线与历史验收](docs/mcp_productization_roadmap.md) |
+| WPF / OpCon 研究样例 | 展示与宿主、纯 WPF 输入样例已有离线检查；**原生操作适配器未完成，不能宣称 HMI→PLC 操作已接通** | [WPF 源码与限制](src/hmi/OpCon.WpfIntegration/README.md) |
+| IOE / WORKS | 保留既有 IOE 脚本经验与工程工具；没有完整的统一 MCP 适配器 | [IOE 脚本说明](docs/ioe_scripting_playbook.md) |
 
-- 冗余、不好用,库数量不完善;
-- 每次改动都要回到平台重新生成;
-- 真正有价值的只是它的 OpCon 库与层级骨架。
+本次发布整理不启动工程软件、不连接控制器。历史原生验证只对相应版本、目标与步骤有效；
+源码/离线测试通过不等于新工位、物理设备、正式 Export 或 WPF 操作验收通过。
 
-本项目验证并落地一条新路线:
+## 安装与更新
 
-```
-阶段1 CpStudio V5.11(人,持续使用)
-   Station/Command/Unit 层级 + 标准对象 + HMI/Event/StationData/BMK → 生成/导出
-        ↓
-阶段2 硬件组态(人)
-   ctrlX 默认 IP 网页 → EtherCAT → ctrlX IO Engineering
-        ↓
-阶段3 AI + persistent MCP(主力)
-   set_pou_code → compile(结构化错误) → 修复 → save,写 SqM/SqS/自动/手动细节
-        ↓
-阶段4 下载调试(MCP 在线工具)
-   simulation → connect → download → start/stop → read/write/monitor
-```
-
-**核心结论(已实测)**:`.project` 是加密容器，只能经对应 IDE、MCP 或正式 REST 接口修改；
-CpStudio 与 AI 通过对象归属清单协作，AI 不直接改供应商模型文件，也不覆盖未声明的生成对象。
-
-## 当前状态(2026-09-01)
-
-| 项 | 状态 |
-|---|---|
-| MCP 模式 | ✅ `codesys-persistent` v0.6.3(headless 在 ctrlX 品牌 IDE 不可用) |
-| CRLF 缺陷补丁 | ✅ 已打 + 已产品化(`patches/`,含一键脚本) |
-| 冒烟编译 | ✅ 0 errors / 35 warnings(培训样板固有符号警告) |
-| 分工 | 用户做骨架(CpStudio),AI 做 PLC 代码细节 |
-| 项目模板 | ✅ 新项目初始化器 + Stage 1 离线审计队列 + Stage 2 PlanOnly operation ledger |
-| Project Pack | ✅ schema + PowerShell 7 Build/Check + draft initializer + Runner 漂移门禁 |
-| Codex Skill | ✅ `ctrlx-opcon-engineering`，源码可版本化、安装可校验 |
-| Controlled Runner | ✅ P1.1/P1.2、P1.3a/b/c 及 P1.4a 精简团队离线包已完成；⏸ AtLogOn bootstrap 延期到商业化/无人值守部署阶段，兼容矩阵与新工作站验收有工位时再做 |
-| Engineering Console | ✅ 独立 .NET 8 WPF 薄壳；固定 Runner/Host/Project Pack 白名单、工程阶段/下一步/人工边界/证据显示；P2 Apply 和全部在线 PLC 操作禁用 |
-| 产品化计划 | `docs/mcp_productization_roadmap.md` |
-
-Stage 2 是哈希绑定、可恢复的 PlanOnly 协调器；P1.2 interactive Broker 使用
-current-user registration、Named Pipe v2、durable submit/query 和 typed allowlist，且只由
-工程师在交互会话中显式启动。2026-08-28 的最终 Station010 immutable action 已通过：
-显式 Clean Build 0 errors / 4 条完整 warning，456 mapping、Symbol、正式 baseline、
-本机 checkpoint 与工程/结构哈希全部匹配，无在线动作。P1.2 已关闭。
-
-P1.3a/P1.3b 新增 `vcrunner-host`：当前用户后台单实例、heartbeat/status、同会话精确停止、
-有界 JSONL 日志与崩溃恢复，并自动发现、消费 Host activation 后由权威 ledger 发布的
-immutable `currentAction`。activation 前的历史已终态工作不会被当成新任务；旧 open claim
-仍可恢复且恢复后的结果持续可见。有待处理 action 且没有有效 Agent 时保持 `WAITING_FOR_AGENT`，
-没有 action 时保持 `WAITING_FOR_ACTION`。
-
-P1.3c 已实现自动 result/evidence 摄取：Host 对 terminal result 和 sealed evidence 重新执行
-SHA 绑定及只读文件锁校验，再调用 release-bound 的纯离线 Stage 2 coordinator 推进 ledger；
-合法的无 evidence 终态保持 `WAITING_FOR_COORDINATOR` 等待人工复核，不重跑 action；Stage 2
-忙时有界退避，存在其他 fresh ledger 异常时阻断推进。该路径不需要 Agent，也不启动 Broker、
-Node、MCP、PLE，且不执行任何在线 PLC 操作。production 默认 ingestor 的 6 项 fixture E2E
-均已通过，覆盖 Host 默认摄取、DONE、BLOCKED、真实 workflow ledger 独占锁映射为 busy 且零
-mutation、evidence SHA 漂移拒绝，以及无 evidence 的人工复核。
-
-Host runtime 已发布为五文件、内容寻址的 immutable release。Scheduled Task action 精确指向
-active release 的 `vcrunner-host.exe`，description 记录 `releaseId + manifest SHA-256`；wrapper
-的显式 lifecycle 会校验五文件 manifest，并在启动、切换和安全卸载路径执行 apphost self-check。
-AtLogOn 任务自身只是直接启动该 action，不会先独立校验 `.deps.json` 或
-`.runtimeconfig.json`。durable deployment journal/reconcile，以及真实断点/强杀、升级回滚、
-损坏拒绝和 `deployment.json` 缺失时的安全卸载均已在参考工作站通过。当前 active release 为
-`faa27c1d79415996ddcd524833160c57ea23ac63888f17b853487a81b46ab0f1`，previous release 为
-`ac89b28f9a93a61c10b5bd7731c3b5b83288169a105c62eb4218a30c119f4b51`，Host 为
-`WAITING_FOR_ACTION`。P1.3c 技术实现和参考工作站验收至此完成；该结果不新增真机或真实 PLE
-验收声明。
-
-P1.4a 已提供精简团队离线包：发行机用 `New-CtrlXOpconRunnerHostPackage.ps1` 固定封装
-`Install.ps1`、canonical wrapper/module、Host 五文件和 `package-manifest.json`；manifest 记录每个
-内容文件的 path/length/SHA-256 与整体 `contentId`，安装器在任何命令前验证。接收工位通过
-PowerShell 7 对指定 AI 工程根目录安装；Host 仍需 .NET 8 runtime，但无需 Git、源码、SDK 或
-本机 build。同一 `Install` 同时承担首装与升级，
-另提供精确 `Rollback`、安全 `Uninstall` 和只读 `Status`。fresh `Install` 只注册 release 并默认
-保持 Host 停止，首次启动必须另行显式执行；升级 `Install` 保留升级前的 running/stopped 状态。
-当前沿用 Windows 当前用户权限，不增加自定义 ACL；
-数字签名延期到商业发行或公司 IT 明确要求。独立的 AtLogOn 五文件 prelaunch bootstrap 尚未实现，
-并按用户决定延期到商业化/无人值守部署阶段；开发期继续显式启动 Host。包含 Host/.NET 运行前提的
-兼容矩阵与新团队工作站验收在有工位时再做。这些部署项不阻塞当前功能开发，P1.4 产品化范围仍开放。
+在独立工具目录获取本仓库，不覆盖正在使用的工位目录：
 
 ```powershell
-.\scripts\runner\New-CtrlXOpconRunnerHostPackage.ps1 `
-  -OutputPath 'C:\Transfer\CtrlXRunnerHost'
+git clone https://github.com/SOLASOLAo/ctrlx-ai-coding.git
+cd ctrlx-ai-coding
 
-pwsh -File 'C:\Transfer\CtrlXRunnerHost\Install.ps1' `
-  -EngineeringRoot '<ai-root>'
-pwsh -File 'C:\Transfer\CtrlXRunnerHost\Install.ps1' `
-  -Command Status -EngineeringRoot '<ai-root>'
+# 首次安装 skill；不会修改 MCP 配置、工程或供应商安装目录。
+powershell.exe -NoProfile -File ./scripts/Install-CtrlXOpconSkill.ps1
 
-dotnet run --project `
-  .\tests\runner\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest\CtrlX.OpCon.Runner.Stage2Ingestor.SelfTest.csproj `
-  -c Release
+# 已安装时先检查。安装版包含本地更新时，先审阅差异再决定覆盖。
+powershell.exe -NoProfile -File ./scripts/Install-CtrlXOpconSkill.ps1 -Check
+# 确认仓库是希望安装的版本后：
+# powershell.exe -NoProfile -File ./scripts/Install-CtrlXOpconSkill.ps1 -Force
 ```
 
-## 创建新工站 AI 旁车
-
-不要复制某个现有 Station 项目的 BMK、规格和项目脚本。先预览，再由统一初始化器创建：
+PLE MCP 的已验证基础版本为 **0.6.3**。首次配置可参考
+[MCP 配置示例](config/codex.config.toml.example)，填写自己的安装路径、工作目录及精确 profile
+（参考工作站为 `ctrlX PLC 2.6.8`）。不把示例中的路径当成本机事实。
 
 ```powershell
-.\scripts\New-CtrlXOpconProject.ps1 `
-  -ProjectId 'example-cell' `
-  -DisplayName 'Example Assembly Cell' `
-  -StationId 'Station020' `
-  -StationRoot 'C:\Engineering\ExampleCell\Station020' `
-  -OutputPath 'C:\Engineering\ExampleCell\McpCoding' `
-  -WhatIf
+npm install -g codesys-mcp-persistent@0.6.3
+powershell.exe -NoProfile -File ./patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1 -Check
+# 仅在会话所有者安排的维护窗口应用补丁：
+# powershell.exe -NoProfile -File ./patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1
 ```
 
-初始化器会生成 `project-pack.json` 和 draft `generated/engineering-plan.json`。补齐
-`specs/processes/*.process.json` 并把 Pack 状态改为 `ready` 后执行：
+`npm install/update` 会覆盖兼容补丁。已有可用配置不需要为本次仓库更新重新安装 MCP、
+安装 CpStudio 插件、重启 IDE 或启用 Runner/Host。需要这些能力时按各入口的版本与所有权要求操作。
+厂商软件和对应授权由工作站自行提供，本仓库不分发供应商 DLL、工程容器或编译库。
 
-```powershell
-pwsh -File .\scripts\project\Build-CtrlXOpconProjectPack.ps1 -Command Build -RequireReady -Json
-pwsh -File .\scripts\project\Build-CtrlXOpconProjectPack.ps1 -Command Check -RequireReady -Json
-```
+## 日常开发
 
-生成器不写 CpStudio/PLE，只输出流程计划、提示、测试和追溯。新 action 固定 Pack/plan 身份；
-Host 与直接 ExecuteAction 共用校验器逐项验证计划事实源，对 stale/draft Pack 失败关闭。
+1. 确定目标工程、软件版本、模型/代码归属及当前所有者。
+2. 优先 typed MCP、原生脚本、官方 REST 和已验证桥接；缺少接口不自动转为 GUI 点击。
+3. 批量修改明确归属的源码，保存并回读；需要生成结构变化时从 CpStudio 模型处理。
+4. 库更新明确区分 OOD 与 PLC 库版本。Parse/Export 后检查受影响的代码、Symbol、I/O 和 HMI，并执行新编译。
+5. 超时或结果未知先核对执行状态，不重放写入。在线诊断优先使用独立只读 Data Layer 通道。
 
-完整参数和离线测试见 `templates/README.md`。初始化器只创建 AI 旁车，所有工程路径写成相对路径；不会复制
-Station、`Std`、`.project` 或闭源资料，目标目录已存在时会拒绝覆盖。
+GUI 自动化入口仍保留在 [历史一键启动器](skills/ctrlx-opcon-engineering/references/cpstudio-oneclick.md)，
+仅用于用户选择的 GUI 工作方式。后台 UIA、按键或控制消息同样会操作共享界面。
 
-安装或校验 Codex Skill：
+## 创建新工位与可选工具
 
-```powershell
-.\scripts\Install-CtrlXOpconSkill.ps1 -Force
-.\scripts\Install-CtrlXOpconSkill.ps1 -Check
-```
+通过 [项目初始化器](scripts/New-CtrlXOpconProject.ps1) 建立 AI 旁车，先用 `-WhatIf` 预览。
+不要把某个工位的 BMK、现场点位、凭据或流程作为通用模板。
 
-安装后重新加载 Codex，即可显式使用 `$ctrlx-opcon-engineering`。Skill 负责编排方法和安全边界；
-项目事实仍来自当前仓库的 `config/specs/ai/src/catalog`。
+- [工程技术基线](docs/ctrlX_AI_project_baseline.md)：版本、接口及历史验证事实；[HTML](docs/ctrlX_AI_project_baseline.html) 由 Markdown 生成。
+- [工程控制台](docs/engineering_workbench.md)：可选的 Runner/Host/Project Pack 界面。
+- [项目模板](templates/ctrlx-opcon-project/README.md)：目录、配置、离线审计及初始化说明。
+- [团队配置](templates/ctrlx-opcon-project/TEAM_SETUP.md)：需要团队部署时按需使用。
+- [变更记录](docs/SESSION_LOG.md)：过程与历史决策。
 
-## 仓库结构
+## 验证与边界
 
-```
-├── README.md                  ← 本文件
-├── AGENTS.md                  ← AI Agent 工作指南(先读)
-├── docs/
-│   ├── ctrlX_AI_project_baseline.md    ← 基线记录(权威文档,11 章)
-│   ├── ctrlX_AI_project_baseline.html  ← 基线记录 HTML 版
-│   ├── mcp_productization_roadmap.md    ← MCP 产品分层、优先级和验收标准
-│   ├── SESSION_LOG.md                  ← 讨论与决策流水账
-│   ├── ioe_scripting_playbook.md       ← IOE 脚本化操作手册(阶段2实战踩坑)
-│   └── PC_Info_Report.txt              ← 环境快照
-├── config/
-│   ├── codex.config.toml.example       ← 生效中的 Codex MCP 配置(路径按本机改)
-│   └── history/                        ← 配置演进备份
-├── patches/
-│   └── codesys-mcp-persistent-crlf/    ← ⭐ ctrlX IDE 必需补丁（行尾、I/O、编译消息）+ 一键脚本
-├── scripts/                            ← 新项目初始化、环境采集和 IOE 驱动
-├── mcp_test/                           ← MCP 验证用 IronPython 脚本(.project 二进制不入库)
-├── templates/                          ← ctrlX/OpCon AI 旁车 + 通用代码项目模板
-├── tests/                              ← 初始化器等纯离线工具测试
-└── route4-rtpreempt-openplc/           ← 路线④ PREEMPT_RT+IgH+OpenPLC 交接(独立 Linux 机开发)
-```
+离线验证包括 skill 安装/结构、脚本单元测试、原生桥接客户端夹具、MCP 补丁夹具及组件源码检查。
+测试入口随各模块提供；原生 IDE 验证只能在明确的独占窗口进行。
 
-## 快速上手(复现本环境)
+- 不直接编辑 `.project` 字节，不用 PLE 打开 IOE 工程。
+- 同一 profile/工程只允许一个所有者；不抢焦点、鼠标、键盘或剪贴板。
+- `write_variable` 的现有实现属于 FORCE，不能当作普通写值接口。
+- 实体 PLC 下载、启停、写值/FORCE、机器人动作与 IPC 部署需有覆盖目标和动作的授权。
+- WPF 原生握手、通用模型添加的正式 Export/编译、跨版本和新工作站兼容性仍按各模块记录分别验收。
 
-1. **安装**:ctrlX WORKS(含 ctrlX PLC Engineering PLE-V-0206.x)+ Node.js + `npm i -g codesys-mcp-persistent`;
-2. **配置**:参考 `config/codex.config.toml.example`,把 `[mcp_servers.codesys-persistent]` 的
-   `--codesys-path` / `--codesys-profile` / `--workspace` 改成你的路径(profile 名必须精确,如 `ctrlX PLC 2.6.8`);
-3. **打补丁**:
-   ```powershell
-   cd patches\codesys-mcp-persistent-crlf
-   .\apply-crlf-patch.ps1 -Check
-   .\apply-crlf-patch.ps1
-   ```
-4. **验证**:通过 MCP 调用 `get_codesys_status`(等待 ready)→ `compile_project`;
-5. **读文档**:`docs/ctrlX_AI_project_baseline.md` 第 8~11 章(脚本 API、实施路线、红线、FAQ)。
+## 来源与许可
 
-## 红线(务必先读)
-
-- 🔴 `write_variable` 是**强制写值(FORCE)**,真机操作前确认安全状态;
-- 🔴 不手改 `.project` 字节;CpStudio 重新生成前必备份 AI 改动;
-- 🔴 npm 升级 `codesys-mcp-persistent` 会覆盖 ctrlX 兼容补丁（含编译超时修复）→ 重跑 `apply-crlf-patch.ps1`;
-- 🟡 同一时间只开一个使用本 MCP 的 Codex 窗口(多实例竞态致 IDE 退出)。
-
-## 路线图(产品方向)
-
-- [x] 阶段 0:环境基线 + persistent 上线验证 + 补丁产品化(2026-08-12)
-- [ ] 阶段 1:用户 CpStudio 骨架(层级/HMI/handler/变量)
-- [x] 阶段 2:硬件与 IO 组态(EtherCAT)(Station010 实测 2026-08-18,方法见 docs/ioe_scripting_playbook.md)
-- [ ] 阶段 3:AI 填充逻辑(SqM/SqS/自动/手动),compile 结构化错误闭环
-- [ ] 阶段 4:仿真 → 真机下载调试
-- [x] 产品化基础:可复用项目初始化器、Post-export Stage 1 审计队列、Stage 2 PlanOnly ledger 和 Codex Skill
-- [x] 产品化 MCP 技术通道:Controlled Runner P1.1、P1.2a client、P1.2b interactive Broker、受控 adapter、fresh Build、typed warning 与真实 PLE semantic snapshot
-- [x] 产品化 Host P1.3b：activation 后 immutable `currentAction` 自动发现/消费、历史隔离、旧 claim 恢复和无 Agent 等待
-- [x] 产品化 Host P1.3c：自动 result/evidence 摄取、production ingestor 6 项 E2E、durable deployment journal/reconcile，以及 immutable release 的真实强杀/升级回滚/损坏拒绝/安全卸载验收
-- [x] 产品化 Host P1.4a：带内容 manifest 的精简团队离线包；接收工位无需 Git/源码/build，PowerShell 7 支持首装/升级、回滚、卸载和状态查询；fresh Install 默认停止，升级保留原运行状态
-- [ ] 产品化 Host P1.4 后续：AtLogOn 启动前五文件 bootstrap 延期到商业化/无人值守部署阶段；兼容矩阵与新工作站验收在有工位时再做；两者不阻塞当前开发，默认不自定义 ACL，数字签名按商业/公司 IT 要求延期
-
-## 版权说明
-
-- Bosch / Bosch Rexroth / OpCon / ctrlX / Nexeed 为各自权利人商标;本仓库不分发其库与工程二进制;
-- TrainingStation 为 Bosch 培训材料,本仓库仅引用其路径作参考样板;
-- 本仓库原创内容(文档/脚本/补丁)见各文件头部说明。
+Bosch、Bosch Rexroth、OpCon、ctrlX、Nexeed 的商标与软件权利属于相应权利人。
+本仓库不是其官方 SDK。MCP 衍生代码的来源和 MIT 许可见
+[第三方说明](THIRD_PARTY_NOTICES.md)。公开仓库不改变供应商软件的使用或分发条件。

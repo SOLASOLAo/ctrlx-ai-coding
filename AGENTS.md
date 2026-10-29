@@ -1,7 +1,7 @@
 # AGENTS.md — AI Agent 工作指南
 
-> 任何 AI 编码代理(Codex 等)在本仓库或相关 ctrlX 项目工作前,**先读完本文件**。
-> 人类可读版总览见 `README.md`;详细技术基线见 `docs/ctrlX_AI_project_baseline.md`。
+> 本文件约束本工具仓库；派生工位遵守自己的 AGENTS、当前用户授权和任务范围，按需引用这里的技术资料。
+> README 用于了解工具，技术基线按相关章节读取；纯文档或问答不触发 PLE、导出、编译或完整工程流程。
 
 ## 1. 项目一句话
 
@@ -28,8 +28,8 @@ AI 可以创建标准化的 AI 旁车目录，但不伪造 CpStudio 供应商模
 3. **npm 升级 `codesys-mcp-persistent` 会覆盖 ctrlX 兼容补丁**（CRLF + connector I/O Mapping + 有界编译消息读取）→ 升级后必须重跑
    `patches/codesys-mcp-persistent-crlf/apply-crlf-patch.ps1`(先 `-Check`)。
 4. **同一时间只允许一个 Codex 窗口使用 codesys MCP**(多实例抢 profile 会致 IDE 退出)。
-5. **`write_variable` 是 FORCE 强制写值**,不解除一直生效;真机 download/start_stop/write 前必须与用户确认安全状态。
-6. **eval_python 仅作审计用途**;常规操作走正规 MCP 工具;**勿对已打开工程裸调 `se.projects.open()`**(卡死 IDE UI 线程)。
+5. **`write_variable` 是 FORCE 强制写值**,不解除一直生效；真机 connect/download/start_stop/write 必须有覆盖目标和动作的明确授权及安全条件。相同任务的已有授权持续有效，超出范围或必要条件缺失时再确认。
+6. **eval_python 仅作审计用途**;常规操作优先正规 typed MCP。缺少 typed 工具的库元数据、编译库导出/安装或已审查组件导入，走 [固定原生文件 wrapper](skills/ctrlx-opcon-engineering/references/ple-native-script.md#offline-component-route)，沿用唯一 owner/工程/离线门禁；**勿对已打开工程裸调 `se.projects.open()`**(卡死 IDE UI 线程)。
 7. CpStudio 重新生成可能覆盖 AI 代码：生成后先 diff，再按 ownership/hooks/graphical 清单恢复；先确认集成 Git 可恢复精确起点，不能恢复时只建一个内容寻址 checkpoint，禁止重复创建哈希相同的备份。
 
 ## 4. 环境关键事实(已实测,改前核对)
@@ -45,11 +45,11 @@ AI 可以创建标准化的 AI 旁车目录，但不伪造 CpStudio 供应商模
 | 模板 | `C:\ctrlXWORKS\ctrlXPLCEngineering\PLE_V_0206\Studio\Templates\Standard.project`(=TrainingStation 拷贝,含 OpCon 骨架+34 库占位符) |
 | 参考样板 | 桌面 `To_Participants_ctrlX_V2.6.10_CN\TrainingStation\...`(只读参考,不分发) |
 | 测试工程 | `C:\A_Documents\A_Projects\A_Software\PLC_Generate\TestOes\mcp_test\TS_PLC_TEST.project` |
-| 编译基准 | 培训样板固有符号警告(Loc*/SqC*),**以 errors=0 为准** |
+| 编译基准 | 对受影响工程执行新编译，要求 errors=0 并审阅新/消失的 warning 签名；培训样板结果不代替工位基线 |
 
 ## 5. MCP 使用速记
 
-- 卡死恢复:`shutdown_codesys`(SIGKILL 兜底)→ 下次调用自动重启;日志 `%TEMP%\codesys-mcp-persistent\<session>\watcher_error.txt`
+- 卡死诊断先核对 owner、目标、模态窗口及日志；超时不代表执行失败，也不授权强关用户会话或启动第二实例。日志 `%TEMP%\codesys-mcp-persistent\<session>\watcher_error.txt`
 - `get_compile_messages` 返回**上次编译的缓存**——改代码后先 `compile_project` 再取消息
 - IronPython 2.7 脚本引擎;脚本 API 速查见基线文档第 8 章
 - 补丁体检:`apply-crlf-patch.ps1 -Check`（同时检查 watcher 行尾和 ctrlX connector 通道映射能力）
@@ -59,11 +59,15 @@ AI 可以创建标准化的 AI 旁车目录，但不伪造 CpStudio 供应商模
 - **事实源分工**:结论性技术事实 → `docs/ctrlX_AI_project_baseline.md`;过程与决策流水 → `docs/SESSION_LOG.md`;
   路线规划与执行进度 → `docs/ctrlX_tech_routes.html`(§7 清单勾选即进度)
 - **MD 是源,HTML 是产物**:改完 `ctrlX_AI_project_baseline.md` 后运行 `python scripts/md2html.py` 重新生成 HTML
-- 重大环境/配置/补丁变更:**更新文档 → 提交 → 推送**,一次做完
+- 约束、配置或使用方式变化时更新相应文档；状态变化才更新交接，纯问答不制造文档改动。提交和推送只在用户已有授权内，核对目标远程/分支及实际差异，不因变更完成或会话结束自动执行。
 - 提交信息风格:`docs:` / `patches:` / `scripts:` / `config:` / `hmi:` 前缀 + 简述;中文正文可
-- 日期一律 ISO 格式(YYYY-MM-DD);新增决策追加到 SESSION_LOG 决策清单与基线红线章节
+- 日期一律 ISO 格式(YYYY-MM-DD)；长期技术结论更新对应基线章节，需要保留的历史另存，不在多个入口重复维护进度。
 
-## 7. 当前状态快照(2026-09-01)
+- 验证与改动匹配：文档检查内容/链接，PLC 或工程变化才触发相应回读/编译及相关测试。通过后仅因新改动、失败或未解决问题扩大验证；不固定跑全平台矩阵。
+
+## 7. 历史状态快照(2026-09-01)
+
+以下是工具仓库当时的里程碑，不是派生工位的当前任务或启动指令；本站当前状态查其 HANDOVER/TODO。
 
 - [x] 阶段 0:环境基线 + persistent 上线验证 + ctrlX 兼容补丁产品化（含编译超时修复）
 - [x] 通用 AI 旁车初始化器 + Post-export 离线审计队列 + `ctrlx-opcon-engineering` Skill

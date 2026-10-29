@@ -537,3 +537,349 @@
   Runner、Host、Project Pack、PLE/IOE/CpStudio 或任何在线门禁。
 - Release Build 0 errors / 0 warnings，Workbench 84 项断言、Station010 smoke 通过；真实
   Workbench/Plan 窗口完成可视化检查。
+
+## 2026-10-07 · CpStudio 库更新原生接口核查
+
+- 按用户的原生脚本/API 要求，只读检查 CSV5_11 的官方帮助、启动配置及程序集元数据/调用引用；
+  未操作 GUI、执行供应商方法、修改工程或启动第二个 IDE。
+- 尚未建立六步库更新流程的受支持外部入口。结论见基线 §7.10；详细候选与证据边界见
+  `skills/ctrlx-opcon-engineering/references/cpstudio-native-automation.md`。
+- 更新现有 Skill 的执行方式选择与 GUI 指南边界，保留版本校验、已有 GUI 源码和 SmartForms/WPF 模式。
+  此次没有新增或宣称验收通过的原生 CpStudio runner。
+
+## 2026-10-07 · PLE 无菜单调用及 CpStudio 接口适配研究
+
+- ST60一键流程移除PLE的Tools/Execute Script File、弹窗和坐标点击代码，新增固定
+  `native_ple_phase.cjs`，复用唯一现有persistent MCP的IpcClient/watcher；不新建服务/IDE。
+- 原生执行器补齐裸watcher回调缺失的driver上下文；冷会话编译消息在Build后重新读取，
+  Symbol库namespace必须在预检前通过原生编译解析。保留源码/hooks/I/O/Symbol及警告门禁。
+- 隔离副本成功记录为ST60旁车的
+  `data/reports/cpstudio-mcp-acceptance/dd5231b2-125b-4d6a-8649-fc828e327cde/acceptance.json`：
+  0错误/9条既有警告，316源码、158I/O、939Symbol权限，已保存离线且测试PLE退出。
+  本轮未重跑正式CpStudio Parse/Export整链。
+- 按用户授权继续CpStudio内部接口研究，发现公开工程管理器单例及DDP加载配置。
+  只读扩展原型编译成功，但未完成当前工程实例引导；不把内部方法列为已通过的外部API。
+  临时宿主已关闭；原有正式CpStudio窗口保留，未向其执行工程写命令。
+- 现有skill增加PLE原生入口指南、更新源模板，并加入可重复执行的只读PE元数据检查器；
+  CpStudio原生桥接仍标明未验收。与“整合 ST60 项目工程”对话协调独占窗口后执行上述验证。
+
+## 2026-10-07 · CpStudio 原生桥接隔离闭环
+
+- 按用户“继续”授权，在主 ST60 对话确认暂停窗口后，完成 CpStudio5.11.0.169 自有 x86 宿主。
+  使用原 DDP 程序、独立配置和 `ExecuteAssembly` 加载自有桥接，没有修改供应商安装文件，
+  没有对正式 PID15376 执行工程写命令，也没有鼠标、UIA 或热键输入。
+- 固定命令通过当前工程身份检查，原生 Reload、精确 OOD0.1.2.6→隔离测试0.1.2.7、
+  依赖校验、Apply/reload、完整模型 Save 和冷重开回读通过；PLC 库仍0.1.1.1，非新发布。
+  模型343667节点保持，比较结果为目标版本/基引用更新及一项原生保存名称更新。
+- Public Export 包装层的早期未知结果已记录，结束自有一次性宿主后恢复隔离 PLC checkpoint；
+  改用原生 STA ExportThread 并收集通知，缺失 Post-export 脚本按错误处理。隔离观察脚本
+  就绪后，新验收 `d22cfc20-12d4-4cdf-9cec-fc10347cdbf7` 的 Parse/Save/Export、PLE 原生
+  Build/Save 全部通过：0错误/9条既有警告、316源码、158 I/O、939 Symbol及保护检查保持。
+  测试 PLE 保存退出；Post-export 仅为隔离观察入口，不认领正式 Stage1/Stage2。
+- 可复用四文件源码加入现有 skill 的 `assets/cpstudio-native-v511`。便携入口原生恢复测试
+  版本0.1.2.6，拒绝不存在的99.99.99.99；随后冷启动回读0.1.2.6、无脏内容，版本计划通过。
+  原生桥接仅启动隔离副本的自有宿主，stock实例接管、正式集成及其他版本仍未验收。
+  没有实体PLC操作、HMI现场部署或提交推送。
+
+## 2026-10-07 · 组件库原生文件入口补齐
+
+- INNTAI 开发对话反馈库版本、编译库导出/安装与已审查组件脚本缺少执行入口；核对当前
+  skill、源码和本机patched0.6.3发现 Station runner 只接受preflight/build。另确认
+  typed `compile_project` 已支持 `.library` 的 `check_all_pool_objects`，而
+  `clean_compile_project` 仅支持 Application；此处明确工具适用范围，未修改npm包。
+- 扩展既有 `native_ple_phase.cjs` 的离线 `component` 阶段，并增加固定原生
+  `component_existing.py`。使用精确PID/profile/primary project、授权隔离根目录及已审查
+  `scripts/ple/*.py` 内容指纹；固定文件暂存、job指纹、回执与现有单owner/no-replay规则共用。
+  wrapper拒绝在线或脏状态、错误目标、替换源码和未保存返回，库不要求active Application；
+  记录实际ProjectInfo与脚本JSON证据。不宣称Python沙箱或自动编译/安装/仿真验收。
+- 10项Node检查与3项CPython原生API模拟检查通过。没有调用INNTAI/ST60 MCP/PLE/CpStudio，
+  没有启动第二个IDE、修改这些工程或执行虚拟/实体在线操作。实际组件脚本原生验收由当前
+  owner在其授权窗口内执行；组件workflow、PLE入口及AGENTS的typed缺口替代路线已同步，
+  仍禁止routine eval_python。
+
+## 2026-10-07 · CpStudio 导出错误明细与只读诊断
+
+- INNTAI owner反馈隔离参考工程已Reload/Parse/Apply OOD1.0.3.0/Save，但Export回执
+  `7497378f-c195-43ab-b8d5-3f9ebb59a18e` 仅有“See output window”通知。磁盘startup日志有
+  HTTP400；owner另从原生输出读出创建 `/Station` 失败、REST返回 `BadRequest` 与
+  `A blocking operation is in progress`。后续PLE编译0错误/4条基线警告不覆盖Export失败，
+  阻塞操作的具体来源仍由当前owner调查；本轮不重试Export。
+- 在共享桥接加入就绪后的原生Output/Messages事件收集、操作UUID及512条有界历史，
+  getter失败单独记录；成功和失败Export回执均保留明细、通知和原始success flag。
+  新增只读diagnostics，读取历史和上次Export结果，不调用PLE/REST、清除输出或修改模型。
+  ready公布命令能力，旧宿主拒绝新诊断请求；五文件源码需owner在未来受控启动时加载。
+- 15项离线消息测试、旧宿主拒绝检查及完整x86宿主/桥接编译通过，仍有既有ApplicationBase
+  弃用编译警告。只读取已有失败回执/日志及供应商元数据，没有向INNTAI/ST60的当前
+  PLE/CpStudio发命令、热换DLL或启动IDE。实际新宿主消息捕获仍待owner验收。
+  Skill验证、改动链接检查与安装源一致性检查通过，已同步用户安装副本。
+
+## 2026-10-07 · PLE 自有执行器生命周期与 REST 阻塞调查
+
+- INNTAI owner提供新宿主失败Export；只读磁盘回执
+  `e143d5f2-ad9f-4160-9e47-27feac217c65` 确认complete/nativeExportSuccessful均false，
+  499条当次消息（122 Messages、377 Output），无captureError，全局丢弃190条。
+  Output有371条blocking错误及6条已有目录/对象冲突；不能说全部错误均来自blocking。
+  原生消息捕获已得到失败运行验收，整链成功及部分写入恢复仍未证明。
+- 只读供应商PE/IL确认REST CheckForBlockingOperation读取Engine全局
+  LengthyOperationIsActive；owner报告jobs均Done，无Running。不能把当前阻塞归因于
+  未完成REST job。ScriptEngine便利Execute创建执行器但无Dispose；Native Execute内
+  callback Finish已有finally。watcher主线程转发和在线借用执行器不应被本工具释放。
+- 固定preflight/build/component入口统一改用CreateScriptExecutor创建自有执行器，
+  关闭其公开默认ProgressCallbackFactory，LoadDrivers/Execute后finally Dispose。
+  回执增加executorDisposed/cleanupUnknown；只有对应UUID释放标记和原生阶段结果都确认
+  才成功，清理未知或timeout保留锁。此修正不写私有flag、不清除既存LengthyOperation，
+  不宣称已经定位或修复当前REST根因。
+- 13项Node离线测试通过，涵盖实际生成Python的成功、既存gate、LoadDrivers/Execute/
+  Create/Dispose失败，以及清理未知保锁和已清理失败放锁；使用原生API doubles，未接IDE。
+  owner另报告隐藏.NET异常：工程句柄-1，栈到LanguageModelProvider.UpdateLanguageModel。
+  Continue后脚本读LengthyOperationIsActive=False，但随后
+  `841c177a-3f51-48d1-80f3-6f593af42dc1` Export仍终态阻塞失败且无新modal，因果/线程
+  上下文未证明。owner计划自行保存故障副本并受控恢复，当前工具变更验收由其执行。
+- 本轮只读源码、元数据、回执并修正共享源码/skill；没有调用当前MCP/REST、操作PLE或
+  CpStudio会话、热换DLL、编辑INNTAI工程或执行在线/实体动作。
+  Skill格式验证、4份文档的9条本地链接检查及基线HTML再生成通过；安装副本已同步，
+  Install-CtrlXOpconSkill.ps1 -Check确认与canonical源码一致。
+- 交接后owner自行受控重启唯一PLE为PID31720并运行修正版；只读磁盘回执
+  `84fb5385-657b-413b-ace3-e372bfbbb21d` preflight与
+  `2062e821-0ae3-495a-966e-9889a6dbb358` component均complete=true、saved/offline、
+  executorDisposed=true、cleanupUnknown=false，含精确UUID释放标记。确认这两阶段的
+  原生执行及清理，不能推导后续Export、build或REST故障已恢复；当前Export仍由owner执行。
+- owner随后报告Export `e0c89618-953f-44ea-83e0-2347f7b14bbd` complete/nativeSuccess均true、
+  无notifications，OOD INNTAI1.0.3.0/其他版本保持，typed编译0错误/9既有警告。
+  受控重启和入口修正组合后恢复，不指定单一根因；原始失败副本/回执保留，finish_consumer
+  Symbol迁移及完整源码/硬件检查仍由owner继续。应owner要求结束额外诊断；此项仅记录其
+  交接消息，没有操作会话或继续调查。
+
+## 2026-10-07 · SFC reader 便携依赖修正
+
+- INNTAI owner反馈finish_consumer及8项SFC after比较通过，但installed read_graphs.py的
+  after直接从engineeringRoot导入scripts.plc.sfc_graph_key，ECom_ST60旁车缺该文件，
+  CLI报ModuleNotFoundError。当次用只读启动器加载同一维护模块完成比较；未改算法/回执。
+  owner继续正式离线文件同步和编译，本工具维护不操作工程。
+- read_graphs.py改为直接按文件加载：项目模块优先，仅在文件缺失时使用reader自身asset
+  布局内scripts/plc/sfc_graph_key.py，不依赖全局sys.path/scripts包缓存。项目模块存在
+  但损坏时继续报错，不静默替换；SFC比较算法及checkpoint格式保持。文档补明两文件
+  相对布局与launcher staged-reader依赖。
+- 7项graph离线检查通过，其中新增缺旁车模块的完整after入口、项目模块优先和损坏模块
+  拒绝回退；既有SFC步骤/子项/属性/操作ID保护检查保持。所有REST响应均为fixtures，
+  没有调用当前MCP/REST、操作IDE、修改INNTAI/ECom工程或重跑真实比较。
+  Skill格式、本轮4份文档7条链接及基线HTML再生成通过；安装版已同步并-Check一致。
+
+## 2026-10-08 · PLE Close 超时及 online executor 离线核对
+
+- INNTAI owner报告1.0.3.1编译库/本机仿真24/24通过，唯一broker PLE PID28864/session
+  4d9e4f34-c369-4e0c-bbba-4ded0c314e11，offline component确认自有执行器Dispose。
+  stop/logout并保存后Close请求7b952e83-629a-4073-bae3-5b3aa1e6376c超时，watcher最后
+  为Marshaling且无result；Open7886443f-3e53-41db-8b86-d18ae3999264及只读eval
+  6a9726e2-8ae0-4b4a-98de-b500faae4a90未确认处理。之前首次Open的迟到成功已由owner
+  独立核实。记录为未知终态，不重放、不清私有flag，不推断任何executor造成。
+- 本轮只读源码和元数据，核对component磁盘回执a0c115a6-661a-4f41-9082-eeabbc93ba91
+  complete/executorDisposed=true、cleanupUnknown=false；旧IPC目录本轮已不在原路径，
+  Close无终态仅按owner报告记录。库、仿真工程及证据已由owner保存，恢复仍归唯一owner。
+- 安装watcher的execute_on_primary_thread先于WaitOne(120000)，旧Marshaling不能定位
+  回调进入阶段。IPC客户端超时删除命令/脚本并释放自身mutex，不等于取消原生工作。
+  只读IL确认ScriptProject.close调用IProject.Close并丢弃返回值，ScriptOnline原生事件
+  管理执行栈及实例清理；with_executor借用执行器且finally清理Python临时变量。
+  disconnect工具会把构造/logout异常当success，不能用其marker认领原生logout。
+- 共享watcher/兼容安装器补充请求UUID的dispatch/primary entry/marshal return日志，
+  不改变执行或超时语义；skill附独立logging-only diff。8项离线double检查、隔离adapter
+  apply/check/语法及回滚回归、便携diff在安装源码临时副本上的真实git apply检查通过。
+  本轮未修改npm包或运行中的watcher，未调用当前MCP/REST、操作IDE/工程/在线设备。
+  原生Close及online故障根因仍未知；新日志仅供owner未来受控维护/启动。
+  Skill格式验证、本轮5份文档6条本地链接、源文件diff检查及基线HTML再生成通过；
+  安装skill已同步并-Check一致，这不等于安装或启用broker日志补丁。
+
+## 2026-10-08 · 迟到 Open 与 Reference Symbol Export 失败补记
+
+- 按INNTAI owner提供的事实记录，未执行工程查询/操作：旧PID28864在交付保存后通过
+  broker shutdown停止，owner确认进程不存在。原Close请求7b952e83仍无确认终态，
+  不补记成功/失败，不重放。新PID18304打开隔离ReferenceProject的请求
+  f2be04b5-5a4d-4dc5-b5f2-bee4a2b7340f约188秒后出现success=true磁盘回执；owner另用
+  fresh只读native审计确认目标/dirty=false，typed编译0/4及native preflight1241cf18通过。
+  只读Computer Use观察/激活未发现模态，未证实激活恢复因果。
+- Reference原生Apply/Parse/Save已到INNTAI1.0.3.1，但Export
+  0879212b-608d-45a5-b235-c90f5a584462明确失败：UpdateSymbolConfig JSON Reader
+  Invalid property identifier character '{'，types[39].variables[3].attribute/line11052。
+  owner确认209源码、1条自有SFC保持及dirty=false；这些保护结果不覆盖导出失败。
+- 与之前Symbol HTTP异步写响应问题仅按症状相似记录，本次根因未知。owner正在复用
+  BufferedSymbolResponse会话内修正，未改厂家文件、blocking flag或安全设置；本轮仅更新
+  共享文档，不操作会话、不新增诊断/补丁或推断恢复结果。
+
+## 2026-10-10 · typed 状态成功回执与原生库引用修正
+
+- INNTAI owner提供1.1.0.1原生验证反馈：库/隔离consumer编译0/0，本机Simulation35/35，
+  无实体操作；曾有stop/disconnect成功后仍Logged In=True，以及list_project_libraries
+  返回NoLibraries而实际Application manager明确引用1.1.0.1。本轮只读runtime JSON和
+  component635219e8回执，确认35/physicalOperations=false与complete/executorDisposed/
+  cleanupUnknown字段；不接管ST60 owner持有的PLE。
+- 核对当前0.6.3源码，disconnect吞构造/logout异常；库列表用manager.get_children
+  而不是get_libraries。新增三个canonical模板：with_executor和实际状态前后读回，
+  logout必须False，已STOP不重复stop；库引用从明确Application原生manager枚举，
+  缺manager/枚举失败/多Application无active scope拒绝假空列表。stop成功仅证明STOP。
+  三工具要求预期工程已primary，不调用ensure_project_open自动切换或保存。
+- 兼容安装器同步src/dist helper wiring及空列表消息，校验已知原始模板并拒绝覆盖未知/
+  自定义版本；纳入原有transaction/语法验证。skill附三模板和窄范围server diff。
+  20项离线double测试、完整隔离apply/check/语法/回滚及便携diff实际应用检查通过。
+  不宣称原生修正版已验收或通用根因；未改npm安装文件、当前broker、工程或在线状态。
+- owner受限online_session.py仅允许本目录Virtual且Simulation=True；实际RUN时stop，
+  logout后断言未登录才导入/关闭。按最新用户策略记录WP收到OK完成、不自动RP比较，
+  覆盖早期WRITE_VERIFIED要求，不修改该组件源码或其他协议策略。
+  Skill格式、5份文档9条链接及源文件diff检查通过，基线HTML已再生成；installed skill
+  已同步并-Check一致。安装skill未部署这些修正到当前npm broker。
+
+## 2026-10-11 · 库更新原生统一入口
+
+- 用户询问 Reload→Parse PLC Code→Save All→Export 是否能一键及作为开发接口使用。
+  核对现有固定原生命令及隔离验收；旧双击 GUI 启动器不包含版本迁移。
+- 补充 `Invoke-CpStudioLibraryUpdate.ps1`，仅编排既有客户端的六步命令，要求精确
+  OOID/OOD版本和现有离线 PLE 工程/PID。完整保存复用工程及模型 Save；返回各步回执，
+  原生失败/超时/错误回执即止，不重新提交、接管窗口、启动宿主/IDE或自动回滚。
+- 六项离线检查覆盖输入/身份参数保持及失败停止；新组合入口未执行真实工程，
+  当前CpStudio、PLE、broker和正式工程未操作。同步共享skill；原生命令既有隔离验收
+  与该新组合入口实际验收范围分开记录，后续由工程owner完成。
+- PowerShell语法、skill格式与资源链接检查通过，基线HTML已再生成；installed skill
+  已同步且-Check一致。ST60 sidecar仅新增统一入口源文件，不替换已有桥接/运行DLL。
+
+## 2026-10-16 · 可复用库开发范例与全局 skill
+
+- 按用户要求保持简单实用：扩充现有 skill 的 library-validation 路由，加入三个自有文本范例与一个只复制到新/空目录的入口，不新建同名/重叠 skill 或 Runner。
+- MachineCommon 保存压力 FB/16场景夹具；IND360 保存回环 TCP 模拟/真实 PowerShell 测试/Ready-only消费源；INNTAI保存协议模拟与1.1.1.1最终八场景串口夹具。每个范例说明来源、依赖、运行步骤及证据边界。
+- 已通过4项复制检查、IND36014项模拟端及19项真实TCP/菜单日志回归、INNTAI8项PC协议测试、Python/PowerShell语法与skill本地链接检查；8个INNTAI原生对象与历史最终声明/实现一致。
+- 同步本机全局安装与ST60 devkit，安装器-Check一致。本轮无IDE/PLC编译/PLC仿真/实体操作，不修改ST60工程逻辑；历史原生证据不作为新版本验收。本地更新，未提交或推送。
+
+## 2026-10-16 · CpStudio 通用模型添加接口
+
+- 接收ST40侧技术转接：实现Variables、Struct/成员/实例及显式上下界数组的读取、预览、
+  添加和回读，不触碰正式ST40，不提供任意脚本、配方值写入、删除或批量改类型入口。
+- 通用模块 `CpStudioNativeModel.cs` 与三个固定命令/客户端参数已实现；更新两个构建器的
+  模块及供应商Data程序集引用。既有resident身份/owner/实例、Export及超时不重放规则保留。
+  UTF-8请求信封在写claim之前限制64KiB，避免被原生上限拒绝后产生假超时。
+- 独立副本 `ECom_ST60/McpCoding/data/native-model-additions-20261016` 来自ST40
+  `st40-manual-view-a223bd179d89cf31`冻结检查点；Std仅只读链接、PrjExt独立复制。
+  未读用ST40 owner token，不接管其窗口、PLE、REST或MCP。
+- 首次数组回读发现未用维度0被原生识别成活动维度；失败回执bd8c0759已留存。只关闭
+  自有隔离宿主、恢复该副本的冻结检查点，修正为-1后重新编译验证，没有重放失败计划。
+- 实际添加24项声明（含12基本类型、TypeData两组Count/数组、双角度结构、Variables/
+  StationData实例和负下界/2D/3D数组），原生比较保留8739项既有索引记录。17项原生
+  正反向检查通过，含重复调用、错误身份/类型/边界、递归、值写入拒绝与stale plan。
+  Save/关闭/冷重开24项全部unchanged，两把枪原ProgNo保留；额外stale测试仅本副本加一BOOL。
+- 新客户端12项、既有resident13项及更新流程7项离线检查通过。完整路径读取延迟结构/
+  数组缓存另行实测；接收说明强调保留ST40私有命令，不能直接覆盖本地bridge或热换DLL。
+  用户待授权向ST40主对话协调唯一PLE窗口，当前未执行Export/PLC编译或现场动作。
+- 延迟树7项完整路径读取已通过；负索引使用原生已展开集合的精确名称定位，避免旧成员
+  regex漏掉负号，结构数组元素使用公开ExpandMember/成员集合，避免带下标根名被再次
+  解析成数组查询。展开后添加StationData BOOL原生核对保留8887项旧记录、重复调用新增0。
+- 最终新进程27352冷重开继续读回7个值、24项声明全unchanged、重新计划应用新增0；
+  当前索引8890（含原生展开缓存及隔离测试探针）。resident候选仅在独立目录编译通过，
+  未安装/覆盖运行DLL。PowerShell语法、skill格式/链接、MD→HTML及安装-Check通过；
+  共享skill已同步。隔离宿主已正常关闭、processExited=true，正式ST40和共享PLE未操作。
+  本轮模型验收汇总为该隔离目录acceptance.json；Export/PLC编译仍待用户许可协调窗口。
+
+## 2026-10-17 · 通用模型添加验收窗口协调
+
+- 用户明确允许向ST40主对话发消息，由其安排唯一PLE的隔离Export/编译窗口；已发送协调请求。
+  在owner交接前不联系共享PLE/REST/MCP、不启动另一相同profile实例；正式ST40未操作。
+- 隔离工程Pre/Post-export钩子原值均为空，不向正式队列发请求。将只读源码/硬件/Symbol/
+  库引用采集入口及其既有依赖放入本隔离目录，入口语法检查通过；未执行原生采集或编译。
+
+## 2026-10-20 · WPF / OpCon 通用集成组件候选
+
+- 用户新增独立通用能力目标，保留原模型接口Export/编译待办；不替换华沿正在收敛的原生三页。
+  已读取华沿HMI交接、本机帮助及公开程序集契约。当前PLE PID24484和CpStudio PID33064由华沿
+  使用；只从进程/文件确认，没有调用共享PLE/MCP/REST或操作其窗口。
+- 元数据及调用点表明VisiWin.PerformClick只进入OnClick，不经过原生鼠标按下/释放路径；原生键
+  还处理心跳/计时器和单位/令牌初始化。此差异解释既有转接不足，不宣称已定位其他所有门禁。
+- 在src/hmi/OpCon.WpfIntegration实现候选0.1.0.0：原生控件保持同级父级与OwnerUnit，WPF布局
+  槽承载真实输入，既有Item只读显示/原生双语、前缀和心跳配置。无私有字段/假点击/Execute
+  直写/第二连接/重试队列；处理未知质量、长暂停恢复、几何占用、捕获/焦点及自有资源释放。
+- 39项C#离线检查及原生同级配置/双语资源边界检查通过；实际WPF装载/三个尺寸和普通WinForms
+  几何占用/释放属于离线证据，不冒充原生OpCon键或PLC运行。源码、公开契约、人工构建/候选
+  打包与运行验收步骤保留；正常Export资源携带与真实操作/PLC故障隔离均未验证。
+- 已征询后续窗口协调，用户明确“先只做组件开发，暂不联系”；未给华沿发消息、不接管其
+  HMI/虚拟环境，也不操作实体PLC、机器人或现场IPC。等待后续允许时按唯一所有权取得独立窗口。
+- 候选目录bin/candidate-0.1.0-20261020已生成，包内自有源码独立重建再次39项通过，配置/双语
+  检查通过；包内Runtime只含自有DLL，非空目录覆盖已拒绝。PowerShell语法、组件文档链接及
+  文档差异检查通过；基线HTML同步。无发布、提交、现场安装或工程运行验收。
+- 后续组件开发补齐官方Post-export资源步骤源：仅同步自有DLL/XAML并合并自身GUI引用，保留
+  原有钩子/vwn/PLC。提供路径JSON、批处理入口与OOD Hmi片段，不假设未核验的原生复制API。
+  15项文件夹检查通过，含真实批处理调用Windows PowerShell和空格路径；已有GUI内容、重复
+  无写入、越界/Std/链接拒绝、未完成更新停止均检查。运行HMI拒绝只实现了保护，未进行运行用例。
+- 资源测试先发现空复制清单被表示为[null]，另一次发现PowerShell向File.Replace传空字符串；
+  失败均留在自有测试目录，后者保留claim/tmp且原GUI未变。改为空数组及NullString后通过；
+  失败现场没有盲目清理/重放。该进展不改变共享工程禁止接管、真实PLC/Export尚未验收的状态。
+- 完整目标核验发现初始化失败的异常路径中，readSet.Dispose抛错会阻止后续ClearMapping；
+  候选0.1.0.1用finally确保仍尝试清理控件占用。39项既有离线回归通过，没有声称重现供应商
+  运行异常。完整要求/证据/缺口表写入现有RUNTIME-VALIDATION，明确原生探针、真实请求/周期、
+  故障恢复与完整Export均缺证据；仅组件开发/暂不联系条件仍有效，未改变任何共享会话。
+
+## 2026-10-20 · 纯 WPF 输入最小样例与操作接口缺口
+
+- 用户要求继续研究操作接口并完成WPF参数框/手动键最小样例，明确不动华沿工程、不占共享PLE/CpStudio。
+  继续只读外部Std SDK，不调用任何现有HMI、PLC、MCP/REST或工程会话。
+- 扩展元数据检查至27类，新增Inspect-Operations只读入口，13项版本/调用差异核验通过：Key的
+  StartEdit只进入DigitalItem编辑、VarIn.StopEdit进入原生NumEdit，原生手动鼠标路径另有心跳/计时器；
+  Shopfloor Contract 2.0.1.0承载WPF FrameworkElement并提供语言/可见性生命周期。没有据此宣称
+  已取得完整受支持的参数提交/手动操作API；私有字段、假点击、直接Execute写入均未使用。
+- 新增独立OpCon.WpfOperations 0.1.0.0：可见输入全部WPF，原生适配器仍未实现。自有端口契约
+  区分绑定/会话代次、新开始与继续许可、本地记录/原生分发/未知，保存原端口和输入ID以取消/释放；
+  不重试未知结果、不把Busy一律解释为释放、草稿不冒充PLC回读。本地探针只编译进样例/测试exe。
+- 58项离线输入检查通过，含重入、重复、原实例释放、上下文变化、Busy、异常不重放、草稿取消和
+  资源释放；实际WPF模板/合成确认与Esc事件、真实Hide/Show/Close和页面渲染已检查，默认禁用页及
+  显式本地探针页另做真实Sample.exe启动自检，初始输入数均为0。测试窗口不激活、屏幕外显示。
+- 人工构建、启动和待适配契约写入operations/README；旧候选包仅携带新原型源码，资源同步不部署
+  新原型。真实鼠标/触摸/键盘/DPI、原生语言/触摸键盘、PLC接收/扫描/Unit状态及故障恢复仍未验证。
+  原CpStudio通用模型添加Export/编译待办继续保留，未提交、推送或部署。
+
+## 2026-10-20 · WPF 库定位、扩展接口查找与进程内宿主
+
+- 用户明确目标是自研WPF操作控件随库复用、提高外观和兼容性，并嵌入CpStudio生成HMI；
+  复用现有VisiWin/CoDeSysV3/PLCHandler，保留权限、令牌和执行反馈。继续禁止华沿改动及共享PLE/CpStudio。
+- 用户确认没有额外开发SDK。只读本机匹配ST60 Std、安装帮助、公开厂商资料；新增检查
+  NumEdit、配置/资源适配器、代理提供器和归属类型。34类元数据、13项证据核验通过，
+  仍没有匹配版本的完整受支持操作事务。具体入口/缺口及供应商问题在operations/NATIVE-ADAPTER。
+- 增加独立WpfInputHost和SFC/XAML承载样例；匹配原生SFCLoader在设计上下文加载成功，
+  实际ElementHost装载纯WPF参数框和手动键。它是视图宿主，不是已实现的原生操作适配器。
+- 宿主测试发现ElementHost内没有WPF Window，且恢复焦点会开始一次编辑；增加CancelInput及
+  WinForms生命周期转发，改为明确输入才开始编辑、忽略Enter自动重复。纯WPF前端升至0.1.0.1，
+  59项输入检查及两次实际启动自检通过；24项宿主检查涵盖失活、隐藏、禁用、取消关闭、释放、
+  多实例隔离及布局错误。使用屏外非激活窗口/合成托管事件，无OS输入注入。
+- 所有新增测试都是设计装载或本地输入证据。没有启动HMI驱动、联系PLC、取得请求/周期/Unit反馈，
+  也未验证物理键盘/触摸、实际DPI、原生语言、工具箱、正常Export或运行HMI。没有联系其他对话、
+  提交、推送或部署；原通用模型添加的Export/编译待办保留。
+- 用户随后纠正目标表述：当前是自研功能库（如华沿机器人库）自身的界面和按钮采用WPF，
+  主要为了兼容性；通用控件复用与实例配置/DLL解耦是实现层选择。已同步目标文档，
+  本次仅修正文档，不改实现或工程，原生操作适配器及运行验收状态不变。
+
+## 2026-10-27 · CORE Data Layer 只读诊断收入全局 skill
+
+- 将已实测的标准库读取脚本收入 ctrlx-opcon-engineering，新增 read/browse/metadata/SSE 调用说明；目标显式核对，认证外仅 GET，无 PLE/CpStudio 会话、写入或自动重连/重发。
+- 已发布变量优先直接读取 CORE；共享工程被排除时，未发布的内部表达式只报告缺口，不自动登录、改 Symbol 或导出。保留既有 PLE Keep 只读路线。
+- 新增内容同步维护源码、全局安装和 ST60 devkit；各份原有不相关差异保留，未运行整目录覆盖安装。三个 skill 结构校验、帮助入口、离线 HTTP/SSE 行为检查通过；原始脚本此前的 ST60 实测记录留在项目。
+- 本次未连接控制器、PLE/CpStudio/MCP、机器人或 IPC，未提交/推送；技术基线 HTML 已重新生成。
+
+## 2026-10-29 · 工程操作避免干扰人工桌面
+
+- 用户指出 computer-use 使用过多、耗时且干扰手动操作。全局 ctrlx-opcon-engineering 明确默认接口/原生路线；缺少 MCP 工具不自动转 GUI。
+- 未明确要求 GUI 或安排独占窗口时，不抢焦点、鼠标、键盘、剪贴板；后台 UIA/控制消息也按共享界面操作处理。仅视觉验证才按需无激活截图，用户恢复手动操作即暂停 GUI 输入。
+- 接口操作仍可能占用 IDE 主线程，保留唯一 owner 和有界任务约束。维护源码、全局版和 ST60 devkit 仅同步本次规则，未操作工程或设备。
+
+## 2026-10-29 · 现有工具发布基线与独立 MCP 仓库
+
+- 用户明确要求将现有工具发布到公开 `SOLASOLAo/ctrlx-ai-coding` 的 main，并创建私有
+  `SOLASOLAo/ctrlx-engineering-mcp` 保存新 MCP 的方案与后续开发。两者分开维护，不切换运行中的 MCP 配置。
+- 维护源补回安装版 skill 的 4 处规则与 ST/SFC 风格检查器/测试；纳入 CpStudio 原生桥接、库更新、
+  PLE 固定脚本入口、原生状态回读补丁、只读 Data Layer 工具和 WPF 研究源码。首页明确实现与验收边界。
+- 修复 skill 安装器将 Python 运行缓存误报为源码差异的问题；检查/复制/精确更新均排除该缓存，
+  保留真实额外文件检测。8 项安装回归及本机安装内容核对通过，没有覆盖安装版 skill。
+- 完整 MCP 补丁在临时包副本应用/检查/语法/回滚验证通过；新旧编译消息、semantic snapshot、
+  原生状态回读及生命周期诊断检查通过，没有修改全局 npm 包。
+- skill 结构、对象版本 10 项、风格 18 项、样例复制 4 项、原生脚本阶段 13 项通过；
+  CpStudio diagnostics 17 项、库更新 7 项、模型客户端 12 项、驻留连接 13 项离线夹具通过。
+  库构建/组件/图形读取及 INNTAI/IND360 协议测试通过，IND360 仅使用本机 loopback 模拟器。
+- 新增 7 项 CORE 只读回归：目标错配不发请求、认证后仅 GET、分片 SSE、错误不重连、嵌套脱敏、
+  节点校验和现有输出保护。WPF 源码/配置边界检查通过，未新增实际 HMI/PLC 验收声明。
+- Broker 工程会话及 IPC 离线测试、Runner 286 项断言、Workbench 84 项断言通过；未运行现场工程。
+  相关文档本地链接检查通过；扫描候选均为合成测试标记，旧 token-in-URL 示例改为凭据管理器方式。
+  补丁文件中的单空格上下文行是 unified diff 语法，保留；其他改动通过空白检查。
+- 保留 CODESYS MCP 上游 MIT 声明，忽略本机凭据、私钥、供应商运行库和测试报告。
+  没有启动/切换 PLE 或 CpStudio，没有连接实体 PLC/机器人、修改现场工程或当前 MCP 配置。

@@ -1,8 +1,6 @@
-diff --git a/watcher.py.orig b/watcher.py.patched
-index ef2ea9e..8e89a3d 100644
 --- a/watcher.py.orig
 +++ b/watcher.py.patched
-@@ -160,6 +160,11 @@ try:
+@@ -160,6 +160,11 @@
                      script_code = _raw.decode("latin-1", errors="replace")
              if script_code.startswith(u"\ufeff"):
                  script_code = script_code[1:]
@@ -14,3 +12,23 @@ index ef2ea9e..8e89a3d 100644
          except Exception as read_err:
              _log("Error reading command: %s" % read_err)
              atomic_write(result_path, json.dumps({
+@@ -176,6 +181,7 @@
+         done_event = ManualResetEvent(False)
+ 
+         def execute_on_ui():
++            _log("Primary thread entered: %s" % request_id)
+             success = False
+             output = ""
+             error = ""
+@@ -237,9 +243,10 @@
+             done_event.Set()
+ 
+         # Marshal execution to the primary thread
+-        _log("Marshaling to primary thread...")
++        _log("Marshaling to primary thread... requestId=%s" % request_id)
+         try:
+             se.system.execute_on_primary_thread(execute_on_ui)
++            _log("Primary marshal returned: %s" % request_id)
+         except Exception as marshal_err:
+             _log("Marshal error: %s" % marshal_err)
+             shared_result[0] = {

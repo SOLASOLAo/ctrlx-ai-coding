@@ -1,0 +1,76 @@
+--- a/src/server.ts
++++ b/src/server.ts
+@@ -1197,7 +1197,7 @@
+       const escaped = resolvePath(args.projectFilePath, workspaceDir);
+       const script = scriptManager.prepareScriptWithHelpers(
+         'disconnect_from_device', { PROJECT_FILE_PATH: escaped },
+-        ['ensure_project_open']
++        ['ensure_online_connection']
+       );
+       const result = await executor.executeScript(script);
+       return formatToolResponse(result, `Disconnected from device for ${args.projectFilePath}.`);
+@@ -1342,7 +1342,7 @@
+           PROJECT_FILE_PATH: escaped,
+           APP_ACTION: args.action,
+         },
+-        ['ensure_project_open', 'ensure_online_connection']
++        ['ensure_online_connection']
+       );
+       const result = await executor.executeScript(script);
+       return formatToolResponse(
+@@ -1363,7 +1363,7 @@
+     async (args: { projectFilePath: string }) => {
+       const escaped = resolvePath(args.projectFilePath, workspaceDir);
+       const script = scriptManager.prepareScriptWithHelpers(
+-        'list_project_libraries', { PROJECT_FILE_PATH: escaped }, ['_text_utils', 'ensure_project_open']
++        'list_project_libraries', { PROJECT_FILE_PATH: escaped }, ['_text_utils']
+       );
+       const result = await executor.executeScript(script);
+ 
+@@ -1391,7 +1391,7 @@
+ 
+         if (libraries.length === 0) {
+           return {
+-            content: [{ type: 'text' as const, text: 'No libraries found in the project (or Library Manager not found).' }],
++            content: [{ type: 'text' as const, text: 'No libraries referenced in the selected native Library Manager.' }],
+             isError: false,
+           };
+         }
+--- a/dist/server.js
++++ b/dist/server.js
+@@ -918,7 +918,7 @@
+         projectFilePath: zod_1.z.string().describe("Path to the project file."),
+     }, async (args) => {
+         const escaped = resolvePath(args.projectFilePath, workspaceDir);
+-        const script = scriptManager.prepareScriptWithHelpers('disconnect_from_device', { PROJECT_FILE_PATH: escaped }, ['ensure_project_open']);
++        const script = scriptManager.prepareScriptWithHelpers('disconnect_from_device', { PROJECT_FILE_PATH: escaped }, ['ensure_online_connection']);
+         const result = await executor.executeScript(script);
+         return formatToolResponse(result, `Disconnected from device for ${args.projectFilePath}.`);
+     });
+@@ -1005,7 +1005,7 @@
+         const script = scriptManager.prepareScriptWithHelpers('start_stop_application', {
+             PROJECT_FILE_PATH: escaped,
+             APP_ACTION: args.action,
+-        }, ['ensure_project_open', 'ensure_online_connection']);
++        }, ['ensure_online_connection']);
+         const result = await executor.executeScript(script);
+         return formatToolResponse(result, `Application ${args.action} executed for ${args.projectFilePath}.`);
+     });
+@@ -1014,7 +1014,7 @@
+         projectFilePath: zod_1.z.string().describe("Path to the project file."),
+     }, async (args) => {
+         const escaped = resolvePath(args.projectFilePath, workspaceDir);
+-        const script = scriptManager.prepareScriptWithHelpers('list_project_libraries', { PROJECT_FILE_PATH: escaped }, ['_text_utils', 'ensure_project_open']);
++        const script = scriptManager.prepareScriptWithHelpers('list_project_libraries', { PROJECT_FILE_PATH: escaped }, ['_text_utils']);
+         const result = await executor.executeScript(script);
+         const success = result.success && result.output.includes('SCRIPT_SUCCESS');
+         if (!success) {
+@@ -1036,7 +1036,7 @@
+             const libraries = JSON.parse(jsonStr);
+             if (libraries.length === 0) {
+                 return {
+-                    content: [{ type: 'text', text: 'No libraries found in the project (or Library Manager not found).' }],
++                    content: [{ type: 'text', text: 'No libraries referenced in the selected native Library Manager.' }],
+                     isError: false,
+                 };
+             }

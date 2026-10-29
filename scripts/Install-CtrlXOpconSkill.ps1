@@ -41,6 +41,11 @@ if (-not $destinationPath.StartsWith($destinationRootPath + [System.IO.Path]::Di
     throw "Unsafe skill destination: $destinationPath"
 }
 
+function Test-SkillRuntimeCache {
+    param([string]$RelativePath)
+    return $RelativePath -match '(^|[\\/])__pycache__([\\/]|$)|\.py[co]$'
+}
+
 function Get-RelativeFileHashes {
     param([string]$Root)
 
@@ -50,6 +55,7 @@ function Get-RelativeFileHashes {
     }
     foreach ($file in Get-ChildItem -LiteralPath $Root -Recurse -File) {
         $relativePath = $file.FullName.Substring($Root.Length).TrimStart('\', '/').Replace('\', '/')
+        if (Test-SkillRuntimeCache $relativePath) { continue }
         $hashes[$relativePath] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
     }
     return $hashes
@@ -96,6 +102,7 @@ if ($PSCmdlet.ShouldProcess($destinationPath, 'Install ctrlX OpCon Engineering C
     [System.IO.Directory]::CreateDirectory($destinationPath) | Out-Null
     foreach ($sourceFile in Get-ChildItem -LiteralPath $sourcePath -Recurse -File) {
         $relativePath = $sourceFile.FullName.Substring($sourcePath.Length).TrimStart('\', '/')
+        if (Test-SkillRuntimeCache $relativePath) { continue }
         $targetFile = Join-Path $destinationPath $relativePath
         [System.IO.Directory]::CreateDirectory((Split-Path -Parent $targetFile)) | Out-Null
         Copy-Item -LiteralPath $sourceFile.FullName -Destination $targetFile -Force
@@ -107,6 +114,7 @@ if ($PSCmdlet.ShouldProcess($destinationPath, 'Install ctrlX OpCon Engineering C
     $sourceHashes = Get-RelativeFileHashes $sourcePath
     foreach ($destinationFile in Get-ChildItem -LiteralPath $destinationPath -Recurse -File) {
         $relativePath = $destinationFile.FullName.Substring($destinationPath.Length).TrimStart('\', '/').Replace('\', '/')
+        if (Test-SkillRuntimeCache $relativePath) { continue }
         if (-not $sourceHashes.ContainsKey($relativePath)) {
             [System.IO.File]::Delete($destinationFile.FullName)
         }

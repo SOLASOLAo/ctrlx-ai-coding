@@ -59,6 +59,9 @@ try {
     throw "Patched fixture is not ready; -Check retained TODO/UPGR.`n$checkText"
   }
   foreach ($required in @(
+    "watcher primary-thread lifecycle markers",
+    "native state/library readback producer",
+    "native readback helper wiring",
     "bounded compile-message + fixed-category typed warning helper",
     "explicit PLE ownership provenance",
     "PLE ownership status/shutdown guard",
@@ -311,6 +314,9 @@ try {
       throw "Semantic-tool upgrade retained the rejected numeric loopback authority: $relativeServer"
     }
   }
+
+  & python -B (Join-Path $patchRoot "test-native-readback.py") --scripts-dir $fixtureScripts
+  if ($LASTEXITCODE -ne 0) { throw "Native state/library readback regressions failed." }
 
   & python (Join-Path $patchRoot "test-fast-compile-message.py") `
     (Join-Path $fixtureScripts "_message_utils.py") `

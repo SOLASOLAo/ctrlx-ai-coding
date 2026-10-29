@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<?mapping xmlns="http://www.inosoft.com/DTD/SmartForms" namespace="Bosch.OpCon.HMI.Modulo.Shared;VisiWinNET.Forms;System.Drawing;Bosch.OpCon.HMI.Modulo.Forms;"?>
+<wfml xmlns="http://www.inosoft.com/DTD/SmartForms" xmlns:wfml="http://www.inosoft.com/DTD/WFML">
+  <SmartControl wfml:ID="View" Font="Microsoft YaHei UI, 10pt" BackColor="240, 243, 247" Size="944, 572">
+    <property.Controls>
+      <Mod_ApplicationHost wfml:ID="FlowOverviewHost" Location="0, 0" Size="944, 572" ProcessName="ST60.FlowOverview" Enabled="True" Visible="True" />
+    </property.Controls>
+  </SmartControl>
+</wfml>

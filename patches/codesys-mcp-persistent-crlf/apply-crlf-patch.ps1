@@ -29,6 +29,8 @@
        application.clean() once and application.build() once
    15. Verifies Python/JavaScript syntax before committing any changed file;
        missing validators fail closed unless -SkipRuntimeSyntaxCheck is explicit
+   16. Requires native start/stop/logout readback and enumerates actual Library
+       Manager references without implicitly opening another project
 
   WARNING: `npm install/update codesys-mcp-persistent` OVERWRITES the patch.
   Re-run this script after every upgrade.
@@ -73,6 +75,7 @@ $typedWarningProducerMarker = "ctrlX fixed-category typed warning producer v1 (2
 $typedWarningWireMarker = "ctrlX typed warning wire alignment v1 (2026-08-28)"
 $semanticSnapshotMarker = "ctrlX semantic snapshot contract v1 (2026-08-27)"
 $cleanCompileMarker = "ctrlX clean compile tool contract v1 (2026-08-28)"
+$nativeReadbackMarker = "ctrlX typed native readback (2026-10-10)"
 $utf8nobom = New-Object System.Text.UTF8Encoding($false)
 
 function ReadText([string]$p) {
@@ -2425,6 +2428,66 @@ function PatchGetCompileMessagesScript([string]$cachedFile) {
   Write-Host "patched bounded cached-message read -> $cachedFile"
 }
 
+function PatchNativeReadbackScript([string]$path) {
+  $name = Split-Path $path -Leaf
+  $originalHashes = @{
+    'disconnect_from_device.py' = '03abc69501f3a9885b75b45ad2de3dd2929dad382d51d762acf1e6af3bb12a92'
+    'start_stop_application.py' = '7a751a31b02ab5f5505d8205f28e43066e6be842addf8b72241b7fecc8968a71'
+    'list_project_libraries.py' = '79d48e8b48d7b5c85f125ac76a699e1c46d4dba21eab65caa2331b34d72c1b68'
+  }
+  $expected = ReadText (Join-Path $PSScriptRoot $name)
+  $current = if (Test-Path -LiteralPath $path) { ReadText $path } else { '' }
+  $isPatched = $current -eq $expected -and (CountLiteral $current $nativeReadbackMarker) -eq 1
+  if ($Check) {
+    Write-Host ("[{0}] {1} native state/library readback producer" -f $(if ($isPatched) { 'OK ' } else { 'TODO' }), $path)
+    return
+  }
+  if ($isPatched) { return }
+  if (-not $current -or (GetTextSha256 $current) -ne $originalHashes[$name]) {
+    throw "Unknown or modified native readback template at $path; review it before replacement."
+  }
+  BackupOnce $path 'bak_pre_native_readback'
+  [System.IO.File]::WriteAllText($path, $expected, $utf8nobom)
+  Write-Host "patched native state/library readback producer -> $path"
+}
+
+function PatchNativeReadbackServer([string]$path) {
+  if (-not (Test-Path -LiteralPath $path)) { return }
+  $source = ReadText $path
+  foreach ($edit in @(
+    @{ Tool = 'disconnect_from_device'; Old = "['ensure_project_open']"; New = "['ensure_online_connection']" },
+    @{ Tool = 'start_stop_application'; Old = "['ensure_project_open', 'ensure_online_connection']"; New = "['ensure_online_connection']" },
+    @{ Tool = 'list_project_libraries'; Old = "['_text_utils', 'ensure_project_open']"; New = "['_text_utils']" }
+  )) {
+    $pattern = '(?ms)s\.tool\(\s*[''"]' + [regex]::Escape($edit.Tool) + '[''"].*?(?=\n\s*s\.tool\(|\z)'
+    $toolMatches = [regex]::Matches($source, $pattern)
+    if ($toolMatches.Count -ne 1) { throw "Cannot locate one native readback tool $($edit.Tool) in $path" }
+    $region = $toolMatches[0].Value
+    $changed = $region
+    if (-not $changed.Contains($edit.New)) {
+      if ((CountLiteral $changed $edit.Old) -ne 1) { throw "Unknown helper wiring for $($edit.Tool) in $path" }
+      $changed = $changed.Replace($edit.Old, $edit.New)
+    }
+    if ($edit.Tool -eq 'list_project_libraries') {
+      $oldEmpty = 'No libraries found in the project (or Library Manager not found).'
+      $newEmpty = 'No libraries referenced in the selected native Library Manager.'
+      if (-not $changed.Contains($newEmpty)) {
+        if ((CountLiteral $changed $oldEmpty) -ne 1) { throw "Unknown empty-library response in $path" }
+        $changed = $changed.Replace($oldEmpty, $newEmpty)
+      }
+    }
+    if ($Check) {
+      Write-Host ("[{0}] {1} {2} native readback helper wiring" -f $(if ($changed -eq $region) { 'OK ' } else { 'TODO' }), $path, $edit.Tool)
+    } else {
+      $source = $source.Substring(0, $toolMatches[0].Index) + $changed + $source.Substring($toolMatches[0].Index + $toolMatches[0].Length)
+    }
+  }
+  if (-not $Check) {
+    BackupOnce $path 'bak_pre_native_readback'
+    [System.IO.File]::WriteAllText($path, $source, $utf8nobom)
+  }
+}
+
 # --- locate package ----------------------------------------------------------
 if (-not $PackageScriptsDir) {
   $npmRoot = (& npm root -g 2>$null) | Out-String
@@ -2466,7 +2529,7 @@ $patchTransactionActive = $false
 if (-not $Check) {
   $transactionFiles = @($watcher, $msgutils) + $launcherTargets + $serverTargets + $mapTargets
   foreach ($scriptRoot in $packageScriptRoots) {
-    foreach ($scriptName in @("_message_utils.py", "compile_project.py", "clean_compile_project.py", "get_compile_messages.py", "get_ctrlx_semantic_snapshot.py")) {
+    foreach ($scriptName in @("_message_utils.py", "compile_project.py", "clean_compile_project.py", "get_compile_messages.py", "get_ctrlx_semantic_snapshot.py", "disconnect_from_device.py", "start_stop_application.py", "list_project_libraries.py")) {
       $transactionFiles += Join-Path $scriptRoot $scriptName
     }
   }
@@ -2484,7 +2547,8 @@ if (-not $Check) {
     "bak_pre_fast_compile",
     "bak_pre_strict_compile",
     "bak_pre_fresh_compile_contract",
-    "bak_pre_clean_compile_contract"
+    "bak_pre_clean_compile_contract",
+    "bak_pre_native_readback"
   )
   foreach ($transactionSourceFile in $transactionSourceFiles) {
     foreach ($transactionBackupSuffix in $transactionBackupSuffixes) {
@@ -2505,6 +2569,9 @@ $docstringBroken = $w.StartsWith("`"`"`n") -or $w.StartsWith("`"`"`r")
 if ($Check) {
   Write-Host ("[{0}] watcher.py patch block" -f $(if ($alreadyPatched) { "OK " } else { "TODO" }))
   Write-Host ("[{0}] watcher.py docstring " -f $(if ($docstringBroken) { "FIX " } else { "OK " }))
+  $hasLifecycleMarkers = $w.Contains('Primary thread entered: %s') -and
+    $w.Contains('Primary marshal returned: %s') -and $w.Contains('requestId=%s')
+  Write-Host ("[{0}] watcher primary-thread lifecycle markers" -f $(if ($hasLifecycleMarkers) { "OK " } else { "TODO" }))
 } else {
   if (-not $alreadyPatched) {
     $bak = "$watcher.bak_orig"
@@ -2531,6 +2598,20 @@ if ($Check) {
   if ($docstringBroken) {
     $w = "`"`"`"`"" + $w.Substring(2)
     Write-Host "repaired corrupted module docstring ('```"' -> '```"`"`"')"
+  }
+  foreach ($edit in @(
+    @{ Old = '        def execute_on_ui():';
+       New = "        def execute_on_ui():`n" + '            _log("Primary thread entered: %s" % request_id)' },
+    @{ Old = '        _log("Marshaling to primary thread...")';
+       New = '        _log("Marshaling to primary thread... requestId=%s" % request_id)' },
+    @{ Old = '            se.system.execute_on_primary_thread(execute_on_ui)';
+       New = '            se.system.execute_on_primary_thread(execute_on_ui)' + "`n" + '            _log("Primary marshal returned: %s" % request_id)' }
+  )) {
+    if ($w.Contains($edit.New)) { continue }
+    if ([regex]::Matches($w, [regex]::Escape($edit.Old)).Count -ne 1) {
+      throw 'Watcher lifecycle logging anchor changed; inspect the installed source before applying.'
+    }
+    $w = $w.Replace($edit.Old, $edit.New)
   }
   [System.IO.File]::WriteAllText($watcher, $w, $utf8nobom)
 }
@@ -2567,6 +2648,8 @@ PatchSemanticSnapshotServer $serverTargets[0] $true
 PatchSemanticSnapshotServer $serverTargets[1] $false
 PatchCleanCompileServer $serverTargets[0] $true
 PatchCleanCompileServer $serverTargets[1] $false
+PatchNativeReadbackServer $serverTargets[0]
+PatchNativeReadbackServer $serverTargets[1]
 
 $mapTargets | Select-Object -Unique | ForEach-Object { PatchIoMappingScript $_ }
 
@@ -2580,6 +2663,9 @@ foreach ($scriptRoot in $packageScriptRoots) {
   PatchStrictCompileNoSaveGuard (Join-Path $scriptRoot "compile_project.py")
   PatchFreshCompileContract (Join-Path $scriptRoot "compile_project.py")
   PatchGetCompileMessagesScript (Join-Path $scriptRoot "get_compile_messages.py")
+  foreach ($name in @('disconnect_from_device.py', 'start_stop_application.py', 'list_project_libraries.py')) {
+    PatchNativeReadbackScript (Join-Path $scriptRoot $name)
+  }
 }
 
 # --- verify --------------------------------------------------------------------
@@ -2595,7 +2681,7 @@ if (-not $Check -and -not $SkipRuntimeSyntaxCheck) {
       }
     }
     foreach ($scriptRoot in $packageScriptRoots) {
-      foreach ($scriptName in @("_message_utils.py", "compile_project.py", "clean_compile_project.py", "get_compile_messages.py", "get_ctrlx_semantic_snapshot.py")) {
+      foreach ($scriptName in @("_message_utils.py", "compile_project.py", "clean_compile_project.py", "get_compile_messages.py", "get_ctrlx_semantic_snapshot.py", "disconnect_from_device.py", "start_stop_application.py", "list_project_libraries.py")) {
         $scriptPath = Join-Path $scriptRoot $scriptName
         if (Test-Path -LiteralPath $scriptPath) {
           & python -m py_compile $scriptPath

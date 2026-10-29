@@ -1,4 +1,4 @@
-﻿# PLE SymbolConfig & Git Push 实测笔记(2026-08-18)
+# PLE SymbolConfig & Git Push 实测笔记(2026-08-18)
 
 > 项目:Station010(电阻测试台);环境:ctrlX PLC Engineering 2.6.8 / ScriptEngine 4.1 / codesys-persistent MCP。
 
@@ -36,18 +36,19 @@ PUT /devices/Device/Plc%20Logic/Application/symbol-config?symbolsAction=Select|U
 - GET 中 `accessRights=Void` 是编译器可用符号视图的字段语义，不代表持久化后的选择权限；最终以底层 `SelectedTypes` 或编译结果复核；
 - 不再把 UI 手删或 `import_xml` 整表覆盖作为常规方案。
 
-## 2. git 推送配方(该开发机 + Codex 沙箱)
-症状:git 全局 `http.proxy=http://127.0.0.1:7890`(Clash)经常停;直连 DNS 解析被拦;schannel TLS 在沙箱内报 `SEC_E_NO_CREDENTIALS`;git 本地传输被拦(`git clone <本地路径>` 报 couldn't create signal pipe Win32 error 5)。
+## 2. Git 发布与网络诊断
 
-可用组合(3128 为常驻代理):
+发布前核对远程、分支、拟提交范围和凭据扫描结果。只在已授权发布的仓库推送，
+不把 PAT 放进 URL、命令输出、脚本或仓库配置；使用已登录的 Git 凭据管理器或 gh credential helper。
+
+本工作站曾出现全局代理端口失效。确认当前可用端口后，只对本次命令覆盖代理，不修改全局设置：
+
 ```powershell
-$t = gh auth token
-git -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:3128 -c https.proxy=http://127.0.0.1:3128 `
-    push "https://x-access-token:${t}@github.com/<owner>/<repo>.git" HEAD:<branch>
+git -c http.proxy=http://127.0.0.1:3128 -c https.proxy=http://127.0.0.1:3128 push origin HEAD:<branch>
 ```
-- gh CLI 自身无需任何额外配置(建仓库/API/取 token)。
-- 沙箱 workspace-write 时:写工作区外的 `.git` 被拒 → 用 `%TEMP%` 中转:`Copy-Item <src>\.git` + `robocopy <src> <tmp> /MIR /XD .git` → commit → push。
-- 提交身份:本机自动推断(WANG Zhi <agz1wx@bosch.com>),如需规范可自行 git config。
+
+端口是本机历史配置，不是其他工作站的默认值。身份、网络和写入权限问题分别诊断；
+不要复制 `.git`、用镜像覆盖工作目录或把凭据嵌入远程地址来绕过失败。
 
 ## 3. eval_python(IronPython 2.7)其它坑
 - `System` 未默认导入:写 `except System.Exception, e` 前先 `from System import Exception` 或 try 普通异常。

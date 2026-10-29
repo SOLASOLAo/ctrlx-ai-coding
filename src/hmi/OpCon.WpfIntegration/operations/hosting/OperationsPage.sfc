@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<?mapping xmlns="http://www.inosoft.com/DTD/SmartForms" namespace="OpCon.WpfIntegration.Operations.Hosting;Bosch.OpCon.HMI.Modulo.Shared;VisiWinNET.Forms;"?>
+<wfml xmlns="http://www.inosoft.com/DTD/SmartForms" xmlns:wfml="http://www.inosoft.com/DTD/WFML">
+  <SmartControl wfml:ID="View" KeepAlive="False" Font="Microsoft YaHei UI, 10pt" Size="944, 572">
+    <property.Controls>
+      <WpfInputHost wfml:ID="OperationView" Name="OperationView" Location="0, 0" Size="944, 572"
+        LayoutFile="HostedOperations.xaml"/>
+    </property.Controls>
+  </SmartControl>
+</wfml>

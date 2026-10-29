@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<OpconStdDefinition def="1.0">
+  <HmiTextsDef def="1.0">
+    <HmiTextGroup name="IntegrationDemo">
+      <HmiText name="Title"><Text lcid="1033" value="Native operation integration probe"/><Text lcid="2052" value="原生操作集成探针"/></HmiText>
+      <HmiText name="RequestCount"><Text lcid="1033" value="Requests received by PLC"/><Text lcid="2052" value="PLC 请求接收次数"/></HmiText>
+      <HmiText name="Feedback"><Text lcid="1033" value="PLC result"/><Text lcid="2052" value="PLC 结果反馈"/></HmiText>
+      <HmiText name="Setpoint"><Text lcid="1033" value="Setpoint"/><Text lcid="2052" value="设定值"/></HmiText>
+      <HmiText name="NativeInputHint"><Text lcid="1033" value="Use the native controls. Unavailable values are shown as —."/><Text lcid="2052" value="使用原生控件操作。未就绪的数据以 — 显示。"/></HmiText>
+    </HmiTextGroup>
+  </HmiTextsDef>
+</OpconStdDefinition>

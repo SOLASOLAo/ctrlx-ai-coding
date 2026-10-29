@@ -28,6 +28,13 @@ try {
     & $installer -Source $source -DestinationRoot $destinationRoot -Check | Out-Null
     Assert-True $true 'Fresh installation failed -Check.'
 
+    $cacheDirectory = Join-Path $destination 'scripts\__pycache__'
+    [System.IO.Directory]::CreateDirectory($cacheDirectory) | Out-Null
+    $cacheFile = Join-Path $cacheDirectory 'runtime.cpython-test.pyc'
+    [System.IO.File]::WriteAllText($cacheFile, 'Runtime cache is not maintained source.')
+    & $installer -Source $source -DestinationRoot $destinationRoot -Check | Out-Null
+    Assert-True ([System.IO.File]::Exists($cacheFile)) '-Check must ignore and preserve generated Python caches.'
+
     [System.IO.File]::WriteAllText((Join-Path $destination 'stale.txt'), 'stale')
     $checkFailed = $false
     try {
@@ -40,6 +47,7 @@ try {
 
     & $installer -Source $source -DestinationRoot $destinationRoot -Force | Out-Null
     Assert-True (-not [System.IO.File]::Exists((Join-Path $destination 'stale.txt'))) '-Force did not remove a stale file.'
+    Assert-True ([System.IO.File]::Exists($cacheFile)) '-Force removed an unrelated Python runtime cache.'
     & $installer -Source $source -DestinationRoot $destinationRoot -Check | Out-Null
     Assert-True $true 'Exact synchronization failed final -Check.'
 

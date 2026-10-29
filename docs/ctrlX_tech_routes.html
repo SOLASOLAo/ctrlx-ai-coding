@@ -288,6 +288,17 @@ systemd watchdog 进程死了自动拉起、页面心跳断了自动刷新。操
 </ul>
 
 <h3>阶段 B · 路线② HMI 原型(主攻,与阶段 A 并行启动)</h3>
+<p><b>2026-10-20 功能库的WPF HMI兼容能力：</b>用户目标是在自研功能库（例如华沿机器人库）中用WPF编写界面和按钮，重点是兼容现有OpCon/CpStudio及其通讯、操作机制。<a href="../src/hmi/OpCon.WpfIntegration/README.md">WPF→OpCon 集成组件</a>为此提供宿主与适配能力，复用现有 VisiWin/CoDeSysV3/PLCHandler，保留原生权限、令牌、放行和按下/释放；当前只开发组件，不替换华沿原生HMI，不为它新增OPC UA或第二套连接。以下其他路线原型仍为独立历史规划。</p>
+<ul class="check">
+<li class="done">已核验实际版本、安装帮助、公开契约及PerformClick调用差异；候选0.1.0.1编译、39项组件离线检查和配置/资源检查通过</li>
+<li class="done">官方Post-export入口的资源同步候选：15项文件级检查及真实批处理/Windows PowerShell调用通过；不代表CpStudio已实际触发</li>
+<li class="done">纯WPF输入原型OpCon.WpfOperations 0.1.0.1：参数框/手动键、待适配契约和本地输入探针；59项离线输入检查、两个实际样例启动自检及13项只读接口证据核验通过（34类元数据）</li>
+<li class="done">进程内SmartForms视图宿主：24项原生SFC加载、ElementHost和WinForms生命周期/实例隔离检查通过；外层WinForms承载可见WPF输入，恢复焦点不开始编辑</li>
+<li>取得完整受支持的OpCon操作语义入口并实现原生适配器；用户无额外SDK，现有查找尚未取得完整契约。WPF视图嵌入不代表原生参数提交或手动握手已接通</li>
+<li>独立虚拟样例的真实参数提交、离散/按住型命令、PLC扫描/周期/Unit状态与故障恢复验收；用户当前要求暂不联系共享工程所有者</li>
+<li>正常CpStudio Export携带布局/DLL/双语/GUI引用、冷重开和人工部署验证后形成正式可复用发布</li>
+<li>保留既有CpStudio Variables/Struct通用添加的独立Export/消费者编译待办，按唯一工程所有权安排</li>
+</ul>
 <ul class="check">
 <li>OPC UA 读写最小 demo:后端服务 + 页面实时读写 PLC 变量(沿用 Symbolconfiguration 符号名)</li>
 <li>主画面原型:Avalonia 原生壳(全屏、心跳、自动重连)对比 Chromium Kiosk</li>

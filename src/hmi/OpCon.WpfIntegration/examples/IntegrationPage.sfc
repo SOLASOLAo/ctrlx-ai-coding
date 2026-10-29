@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<?mapping xmlns="http://www.inosoft.com/DTD/SmartForms" namespace="OpCon.WpfIntegration;Bosch.OpCon.HMI.Modulo.Shared;VisiWinNET.Forms;Bosch.OpCon.HMI.Modulo.Forms;"?>
+<wfml xmlns="http://www.inosoft.com/DTD/SmartForms" xmlns:wfml="http://www.inosoft.com/DTD/WFML">
+  <SmartControl wfml:ID="View" KeepAlive="True" Font="Microsoft YaHei UI, 10pt" Size="944, 572">
+    <property.Controls>
+      <Mod_VarIn wfml:ID="nativeSetpoint" Name="nativeSetpoint" UseItemText="False"
+        UseTokenHandling="True" HandleUnitDisabled="True" RestoreOnLostFocus="True" UseTouchKeyboard="True"
+        Location="20, 436" Size="440, 56" TabIndex="0">
+        <property.Label><property.Text Text="Setpoint" TextGroup="IntegrationDemo"/></property.Label>
+        <property.VWItem Name="<%=@ownerObject.ExtensionInstance.HmiFullName%>.Parameters.Setpoint"/>
+      </Mod_VarIn>
+      <Mod_ManualFunctionKey wfml:ID="nativePulse" Name="nativePulse" ManualFunctionName="Pulse"
+        UseTokenHandling="True" HandleUnitDisabled="True" Location="480, 436" Size="444, 56" TabIndex="1"/>
+      <Mod_ManualFunctionKey wfml:ID="nativeHold" Name="nativeHold" ManualFunctionName="Hold"
+        UseTokenHandling="True" HandleUnitDisabled="True" Location="20, 504" Size="440, 48" TabIndex="2"/>
+      <WpfViewHost wfml:ID="Presentation" Name="Presentation" Location="0, 0" Size="944, 572"
+        LayoutFile="OpCon.WpfIntegration\IntegrationDemo.xaml"
+        ItemPrefix="<%=@ownerObject.ExtensionInstance.HmiFullName%>"
+        HeartbeatItem="Status.ScanCount" HeartbeatTimeoutMs="2000"/>
+    </property.Controls>
+  </SmartControl>
+</wfml>

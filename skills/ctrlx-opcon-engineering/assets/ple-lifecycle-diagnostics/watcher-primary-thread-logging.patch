@@ -1,0 +1,22 @@
+--- a/watcher.py
++++ b/watcher.py
+@@ -181,6 +181,7 @@
+         done_event = ManualResetEvent(False)
+ 
+         def execute_on_ui():
++            _log("Primary thread entered: %s" % request_id)
+             success = False
+             output = ""
+             error = ""
+@@ -242,9 +243,10 @@
+             done_event.Set()
+ 
+         # Marshal execution to the primary thread
+-        _log("Marshaling to primary thread...")
++        _log("Marshaling to primary thread... requestId=%s" % request_id)
+         try:
+             se.system.execute_on_primary_thread(execute_on_ui)
++            _log("Primary marshal returned: %s" % request_id)
+         except Exception as marshal_err:
+             _log("Marshal error: %s" % marshal_err)
+             shared_result[0] = {

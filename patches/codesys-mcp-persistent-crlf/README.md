@@ -296,14 +296,56 @@ map_io_channel(
 `npm install -g codesys-mcp-persistent@<new>` 会还原上述文件 → **每次升级后必须重跑 `apply-crlf-patch.ps1 -Check`，再执行正式应用**。
 若上游修复(行尾归一化进主线),本补丁即可退役。
 
+## 工程 Close / 主线程生命周期诊断（2026-10-08）
+
+watcher先调用主线程转发，返回后才WaitOne(120000)。只看到Marshaling时，不能确认
+callback是否进入、两分钟wait是否开始或Close是否已完成。新增日志给dispatch、primary
+entry和marshal return关联requestId；只记录UUID/阶段，不输出脚本内容，不改超时或执行。
+它们是诊断信息，缺日志不证明取消，marshal return也不替代匹配result。
+
+这项改动只在维护源码中验证，尚未应用到当前broker。owner应保留未知终态证据，确认旧
+会话恢复或结束后，在受控维护窗口应用源码供下一次启动加载，不热换运行中的watcher。工程Close
+仍需独立原生状态确认，不能因缺result重放，也不要释放借用online executor或写私有flag。
+
+从工具仓库运行离线检查（不启动IDE、不写全局npm）：
+
+```powershell
+python -B patches/codesys-mcp-persistent-crlf/test-lifecycle-diagnostics.py -v
+& ./patches/codesys-mcp-persistent-crlf/test-adapter-readiness.ps1
+```
+
+8项double检查验证阶段日志与borrowed with_executor的成功/异常清理；不能证明某个
+超时会话的原生handler执行。完整隔离readiness检查覆盖apply/check/语法和既有合同。
+
+## typed 状态和库引用读回（2026-10-10）
+
+新增三个原生读回模板：disconnect只有is_logged_in=False才成功，不把构造/logout异常
+吞成已退出；start/stop按实际前后RUN/STOP确认，已STOP不重复stop，stop不替代logout。
+库引用读取选定Application的get_library_manager()/get_libraries()，不把树子节点或
+查找失败当空引用。三个工具只操作已经primary的预期工程，不隐式打开/切换/保存。
+
+安装器同步src/dist模板及server helper wiring，保留备份和事务回滚，并拒绝覆盖未知/
+自定义模板。这些修正尚未应用当前broker；维护仅由其owner在受控窗口安排。
+
+```powershell
+python -B patches/codesys-mcp-persistent-crlf/test-native-readback.py -v
+```
+
+20项offline double检查及完整隔离readiness通过，不能代替原生新路由或现场验收。
+便携模板/server diff位于skill的assets/codesys-native-readback-v063；两部分需一起维护。
+
 ## 文件清单
 
 | 文件 | 说明 |
 |---|---|
 | `watcher.py.orig` | 原厂 watcher.py(v0.6.3,未打补丁) |
 | `watcher.py.patched` | 打补丁后的完整文件 |
-| `watcher_crlf_normalize.patch` | unified diff(仅 5 行插入) |
-| `apply-crlf-patch.ps1` | 一键应用/检查 ctrlX 兼容补丁（CRLF、docstring、connector I/O Mapping、有界编译消息、no-save Build、安全会话接管） |
+| `watcher_crlf_normalize.patch` | unified diff（CRLF归一化与请求ID生命周期日志） |
+| `apply-crlf-patch.ps1` | 一键应用/检查 ctrlX 兼容补丁（CRLF、生命周期日志、docstring、connector I/O Mapping、有界编译消息、no-save Build、安全会话接管） |
+| `test-lifecycle-diagnostics.py` | 不加载CLR/IDE的borrowed online executor清理和watcher阶段日志检查；读取已安装helper定义并使用doubles |
+| `disconnect_from_device.py` / `start_stop_application.py` | 原生目标/状态读回后确认成功，with_executor复用及已达状态不重复调用 |
+| `list_project_libraries.py` | 原生manager引用枚举；空列表与失败分开，保持UTF-8 wire合同 |
+| `test-native-readback.py` | 20项offline double状态、错误、scope/引用枚举回归，可指定隔离scripts目录 |
 | `test-fast-compile-message.py` | 不启动 IDE 的编译摘要、固定两类别 Warning-only producer 与失败关闭回归；覆盖精确计数、异常、Unicode、敏感/超限记录、0-warning/error-no-query 和通用 0/0 拒绝 |
 | `clean_compile_project.py` | IronPython 2.7 显式语义重建 producer；一次 clean + 一次 build，前后 identity/dirty 与同次消息证据 |
 | `clean_compile_project.tool.ts/.js` | `clean_compile_project` MCP 注册与 fail-closed 响应合同 canonical 资产 |
